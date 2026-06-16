@@ -53,6 +53,30 @@ def test_workspace_api_patch_updates_local_metadata(video_in_db, tmp_path):
     assert item["tags"] == "shorts, test"
 
 
+def test_workspace_api_status_is_reversible(video_in_db, tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspaceItemUpdateRequest
+    segment_id = _make_segment(video_in_db, tmp_path)
+    key = f"segment:{segment_id}"
+
+    ready = api.workspace_clip_update(
+        key,
+        WorkspaceItemUpdateRequest(workspace_status="ready"),
+    )["item"]
+    draft = api.workspace_clip_update(
+        key,
+        WorkspaceItemUpdateRequest(workspace_status="draft"),
+    )["item"]
+    failed = api.workspace_clip_update(
+        key,
+        WorkspaceItemUpdateRequest(workspace_status="failed"),
+    )["item"]
+
+    assert ready["workspace_status"] == "ready"
+    assert draft["workspace_status"] == "draft"
+    assert failed["workspace_status"] == "failed"
+
+
 def test_workspace_api_bulk_status(video_in_db, tmp_path):
     from shortsfarm.web import api
     from shortsfarm.web.schemas import WorkspaceBulkStatusRequest
@@ -69,6 +93,15 @@ def test_workspace_api_bulk_status(video_in_db, tmp_path):
     assert data["updated"] == 2
     ready_ids = {item["id"] for item in data["items"] if item["workspace_status"] == "ready"}
     assert {f"segment:{first_id}", f"segment:{second_id}"} <= ready_ids
+
+    draft_data = api.workspace_clips_bulk_status(
+        WorkspaceBulkStatusRequest(
+            items=[f"segment:{first_id}", f"segment:{second_id}"],
+            workspace_status="draft",
+        )
+    )
+    draft_ids = {item["id"] for item in draft_data["items"] if item["workspace_status"] == "draft"}
+    assert {f"segment:{first_id}", f"segment:{second_id}"} <= draft_ids
 
 
 def test_workspace_api_marks_missing_file(video_in_db, tmp_path):

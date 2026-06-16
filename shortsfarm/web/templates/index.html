@@ -122,7 +122,9 @@
           <button class="tab" onclick="filterClips(this,'missing')">Отсутствующие<span class="cnt" id="clip-cnt-missing"></span></button>
         </div>
         <div class="row-actions">
-          <button class="btn-mini" onclick="selectAllWorkspaceItems()">Выбрать всё</button>
+          <button class="btn-mini" onclick="selectAllWorkspaceItems()">Выбрать в фильтре</button>
+          <button class="btn-mini" onclick="selectMissingWorkspaceItems()">Выбрать отсутствующие</button>
+          <button class="btn-mini" onclick="clearWorkspaceSelection()">Снять выделение</button>
           <button class="btn-mini" onclick="bulkSetWorkspaceStatus('ready')">Сделать готовыми</button>
           <button class="btn-mini" onclick="bulkSetWorkspaceStatus('draft')">Сбросить в черновики</button>
           <button class="btn-mini" onclick="openSelectedWorkspaceFolder()">Открыть папку</button>

@@ -854,6 +854,10 @@ function renderWorkspaceBulkState() {
     el.textContent = total ? `Выбрано: ${total}` : '';
   });
 }
+function renderWorkspaceListAndDetail() {
+  renderClipsTable(getVisibleWorkspaceItems());
+  renderWorkspaceDetail();
+}
 function renderClipsTable(rows) {
   const el = document.getElementById('clips-table');
   if (!rows.length) {
@@ -880,6 +884,35 @@ function selectAllWorkspaceItems() {
   else rows.forEach(item => selectedWorkspaceKeys.add(item.id));
   renderClipsTable(rows);
 }
+function clearWorkspaceSelection() {
+  selectedWorkspaceKeys.clear();
+  renderClipsTable(getVisibleWorkspaceItems());
+}
+async function refreshWorkspaceList() {
+  const data = await api.get('/api/workspace/clips');
+  lastClips = data.items || [];
+  if (currentWorkspaceItemKey && !workspaceItemByKey(currentWorkspaceItemKey)) {
+    currentWorkspaceItemKey = null;
+  }
+  renderClipCounts(data.counts || workspaceCountsFromItems(lastClips));
+  return lastClips;
+}
+async function selectMissingWorkspaceItems() {
+  try {
+    await refreshWorkspaceList();
+    const missingItems = lastClips.filter(item => item.missing);
+    if (!missingItems.length) {
+      showToast('Отсутствующих файлов не найдено.');
+      renderWorkspaceListAndDetail();
+      return;
+    }
+    selectedWorkspaceKeys = new Set(missingItems.map(item => item.id));
+    renderWorkspaceListAndDetail();
+    showToast(`Выбрано отсутствующих: ${missingItems.length}`);
+  } catch (err) {
+    showToast(err.message || 'Не удалось выбрать отсутствующие', 'err');
+  }
+}
 async function bulkSetWorkspaceStatus(status) {
   const items = Array.from(selectedWorkspaceKeys);
   if (!items.length) {
@@ -890,8 +923,7 @@ async function bulkSetWorkspaceStatus(status) {
     const data = await api.post('/api/workspace/clips/bulk-status', {items, workspace_status: status});
     lastClips = data.items || [];
     renderClipCounts(data.counts || {});
-    renderClipsTable(getVisibleWorkspaceItems());
-    renderWorkspaceDetail();
+    renderWorkspaceListAndDetail();
     showToast(`Обновлено: ${data.updated || 0}`);
   } catch (err) {
     showToast(err.message || 'Не удалось обновить статус', 'err');
@@ -989,6 +1021,8 @@ function renderWorkspaceDetail() {
   const fileAction = item.missing
     ? `<button class="btn-danger" onclick="deleteWorkspaceItem('${esc(item.id)}')">Убрать из списка</button>`
     : `<button class="btn-danger" onclick="deleteWorkspaceItem('${esc(item.id)}')">Удалить файл</button>`;
+  const readyDisabled = item.workspace_status === 'ready' ? ' disabled' : '';
+  const draftDisabled = item.workspace_status === 'draft' ? ' disabled' : '';
   el.innerHTML = `<div class="workspace-detail-body">
     <div class="workspace-preview">${videoThumb(playablePath, title)}</div>
     <div class="workspace-detail-head">
@@ -1004,7 +1038,7 @@ function renderWorkspaceDetail() {
       <div><span>Файл</span><b title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</b></div>
       <div><span>Папка</span><b title="${esc(item.folder_path || '')}">${esc(shortPath(item.folder_path || '—'))}</b></div>
     </div>
-    <div class="field"><label class="field-lbl">Статус</label><select id="workspace-status"><option value="draft">draft · черновик</option><option value="ready">ready · готово</option><option value="queued">queued · в очереди</option><option value="uploaded">uploaded · загружено</option><option value="failed">failed · ошибка</option></select></div>
+    <div class="field"><label class="field-lbl">Статус</label><select id="workspace-status"><option value="draft">Черновик</option><option value="ready">Готово</option><option value="queued">В очереди</option><option value="uploaded">Загружено</option><option value="failed">Ошибка</option></select></div>
     <div class="field"><label class="field-lbl">Название</label><input id="workspace-title" type="text" value="${esc(item.title || '')}" placeholder="${esc(item.file_name || title)}"></div>
     <div class="field"><label class="field-lbl">Описание</label><textarea id="workspace-description" rows="5" placeholder="Локальное описание для будущей публикации">${esc(item.description || '')}</textarea></div>
     <div class="field"><label class="field-lbl">Теги</label><input id="workspace-tags" type="text" value="${esc(item.tags || '')}" placeholder="через запятую"></div>
@@ -1012,7 +1046,8 @@ function renderWorkspaceDetail() {
       <button class="btn-primary" onclick="saveWorkspaceDetail()">Сохранить</button>
       ${workspaceOpenFileButton(item, 'Открыть файл')}
       ${workspaceOpenFolderButton(item, 'Открыть папку')}
-      <button class="btn-secondary" onclick="setCurrentWorkspaceStatus('ready')">Готово к загрузке</button>
+      <button class="btn-secondary" onclick="setCurrentWorkspaceStatus('ready')"${readyDisabled}>Сделать готовым</button>
+      <button class="btn-secondary" onclick="setCurrentWorkspaceStatus('draft')"${draftDisabled}>Вернуть в черновики</button>
       ${fileAction}
       <button class="btn-secondary stub-action" onclick="futureFeature('Загрузка в YouTube')">Загрузить в YouTube</button>
       <button class="btn-secondary stub-action" onclick="futureFeature('Субтитры')">Добавить субтитры</button>
