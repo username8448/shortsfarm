@@ -623,6 +623,42 @@ def _workspace_metadata_row(
     ).fetchone()
 
 
+def _workspace_path_state(path: str) -> dict[str, Any]:
+    if not path:
+        return {
+            "file_exists": False,
+            "folder_exists": False,
+            "missing": True,
+            "path_error": "Путь к файлу не задан.",
+        }
+    try:
+        candidate = Path(path).expanduser()
+        parent = candidate.parent
+        folder_exists = parent.exists() and parent.is_dir()
+        file_exists = candidate.exists() and candidate.is_file()
+        path_error = None
+        if not file_exists:
+            if not folder_exists:
+                path_error = f"Папка не найдена: {parent}"
+            elif candidate.exists() and not candidate.is_file():
+                path_error = f"Путь не является файлом: {candidate}"
+            else:
+                path_error = f"Файл не найден: {candidate}"
+        return {
+            "file_exists": file_exists,
+            "folder_exists": folder_exists,
+            "missing": not file_exists,
+            "path_error": path_error,
+        }
+    except OSError as exc:
+        return {
+            "file_exists": False,
+            "folder_exists": False,
+            "missing": True,
+            "path_error": str(exc),
+        }
+
+
 def _workspace_uploaded_clip_ids(con: sqlite3.Connection) -> set[int]:
     rows = con.execute(
         """
@@ -673,8 +709,11 @@ def _workspace_item_dict(
     cut_mode: str | None = None,
     render_status: str | None = None,
     error: str | None = None,
+    hidden_at: str | None = None,
+    missing_confirmed_at: str | None = None,
 ) -> dict[str, Any]:
     item_path = Path(path) if path else None
+    path_state = _workspace_path_state(path)
     return {
         "id": f"{item_type}:{item_id}",
         "item_type": item_type,
@@ -698,22 +737,30 @@ def _workspace_item_dict(
         "error": error or "",
         "created_at": created_at,
         "updated_at": updated_at,
+        "hidden_at": hidden_at,
+        "missing_confirmed_at": missing_confirmed_at,
+        **path_state,
     }
 
 
 def list_workspace_items(
     status: str | None = None,
     limit: int = 1000,
+    include_hidden: bool = False,
 ) -> list[dict[str, Any]]:
-    normalized_status = None if status in (None, "", "all") else _normalize_workspace_status(status)
+    normalized_status = None
+    missing_only = status == "missing"
+    if status not in (None, "", "all", "missing"):
+        normalized_status = _normalize_workspace_status(status)
     uploaded_clip_ids: set[int]
     items: list[dict[str, Any]] = []
+    hidden_clause = "" if include_hidden else "WHERE wm.hidden_at IS NULL"
 
     with connect() as con:
         uploaded_clip_ids = _workspace_uploaded_clip_ids(con)
 
         segment_rows = con.execute(
-            """
+            f"""
             SELECT
                 s.*,
                 v.title AS video_title,
@@ -723,11 +770,14 @@ def list_workspace_items(
                 wm.description AS workspace_description,
                 wm.tags AS workspace_tags,
                 wm.created_at AS workspace_created_at,
-                wm.updated_at AS workspace_updated_at
+                wm.updated_at AS workspace_updated_at,
+                wm.hidden_at AS workspace_hidden_at,
+                wm.missing_confirmed_at AS workspace_missing_confirmed_at
             FROM segments s
             JOIN videos v ON v.id = s.video_id
             LEFT JOIN clip_workspace_metadata wm
               ON wm.item_type='segment' AND wm.item_id=s.id
+            {hidden_clause}
             ORDER BY s.id DESC
             """
         ).fetchall()
@@ -752,11 +802,13 @@ def list_workspace_items(
                     created_at=row["created_at"],
                     updated_at=row["workspace_updated_at"] or row["workspace_created_at"],
                     render_status=None,
+                    hidden_at=row["workspace_hidden_at"],
+                    missing_confirmed_at=row["workspace_missing_confirmed_at"],
                 )
             )
 
         clip_rows = con.execute(
-            """
+            f"""
             SELECT
                 c.*,
                 v.title AS video_title,
@@ -768,12 +820,15 @@ def list_workspace_items(
                 wm.description AS workspace_description,
                 wm.tags AS workspace_tags,
                 wm.created_at AS workspace_created_at,
-                wm.updated_at AS workspace_updated_at
+                wm.updated_at AS workspace_updated_at,
+                wm.hidden_at AS workspace_hidden_at,
+                wm.missing_confirmed_at AS workspace_missing_confirmed_at
             FROM clips c
             JOIN videos v ON v.id = c.video_id
             LEFT JOIN marks m ON m.id = c.mark_id
             LEFT JOIN clip_workspace_metadata wm
               ON wm.item_type='clip' AND wm.item_id=c.id
+            {hidden_clause}
             ORDER BY c.id DESC
             """
         ).fetchall()
@@ -804,10 +859,14 @@ def list_workspace_items(
                     cut_mode=row["cut_mode"],
                     render_status=row["status"],
                     error=row["error"],
+                    hidden_at=row["workspace_hidden_at"],
+                    missing_confirmed_at=row["workspace_missing_confirmed_at"],
                 )
             )
 
     items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    if missing_only:
+        items = [item for item in items if item["missing"]]
     if normalized_status is not None:
         items = [item for item in items if item["workspace_status"] == normalized_status]
     return items[:limit]
@@ -830,6 +889,8 @@ def update_workspace_item(
     title: str | None = None,
     description: str | None = None,
     tags: str | None = None,
+    hidden_at: str | None = None,
+    missing_confirmed_at: str | None = None,
 ) -> bool:
     item_type = _normalize_workspace_item_type(item_type)
     item_id = int(item_id)
@@ -851,18 +912,31 @@ def update_workspace_item(
             else (existing["description"] if existing is not None else None)
         )
         resolved_tags = tags if tags is not None else (existing["tags"] if existing is not None else None)
+        resolved_hidden_at = (
+            hidden_at
+            if hidden_at is not None
+            else (existing["hidden_at"] if existing is not None else None)
+        )
+        resolved_missing_confirmed_at = (
+            missing_confirmed_at
+            if missing_confirmed_at is not None
+            else (existing["missing_confirmed_at"] if existing is not None else None)
+        )
 
         con.execute(
             """
             INSERT INTO clip_workspace_metadata
-                (item_type, item_id, workspace_status, title, description, tags, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (item_type, item_id, workspace_status, title, description, tags,
+                 created_at, updated_at, hidden_at, missing_confirmed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(item_type, item_id) DO UPDATE SET
                 workspace_status=excluded.workspace_status,
                 title=excluded.title,
                 description=excluded.description,
                 tags=excluded.tags,
-                updated_at=excluded.updated_at
+                updated_at=excluded.updated_at,
+                hidden_at=excluded.hidden_at,
+                missing_confirmed_at=excluded.missing_confirmed_at
             """,
             (
                 item_type,
@@ -873,6 +947,8 @@ def update_workspace_item(
                 resolved_tags,
                 now,
                 now,
+                resolved_hidden_at,
+                resolved_missing_confirmed_at,
             ),
         )
         return True
@@ -885,6 +961,30 @@ def bulk_update_workspace_status(items: list[tuple[str, int]], workspace_status:
         if update_workspace_item(item_type, item_id, workspace_status=status):
             updated += 1
     return updated
+
+
+def hide_workspace_item(
+    item_type: str,
+    item_id: int,
+    *,
+    missing_confirmed: bool = False,
+) -> bool:
+    now = now_utc()
+    return update_workspace_item(
+        item_type,
+        item_id,
+        hidden_at=now,
+        missing_confirmed_at=now if missing_confirmed else None,
+    )
+
+
+def cleanup_missing_workspace_items() -> int:
+    items = list_workspace_items(status="missing", limit=10000)
+    hidden = 0
+    for item in items:
+        if hide_workspace_item(item["item_type"], int(item["item_id"]), missing_confirmed=True):
+            hidden += 1
+    return hidden
 
 
 # ---------------------------------------------------------------------------

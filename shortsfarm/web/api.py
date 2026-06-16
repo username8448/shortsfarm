@@ -55,6 +55,7 @@ from .schemas import (
     RenderRequest,
     RetryFailedRequest,
     SplitRequest,
+    WorkspaceBulkDeleteRequest,
     WorkspaceBulkStatusRequest,
     WorkspaceItemUpdateRequest,
     YouTubeClientJsonImportRequest,
@@ -249,7 +250,82 @@ def _workspace_counts(items: list[dict[str, Any]]) -> dict[str, int]:
         if status in counts:
             counts[status] += 1
     counts["all"] = len(items)
+    counts["missing"] = sum(1 for item in items if item.get("missing"))
     return counts
+
+
+def _workspace_items_response(items: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"items": items, "counts": _workspace_counts(items)}
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _safe_workspace_delete_path(item: dict[str, Any]) -> Path:
+    raw_path = _normalize_setting_text(item.get("path"))
+    if not raw_path:
+        raise ValueError("Путь к файлу не задан.")
+
+    candidate = Path(raw_path).expanduser()
+    if not candidate.exists():
+        raise FileNotFoundError(f"Файл уже отсутствует: {candidate}")
+    if not candidate.is_file():
+        raise ValueError(f"Удалять можно только файлы, не папки: {candidate}")
+
+    resolved = candidate.resolve()
+    allowed_roots = [
+        output_dir().resolve(),
+        (data_dir() / "output").resolve(),
+    ]
+    if not any(_is_relative_to(resolved, root) for root in allowed_roots):
+        raise PermissionError("Удалять можно только файлы внутри output-директории ShortsFarm.")
+
+    source_path = _normalize_setting_text(item.get("source_path"))
+    if source_path:
+        try:
+            if resolved == Path(source_path).expanduser().resolve():
+                raise PermissionError("Нельзя удалить исходное видео из workspace.")
+        except FileNotFoundError:
+            pass
+    return resolved
+
+
+def _delete_workspace_item(item_key: str) -> dict[str, Any]:
+    item_type, item_id = _parse_workspace_key(item_key)
+    item = db.get_workspace_item(item_type, item_id)
+    if item is None:
+        raise FileNotFoundError("Элемент рабочего пространства не найден.")
+
+    result = {
+        "id": item["id"],
+        "item_type": item_type,
+        "item_id": item_id,
+        "file_deleted": False,
+        "already_missing": False,
+        "hidden": False,
+        "message": "",
+    }
+
+    if item.get("file_exists"):
+        delete_path = _safe_workspace_delete_path(item)
+        delete_path.unlink()
+        result["file_deleted"] = True
+        result["message"] = "Файл удалён."
+    else:
+        result["already_missing"] = True
+        result["message"] = "Файл уже отсутствовал."
+
+    result["hidden"] = db.hide_workspace_item(
+        item_type,
+        item_id,
+        missing_confirmed=bool(result["already_missing"]),
+    )
+    return result
 
 
 def _social_account_dict(row: Any) -> dict[str, Any]:
@@ -1375,7 +1451,9 @@ def workspace_clips(status: str | None = None, limit: int = 1000) -> dict[str, A
     try:
         _init()
         all_items = db.list_workspace_items(limit=limit)
-        if status and status != "all":
+        if status == "missing":
+            items = [item for item in all_items if item["missing"]]
+        elif status and status != "all":
             items = [item for item in all_items if item["workspace_status"] == status]
         else:
             items = all_items
@@ -1402,6 +1480,26 @@ def workspace_clip_detail(item_key: str) -> dict[str, Any]:
         raise _fail(exc)
 
 
+@router.delete("/workspace/clips/{item_key}")
+def workspace_clip_delete(item_key: str) -> dict[str, Any]:
+    try:
+        _init()
+        result = _delete_workspace_item(item_key)
+        items = db.list_workspace_items(limit=1000)
+        return {
+            "status": "ok",
+            "result": result,
+            "items": items,
+            "counts": _workspace_counts(items),
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except Exception as exc:
+        raise _fail(exc)
+
+
 @router.patch("/workspace/clips/{item_key}")
 def workspace_clip_update(item_key: str, req: WorkspaceItemUpdateRequest) -> dict[str, Any]:
     try:
@@ -1421,6 +1519,85 @@ def workspace_clip_update(item_key: str, req: WorkspaceItemUpdateRequest) -> dic
         return {"item": item}
     except FileNotFoundError as exc:
         raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/workspace/clips/bulk-delete")
+def workspace_clips_bulk_delete(req: WorkspaceBulkDeleteRequest) -> dict[str, Any]:
+    try:
+        _init()
+        summary = {
+            "deleted_files": 0,
+            "already_missing": 0,
+            "hidden": 0,
+            "errors": 0,
+        }
+        results: list[dict[str, Any]] = []
+        for item_key in req.items:
+            try:
+                result = _delete_workspace_item(item_key)
+                if result["file_deleted"]:
+                    summary["deleted_files"] += 1
+                if result["already_missing"]:
+                    summary["already_missing"] += 1
+                if result["hidden"]:
+                    summary["hidden"] += 1
+                results.append(result)
+            except Exception as exc:
+                summary["errors"] += 1
+                results.append({
+                    "id": item_key,
+                    "file_deleted": False,
+                    "already_missing": False,
+                    "hidden": False,
+                    "error": str(exc) or exc.__class__.__name__,
+                })
+        items = db.list_workspace_items(limit=1000)
+        return {
+            "status": "ok",
+            "summary": summary,
+            "results": results,
+            "items": items,
+            "counts": _workspace_counts(items),
+        }
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/workspace/clips/cleanup-missing")
+def workspace_clips_cleanup_missing() -> dict[str, Any]:
+    try:
+        _init()
+        before_items = db.list_workspace_items(limit=10000)
+        missing_count = sum(1 for item in before_items if item["missing"])
+        hidden = db.cleanup_missing_workspace_items()
+        items = db.list_workspace_items(limit=1000)
+        return {
+            "status": "ok",
+            "summary": {
+                "missing": missing_count,
+                "hidden": hidden,
+                "errors": 0,
+            },
+            "items": items,
+            "counts": _workspace_counts(items),
+        }
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/workspace/clips/scan-missing")
+def workspace_clips_scan_missing() -> dict[str, Any]:
+    try:
+        _init()
+        items = db.list_workspace_items(limit=10000)
+        missing = [item for item in items if item["missing"]]
+        return {
+            "status": "ok",
+            "missing": len(missing),
+            "items": missing,
+        }
     except Exception as exc:
         raise _fail(exc)
 

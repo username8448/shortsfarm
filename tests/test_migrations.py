@@ -27,6 +27,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "004_create_marks"            in versions
     assert "005_create_clips"            in versions
     assert "018_create_clip_workspace_metadata" in versions
+    assert "019_add_workspace_hidden_at" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -107,12 +108,19 @@ def test_clip_workspace_metadata_table(tmp_data_dir):
     from shortsfarm import db
     with db.connect() as con:
         con.execute("SELECT * FROM clip_workspace_metadata LIMIT 0")
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(clip_workspace_metadata)").fetchall()
+        }
         indexes = {
             row["name"]
             for row in con.execute("PRAGMA index_list(clip_workspace_metadata)").fetchall()
         }
+    assert "hidden_at" in columns
+    assert "missing_confirmed_at" in columns
     assert "idx_clip_workspace_metadata_item" in indexes
     assert "idx_clip_workspace_metadata_status" in indexes
+    assert "idx_clip_workspace_metadata_hidden" in indexes
 
 
 def test_idempotent(tmp_data_dir):

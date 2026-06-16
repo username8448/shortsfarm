@@ -36,6 +36,10 @@ class WorkspaceBulkStatusRequest(BaseModel):
     workspace_status: str
 
 
+class WorkspaceBulkDeleteRequest(BaseModel):
+    items: list[str] = Field(default_factory=list)
+
+
 class YouTubeSettingsRequest(BaseModel):
     client_id: str = ""
     client_secret: str = ""

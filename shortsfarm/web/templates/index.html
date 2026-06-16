@@ -119,12 +119,16 @@
           <button class="tab" onclick="filterClips(this,'queued')">В очереди<span class="cnt" id="clip-cnt-queued"></span></button>
           <button class="tab" onclick="filterClips(this,'uploaded')">Загружено<span class="cnt" id="clip-cnt-uploaded"></span></button>
           <button class="tab" onclick="filterClips(this,'failed')">Ошибки<span class="cnt" id="clip-cnt-failed"></span></button>
+          <button class="tab" onclick="filterClips(this,'missing')">Отсутствующие<span class="cnt" id="clip-cnt-missing"></span></button>
         </div>
         <div class="row-actions">
           <button class="btn-mini" onclick="selectAllWorkspaceItems()">Выбрать всё</button>
           <button class="btn-mini" onclick="bulkSetWorkspaceStatus('ready')">Сделать готовыми</button>
           <button class="btn-mini" onclick="bulkSetWorkspaceStatus('draft')">Сбросить в черновики</button>
           <button class="btn-mini" onclick="openSelectedWorkspaceFolder()">Открыть папку</button>
+          <button class="btn-danger" onclick="bulkDeleteWorkspaceItems()">Удалить выбранные</button>
+          <button class="btn-mini" onclick="cleanupMissingWorkspaceItems()">Очистить отсутствующие</button>
+          <button class="btn-mini" onclick="cleanupSelectedMissingWorkspaceItems()">Очистить выбранные отсутствующие</button>
           <button class="btn-secondary stub-action" onclick="futureFeature('YouTube')">Добавить в очередь YouTube</button>
           <button class="btn-secondary stub-action" onclick="futureFeature('Субтитры')">Субтитры</button>
           <button class="btn-secondary stub-action" onclick="futureFeature('Уникализация')">Уникализация</button>

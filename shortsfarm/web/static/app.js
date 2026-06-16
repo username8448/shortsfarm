@@ -772,16 +772,17 @@ async function loadClips() {
 }
 function renderClipCounts(counts) {
   const total = counts.all ?? lastClips.length;
-  for (const key of ['all','draft','ready','queued','uploaded','failed']) {
+  for (const key of ['all','draft','ready','queued','uploaded','failed','missing']) {
     const el = document.getElementById('clip-cnt-' + key);
     if (el) el.textContent = key === 'all' ? total : (counts[key] || '');
   }
 }
 function workspaceCountsFromItems(items) {
-  const counts = {all: items.length, draft: 0, ready: 0, queued: 0, uploaded: 0, failed: 0};
+  const counts = {all: items.length, draft: 0, ready: 0, queued: 0, uploaded: 0, failed: 0, missing: 0};
   for (const item of items) {
     const status = item.workspace_status || 'draft';
     if (Object.prototype.hasOwnProperty.call(counts, status)) counts[status] += 1;
+    if (item.missing) counts.missing += 1;
   }
   return counts;
 }
@@ -793,6 +794,7 @@ function filterClips(tab, status) {
   renderWorkspaceDetail();
 }
 function getVisibleWorkspaceItems() {
+  if (workspaceFilter === 'missing') return lastClips.filter(item => item.missing);
   return workspaceFilter === 'all'
     ? lastClips
     : lastClips.filter(item => item.workspace_status === workspaceFilter);
@@ -819,6 +821,22 @@ function renderWorkspaceType(item) {
   const cls = item.item_type === 'clip' ? 'workspace-type clip' : 'workspace-type segment';
   return `<span class="${cls}">${esc(workspaceTypeLabel(item))}</span>`;
 }
+function missingBadge(item) {
+  return item?.missing ? '<span class="badge b-err">Файл отсутствует</span>' : '';
+}
+function workspaceOpenFileButton(item, label='Открыть') {
+  const path = item?.path || item?.source_path || '';
+  if (!path || item?.missing || !item?.file_exists) {
+    return `<button class="btn-mini" disabled title="${esc(item?.path_error || 'Файл отсутствует')}">${esc(label)}</button>`;
+  }
+  return `<button class="btn-mini" data-path="${esc(path)}" onclick="openVideoInMpv(this.dataset.path)">${esc(label)}</button>`;
+}
+function workspaceOpenFolderButton(item, label='Папка') {
+  if (!item?.folder_path || !item?.folder_exists) {
+    return `<button class="btn-mini" disabled title="${esc(item?.path_error || 'Папка отсутствует')}">${esc(label)}</button>`;
+  }
+  return `<button class="btn-mini" data-path="${esc(item.folder_path)}" onclick="goToOutputFolder(this.dataset.path)">${esc(label)}</button>`;
+}
 function toggleWorkspaceSelection(key, checked) {
   if (checked) selectedWorkspaceKeys.add(key);
   else selectedWorkspaceKeys.delete(key);
@@ -844,11 +862,14 @@ function renderClipsTable(rows) {
   }
   el.innerHTML = `<div class="workspace-selected-line mono dim" data-workspace-selected-count></div><table class="tbl workspace-table"><thead><tr><th></th><th>Файл</th><th>Источник</th><th>Длит.</th><th>Тип</th><th>Статус</th><th>Путь</th><th>Действие</th></tr></thead><tbody>${rows.map(item => {
     const selected = selectedWorkspaceKeys.has(item.id);
-    const active = currentWorkspaceItemKey === item.id ? ' class="workspace-row active"' : ' class="workspace-row"';
+    const activeClasses = ['workspace-row'];
+    if (currentWorkspaceItemKey === item.id) activeClasses.push('active');
+    if (item.missing) activeClasses.push('missing');
+    const active = ` class="${activeClasses.join(' ')}"`;
     const playablePath = item.path || item.source_path;
     const title = workspaceTitle(item);
     const renderInfo = item.render_status ? `<div class="mono dim">render: ${esc(ruStatus(item.render_status))}</div>` : '';
-    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${videoThumb(playablePath, title)}<div style="min-width:0;flex:1"><div class="mono txt ov" title="${esc(title)}">${esc(title)}</div><div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td>${badge(item.workspace_status)}</td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${mpvButton(playablePath, 'Открыть')}${outputFolderButton(item.folder_path)}</div></td></tr>`;
+    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${videoThumb(playablePath, title)}<div style="min-width:0;flex:1"><div class="mono txt ov" title="${esc(title)}">${esc(title)}</div><div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${missingBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
   }).join('')}</tbody></table>`;
   renderWorkspaceBulkState();
 }
@@ -879,11 +900,74 @@ async function bulkSetWorkspaceStatus(status) {
 function openSelectedWorkspaceFolder() {
   const key = Array.from(selectedWorkspaceKeys)[0] || currentWorkspaceItemKey;
   const item = workspaceItemByKey(key);
-  if (!item?.folder_path) {
-    showToast('Сначала выберите элемент с файлом', 'err');
+  if (!item?.folder_path || !item?.folder_exists) {
+    showToast(item?.path_error || 'Папка отсутствует', 'err');
     return;
   }
   goToOutputFolder(item.folder_path);
+}
+function workspaceDeleteSummary(summary) {
+  if (!summary) return 'Готово';
+  return `Удалено файлов: ${summary.deleted_files || 0} · уже отсутствовали: ${summary.already_missing || 0} · ошибок: ${summary.errors || 0}`;
+}
+async function refreshWorkspaceFromDeleteResponse(data) {
+  lastClips = data.items || [];
+  selectedWorkspaceKeys = new Set(Array.from(selectedWorkspaceKeys).filter(key => workspaceItemByKey(key)));
+  if (currentWorkspaceItemKey && !workspaceItemByKey(currentWorkspaceItemKey)) currentWorkspaceItemKey = null;
+  renderClipCounts(data.counts || workspaceCountsFromItems(lastClips));
+  renderClipsTable(getVisibleWorkspaceItems());
+  renderWorkspaceDetail();
+}
+async function deleteWorkspaceItem(key) {
+  const item = workspaceItemByKey(key || currentWorkspaceItemKey);
+  if (!item) return;
+  if (item.file_exists) {
+    const ok = confirm('Удалить файл с диска? Это действие нельзя отменить.');
+    if (!ok) return;
+  }
+  try {
+    const data = await api.del(`/api/workspace/clips/${encodeURIComponent(item.id)}`);
+    await refreshWorkspaceFromDeleteResponse(data);
+    showToast(item.file_exists ? 'Файл удалён' : 'Запись убрана из списка');
+  } catch (err) {
+    showToast(err.message || 'Не удалось удалить элемент', 'err');
+  }
+}
+async function bulkDeleteWorkspaceItems(items = null) {
+  const selected = items || Array.from(selectedWorkspaceKeys);
+  if (!selected.length) {
+    showToast('Сначала выберите сегменты или клипы', 'err');
+    return;
+  }
+  const hasExistingFiles = selected
+    .map(key => workspaceItemByKey(key))
+    .some(item => item?.file_exists);
+  if (hasExistingFiles && !confirm('Удалить выбранные файлы с диска? Это действие нельзя отменить.')) return;
+  try {
+    const data = await api.post('/api/workspace/clips/bulk-delete', {items: selected});
+    await refreshWorkspaceFromDeleteResponse(data);
+    showToast(workspaceDeleteSummary(data.summary));
+  } catch (err) {
+    showToast(err.message || 'Не удалось удалить выбранные элементы', 'err');
+  }
+}
+async function cleanupMissingWorkspaceItems() {
+  try {
+    const data = await api.post('/api/workspace/clips/cleanup-missing', {});
+    await refreshWorkspaceFromDeleteResponse(data);
+    const hidden = data.summary?.hidden || 0;
+    showToast(`Очищено отсутствующих: ${hidden}`);
+  } catch (err) {
+    showToast(err.message || 'Не удалось очистить отсутствующие', 'err');
+  }
+}
+async function cleanupSelectedMissingWorkspaceItems() {
+  const missing = Array.from(selectedWorkspaceKeys).filter(key => workspaceItemByKey(key)?.missing);
+  if (!missing.length) {
+    showToast('Среди выбранных нет отсутствующих файлов', 'err');
+    return;
+  }
+  await bulkDeleteWorkspaceItems(missing);
 }
 function futureFeature(name) {
   // Future hook: connect YouTube queue, subtitle generation, and uniqueness filters here.
@@ -899,14 +983,21 @@ function renderWorkspaceDetail() {
   }
   const playablePath = item.path || item.source_path;
   const title = workspaceTitle(item);
+  const missingNotice = item.missing
+    ? `<div class="missing-panel">${badge('failed')}<div><b>Файл был удалён или перенесён.</b><p>${esc(item.path_error || 'Можно убрать запись из рабочего пространства.')}</p></div></div>`
+    : '';
+  const fileAction = item.missing
+    ? `<button class="btn-danger" onclick="deleteWorkspaceItem('${esc(item.id)}')">Убрать из списка</button>`
+    : `<button class="btn-danger" onclick="deleteWorkspaceItem('${esc(item.id)}')">Удалить файл</button>`;
   el.innerHTML = `<div class="workspace-detail-body">
     <div class="workspace-preview">${videoThumb(playablePath, title)}</div>
     <div class="workspace-detail-head">
       <div>
         <div class="workspace-detail-title">${esc(title)}</div>
-        <div class="mono dim">${renderWorkspaceType(item)} · #${esc(item.item_id)} · ${badge(item.workspace_status)}</div>
+        <div class="mono dim detail-badges">${renderWorkspaceType(item)} · #${esc(item.item_id)} · ${badge(item.workspace_status)} ${missingBadge(item)}</div>
       </div>
     </div>
+    ${missingNotice}
     <div class="workspace-meta">
       <div><span>Источник</span><b>${esc(item.video_title || '—')}</b></div>
       <div><span>Длительность</span><b>${esc(formatDurationSec(item.duration_sec))}</b></div>
@@ -919,9 +1010,10 @@ function renderWorkspaceDetail() {
     <div class="field"><label class="field-lbl">Теги</label><input id="workspace-tags" type="text" value="${esc(item.tags || '')}" placeholder="через запятую"></div>
     <div class="workspace-detail-actions">
       <button class="btn-primary" onclick="saveWorkspaceDetail()">Сохранить</button>
-      <button class="btn-mini" data-path="${esc(playablePath)}" onclick="openVideoInMpv(this.dataset.path)">Открыть файл</button>
-      <button class="btn-mini" data-path="${esc(item.folder_path || '')}" onclick="goToOutputFolder(this.dataset.path)">Открыть папку</button>
+      ${workspaceOpenFileButton(item, 'Открыть файл')}
+      ${workspaceOpenFolderButton(item, 'Открыть папку')}
       <button class="btn-secondary" onclick="setCurrentWorkspaceStatus('ready')">Готово к загрузке</button>
+      ${fileAction}
       <button class="btn-secondary stub-action" onclick="futureFeature('Загрузка в YouTube')">Загрузить в YouTube</button>
       <button class="btn-secondary stub-action" onclick="futureFeature('Субтитры')">Добавить субтитры</button>
       <button class="btn-secondary stub-action" onclick="futureFeature('Уникализация')">Уникализировать</button>
