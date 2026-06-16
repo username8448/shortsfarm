@@ -131,9 +131,30 @@
           <button class="btn-danger" onclick="bulkDeleteWorkspaceItems()">Удалить выбранные</button>
           <button class="btn-mini" onclick="cleanupMissingWorkspaceItems()">Очистить отсутствующие</button>
           <button class="btn-mini" onclick="cleanupSelectedMissingWorkspaceItems()">Очистить выбранные отсутствующие</button>
-          <button class="btn-secondary stub-action" onclick="futureFeature('YouTube')">Добавить в очередь YouTube</button>
           <button class="btn-secondary stub-action" onclick="futureFeature('Субтитры')">Субтитры</button>
           <button class="btn-secondary stub-action" onclick="futureFeature('Уникализация')">Уникализация</button>
+        </div>
+        <div class="workspace-youtube-panel">
+          <div class="field mini-field">
+            <label class="field-lbl">YouTube аккаунт</label>
+            <select id="workspace-youtube-account" onchange="onWorkspaceYoutubeAccountChange(this.value)"></select>
+          </div>
+          <div class="field mini-field">
+            <label class="field-lbl">Видимость</label>
+            <select id="workspace-youtube-mode">
+              <option value="private">private · приватно</option>
+              <option value="unlisted">unlisted · по ссылке</option>
+              <option value="public">public · публично</option>
+            </select>
+          </div>
+          <div class="field mini-field short">
+            <label class="field-lbl">Category ID</label>
+            <input id="workspace-youtube-category" type="text" value="22">
+          </div>
+          <label class="toggle-label workspace-youtube-toggle"><input id="workspace-youtube-made-for-kids" type="checkbox"> Made for kids</label>
+          <button class="btn-secondary" id="workspace-youtube-enqueue-btn" onclick="enqueueSelectedWorkspaceToYouTube(false)">Добавить выбранные в очередь YouTube</button>
+          <button class="btn-primary" id="workspace-youtube-upload-btn" onclick="enqueueSelectedWorkspaceToYouTube(true)">Загрузить выбранные сейчас</button>
+          <div id="workspace-youtube-state" class="mono dim workspace-youtube-state"></div>
         </div>
         <div class="row-actions">
           <button class="btn-danger" onclick="retryFailedClips()"><i class="ti ti-refresh" style="font-size:12px;vertical-align:-1px"></i> Повторить ошибки</button>

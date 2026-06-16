@@ -214,6 +214,31 @@ def test_workspace_derives_clip_status_from_render_state(video_in_db, tmp_path):
     assert item["render_status"] == "done"
 
 
+def test_publish_clip_from_segment_is_reused_and_hidden_from_workspace(video_in_db, tmp_path):
+    from shortsfarm import db
+    job_id = db.create_job(video_in_db, "fast", 60)
+    db.mark_job_done(job_id)
+    segment_path = tmp_path / "segment.mp4"
+    segment_path.write_bytes(b"segment")
+    segment_id = db.insert_segment(video_in_db, job_id, 1, 0.0, 20.0, segment_path)
+
+    first_clip_id = db.get_or_create_publish_clip_from_segment(segment_id)
+    second_clip_id = db.get_or_create_publish_clip_from_segment(segment_id)
+
+    assert second_clip_id == first_clip_id
+    clip = db.get_clip(first_clip_id)
+    assert clip["status"] == "done"
+    assert clip["cut_mode"] == "segment"
+    assert clip["output_path"] == str(segment_path)
+    assert int(clip["source_segment_id"]) == segment_id
+
+    items = db.list_workspace_items()
+    ids = {item["id"] for item in items}
+    segment_item = next(item for item in items if item["id"] == f"segment:{segment_id}")
+    assert f"clip:{first_clip_id}" not in ids
+    assert segment_item["publish_clip_id"] == first_clip_id
+
+
 # ---------------------------------------------------------------------------
 # social_accounts / OAuth state
 # ---------------------------------------------------------------------------

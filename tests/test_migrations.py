@@ -123,6 +123,21 @@ def test_clip_workspace_metadata_table(tmp_data_dir):
     assert "idx_clip_workspace_metadata_hidden" in indexes
 
 
+def test_clips_source_segment_id_column_exists(tmp_data_dir):
+    from shortsfarm import db
+    with db.connect() as con:
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(clips)").fetchall()
+        }
+        indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(clips)").fetchall()
+        }
+    assert "source_segment_id" in columns
+    assert "idx_clips_source_segment_id" in indexes
+
+
 def test_idempotent(tmp_data_dir):
     """Running migrations many times must not raise."""
     from shortsfarm.migrations import run_migrations

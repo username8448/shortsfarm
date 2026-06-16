@@ -58,6 +58,7 @@ from .schemas import (
     WorkspaceBulkDeleteRequest,
     WorkspaceBulkStatusRequest,
     WorkspaceItemUpdateRequest,
+    WorkspaceYouTubeEnqueueRequest,
     YouTubeClientJsonImportRequest,
     YouTubeConnectStartRequest,
     YouTubeOAuthProfileCreateRequest,
@@ -681,6 +682,50 @@ def _create_publish_job_from_request(clip_id: int, req: YouTubeUploadRequest) ->
         made_for_kids=req.made_for_kids,
         platform="youtube",
     )
+
+
+def _workspace_publish_title(item: dict[str, Any]) -> str:
+    title = _normalize_setting_text(item.get("title"))
+    if title:
+        return title
+    file_name = _normalize_setting_text(item.get("file_name"))
+    if file_name:
+        return Path(file_name).stem or file_name
+    item_id = item.get("item_id") or item.get("id") or ""
+    return f"ShortsFarm clip {item_id}".strip()
+
+
+def _workspace_create_publish_job(
+    *,
+    item: dict[str, Any],
+    clip_id: int,
+    req: WorkspaceYouTubeEnqueueRequest,
+) -> int:
+    title = _workspace_publish_title(item)
+    validated = validate_publish_options(
+        title=title,
+        publish_mode=req.publish_mode,
+        publish_at=None,
+        category_id=req.category_id,
+    )
+    tags = parse_tags(item.get("tags") or "")
+    return db.create_publish_job(
+        account_id=req.account_id,
+        clip_id=clip_id,
+        title=title,
+        description=item.get("description") or "",
+        tags=json.dumps(tags, ensure_ascii=False),
+        category_id=req.category_id,
+        privacy_status=str(validated["privacy_status"]),
+        publish_mode=req.publish_mode,
+        publish_at=validated["publish_at"],
+        made_for_kids=req.made_for_kids,
+        platform="youtube",
+    )
+
+
+def _workspace_youtube_skip(item_key: str, reason: str) -> dict[str, str]:
+    return {"item_key": item_key, "reason": reason}
 
 
 def _save_youtube_settings(
@@ -1615,6 +1660,82 @@ def workspace_clips_bulk_status(req: WorkspaceBulkStatusRequest) -> dict[str, An
             "items": items,
             "counts": _workspace_counts(items),
         }
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/workspace/clips/youtube/enqueue")
+def workspace_clips_youtube_enqueue(req: WorkspaceYouTubeEnqueueRequest) -> dict[str, Any]:
+    try:
+        _init()
+        if not req.item_keys:
+            raise ValueError("Выберите элементы рабочего пространства.")
+        account = db.get_social_account(req.account_id)
+        if account is None or _row(account, "platform") != "youtube":
+            raise FileNotFoundError("YouTube аккаунт не найден.")
+        if _row(account, "status", "active") != "active":
+            raise ValueError("YouTube аккаунт не активен.")
+
+        items: list[dict[str, Any]] = []
+        skipped_items: list[dict[str, str]] = []
+        jobs: list[dict[str, Any]] = []
+        errors = 0
+        seen: set[str] = set()
+
+        for item_key in req.item_keys:
+            if item_key in seen:
+                continue
+            seen.add(item_key)
+            try:
+                item_type, item_id = _parse_workspace_key(item_key)
+                item = db.get_workspace_item(item_type, item_id)
+                if item is None:
+                    skipped_items.append(_workspace_youtube_skip(item_key, "Элемент не найден"))
+                    continue
+                if item.get("missing") or not item.get("file_exists"):
+                    skipped_items.append(_workspace_youtube_skip(item_key, "Файл отсутствует"))
+                    continue
+                if str(item.get("workspace_status") or "draft") != "ready":
+                    skipped_items.append(_workspace_youtube_skip(item_key, "В очередь добавляются только элементы со статусом Готово"))
+                    continue
+
+                if item_type == "segment":
+                    clip_id = db.get_or_create_publish_clip_from_segment(item_id)
+                else:
+                    clip_id = item_id
+
+                job_id = _workspace_create_publish_job(item=item, clip_id=clip_id, req=req)
+                job = db.get_publish_job(job_id)
+                if job is None:
+                    raise FileNotFoundError(f"Publish job {job_id} не найден")
+                validate_publish_job(job)
+                job_payload = _publish_job_dict(job)
+                workspace_status = "uploaded" if job_payload["status"] == "done" else "queued"
+                db.update_workspace_item(item_type, item_id, workspace_status=workspace_status)
+                items.append({
+                    "item_key": item["id"],
+                    "status": workspace_status,
+                    "job_id": job_id,
+                    "clip_id": clip_id,
+                })
+                jobs.append(job_payload)
+            except Exception as exc:
+                errors += 1
+                skipped_items.append(_workspace_youtube_skip(item_key, str(exc) or exc.__class__.__name__))
+
+        workspace_items = db.list_workspace_items(limit=1000)
+        return {
+            "status": "ok",
+            "created": sum(1 for item in items if item["status"] == "queued"),
+            "skipped": len(skipped_items),
+            "errors": errors,
+            "jobs": jobs,
+            "items": items,
+            "skipped_items": skipped_items,
+            "workspace": _workspace_items_response(workspace_items),
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
     except Exception as exc:
         raise _fail(exc)
 

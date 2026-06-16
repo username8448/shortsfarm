@@ -40,6 +40,14 @@ class WorkspaceBulkDeleteRequest(BaseModel):
     items: list[str] = Field(default_factory=list)
 
 
+class WorkspaceYouTubeEnqueueRequest(BaseModel):
+    item_keys: list[str] = Field(default_factory=list)
+    account_id: int
+    publish_mode: str = "private"
+    category_id: str = "22"
+    made_for_kids: bool = False
+
+
 class YouTubeSettingsRequest(BaseModel):
     client_id: str = ""
     client_secret: str = ""

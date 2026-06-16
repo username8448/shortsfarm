@@ -521,6 +521,54 @@ def get_clip(clip_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
+def get_or_create_publish_clip_from_segment(segment_id: int) -> int:
+    segment_id = int(segment_id)
+    now = now_utc()
+    with connect() as con:
+        segment = con.execute(
+            "SELECT * FROM segments WHERE id=?",
+            (segment_id,),
+        ).fetchone()
+        if segment is None:
+            raise FileNotFoundError("Сегмент не найден.")
+
+        output_path = str(segment["path"] or "")
+        if not output_path:
+            raise ValueError("У сегмента не задан путь к файлу.")
+        candidate = Path(output_path).expanduser()
+        if not candidate.exists() or not candidate.is_file():
+            raise FileNotFoundError(f"Файл сегмента не найден: {candidate}")
+
+        existing = con.execute(
+            "SELECT id FROM clips WHERE source_segment_id=?",
+            (segment_id,),
+        ).fetchone()
+        if existing is not None:
+            clip_id = int(existing["id"])
+            con.execute(
+                """
+                UPDATE clips
+                SET video_id=?, mark_id=NULL, status='done', cut_mode='segment',
+                    output_path=?, temp_path=NULL, error=NULL,
+                    rendered_at=COALESCE(rendered_at, ?)
+                WHERE id=?
+                """,
+                (int(segment["video_id"]), output_path, now, clip_id),
+            )
+            return clip_id
+
+        cur = con.execute(
+            """
+            INSERT INTO clips
+                (video_id, mark_id, status, cut_mode, output_path, temp_path,
+                 error, created_at, started_at, rendered_at, source_segment_id)
+            VALUES (?, NULL, 'done', 'segment', ?, NULL, NULL, ?, NULL, ?, ?)
+            """,
+            (int(segment["video_id"]), output_path, now, now, segment_id),
+        )
+        return int(cur.lastrowid)
+
+
 def list_clips(
     status: str | None = None,
     video_id: int | None = None,
@@ -662,7 +710,7 @@ def _workspace_path_state(path: str) -> dict[str, Any]:
 def _workspace_uploaded_clip_ids(con: sqlite3.Connection) -> set[int]:
     rows = con.execute(
         """
-        SELECT DISTINCT clip_id
+           SELECT DISTINCT clip_id
         FROM publish_jobs
         WHERE status='done'
           AND (youtube_video_id IS NOT NULL OR youtube_url IS NOT NULL)
@@ -705,6 +753,8 @@ def _workspace_item_dict(
     updated_at: str | None,
     segment_id: int | None = None,
     clip_id: int | None = None,
+    publish_clip_id: int | None = None,
+    publish_job_id: int | None = None,
     mark_id: int | None = None,
     cut_mode: str | None = None,
     render_status: str | None = None,
@@ -720,6 +770,8 @@ def _workspace_item_dict(
         "item_id": item_id,
         "segment_id": segment_id,
         "clip_id": clip_id,
+        "publish_clip_id": publish_clip_id,
+        "publish_job_id": publish_job_id,
         "video_id": video_id,
         "video_title": video_title,
         "source_path": source_path,
@@ -765,6 +817,14 @@ def list_workspace_items(
                 s.*,
                 v.title AS video_title,
                 v.source_path AS source_path,
+                pc.id AS publish_clip_id,
+                (
+                    SELECT pj.id
+                    FROM publish_jobs pj
+                    WHERE pj.clip_id=pc.id
+                    ORDER BY pj.id DESC
+                    LIMIT 1
+                ) AS publish_job_id,
                 wm.workspace_status,
                 wm.title AS workspace_title,
                 wm.description AS workspace_description,
@@ -775,6 +835,7 @@ def list_workspace_items(
                 wm.missing_confirmed_at AS workspace_missing_confirmed_at
             FROM segments s
             JOIN videos v ON v.id = s.video_id
+            LEFT JOIN clips pc ON pc.source_segment_id=s.id
             LEFT JOIN clip_workspace_metadata wm
               ON wm.item_type='segment' AND wm.item_id=s.id
             {hidden_clause}
@@ -790,6 +851,8 @@ def list_workspace_items(
                     item_id=int(row["id"]),
                     segment_id=int(row["id"]),
                     clip_id=None,
+                    publish_clip_id=row["publish_clip_id"],
+                    publish_job_id=row["publish_job_id"],
                     video_id=int(row["video_id"]),
                     video_title=str(row["video_title"] or ""),
                     source_path=str(row["source_path"] or ""),
@@ -829,6 +892,7 @@ def list_workspace_items(
             LEFT JOIN clip_workspace_metadata wm
               ON wm.item_type='clip' AND wm.item_id=c.id
             {hidden_clause}
+            {"AND" if hidden_clause else "WHERE"} c.source_segment_id IS NULL
             ORDER BY c.id DESC
             """
         ).fetchall()
@@ -844,6 +908,7 @@ def list_workspace_items(
                     item_id=int(row["id"]),
                     segment_id=None,
                     clip_id=int(row["id"]),
+                    publish_clip_id=int(row["id"]),
                     video_id=int(row["video_id"]),
                     video_title=str(row["video_title"] or ""),
                     source_path=str(row["source_path"] or ""),
@@ -985,6 +1050,39 @@ def cleanup_missing_workspace_items() -> int:
         if hide_workspace_item(item["item_type"], int(item["item_id"]), missing_confirmed=True):
             hidden += 1
     return hidden
+
+
+def _workspace_identity_for_publish_clip(con: sqlite3.Connection, clip_id: int) -> tuple[str, int] | None:
+    row = con.execute(
+        "SELECT id, source_segment_id FROM clips WHERE id=?",
+        (clip_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    source_segment_id = row["source_segment_id"]
+    if source_segment_id is not None:
+        return "segment", int(source_segment_id)
+    return "clip", int(row["id"])
+
+
+def _upsert_workspace_status(
+    con: sqlite3.Connection,
+    item_type: str,
+    item_id: int,
+    workspace_status: str,
+    now: str,
+) -> None:
+    con.execute(
+        """
+        INSERT INTO clip_workspace_metadata
+            (item_type, item_id, workspace_status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(item_type, item_id) DO UPDATE SET
+            workspace_status=excluded.workspace_status,
+            updated_at=excluded.updated_at
+        """,
+        (item_type, item_id, workspace_status, now, now),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1492,6 +1590,7 @@ _PUBLISH_JOB_SELECT = """
            c.output_path AS clip_output_path,
            c.cut_mode AS clip_cut_mode,
            c.error AS clip_error,
+           c.source_segment_id AS clip_source_segment_id,
            v.title AS video_title,
            v.source_path AS video_source_path
     FROM publish_jobs pj
@@ -1749,6 +1848,11 @@ def mark_publish_done(job_id: int, youtube_video_id: str, youtube_url: str) -> N
             """,
             (youtube_video_id, youtube_url, now, now, job_id),
         )
+        job = con.execute("SELECT clip_id FROM publish_jobs WHERE id=?", (job_id,)).fetchone()
+        if job is not None:
+            identity = _workspace_identity_for_publish_clip(con, int(job["clip_id"]))
+            if identity is not None:
+                _upsert_workspace_status(con, identity[0], identity[1], "uploaded", now)
 
 
 def mark_publish_failed(
@@ -1773,6 +1877,11 @@ def mark_publish_failed(
                 job_id,
             ),
         )
+        job = con.execute("SELECT clip_id FROM publish_jobs WHERE id=?", (job_id,)).fetchone()
+        if job is not None:
+            identity = _workspace_identity_for_publish_clip(con, int(job["clip_id"]))
+            if identity is not None:
+                _upsert_workspace_status(con, identity[0], identity[1], "failed", now)
 
 
 def retry_publish_job(job_id: int) -> bool:
