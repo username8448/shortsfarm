@@ -55,6 +55,8 @@ from .schemas import (
     RenderRequest,
     RetryFailedRequest,
     SplitRequest,
+    WorkspaceBulkStatusRequest,
+    WorkspaceItemUpdateRequest,
     YouTubeClientJsonImportRequest,
     YouTubeConnectStartRequest,
     YouTubeOAuthProfileCreateRequest,
@@ -221,6 +223,33 @@ def _clip_dict(row: Any) -> dict[str, Any]:
         "temp_path": _row(row, "temp_path", "") or "",
         "error": _row(row, "error", "") or "",
     }
+
+
+def _parse_workspace_key(value: str) -> tuple[str, int]:
+    text = str(value or "").strip()
+    if ":" not in text:
+        raise ValueError("Workspace item id должен быть в формате segment:1 или clip:1.")
+    item_type, raw_id = text.split(":", 1)
+    item_type = item_type.strip().lower()
+    if item_type not in {"segment", "clip"}:
+        raise ValueError("Workspace item type должен быть segment или clip.")
+    try:
+        item_id = int(raw_id)
+    except ValueError as exc:
+        raise ValueError("Workspace item id должен содержать числовой id.") from exc
+    if item_id <= 0:
+        raise ValueError("Workspace item id должен быть положительным.")
+    return item_type, item_id
+
+
+def _workspace_counts(items: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {key: 0 for key in ("draft", "ready", "queued", "uploaded", "failed")}
+    for item in items:
+        status = str(item.get("workspace_status") or "draft")
+        if status in counts:
+            counts[status] += 1
+    counts["all"] = len(items)
+    return counts
 
 
 def _social_account_dict(row: Any) -> dict[str, Any]:
@@ -1337,6 +1366,78 @@ def clips(status: str | None = None, limit: int = 500) -> dict[str, Any]:
         rows = [_clip_dict(row) for row in db.list_clips(status=status if status != "all" else None, limit=limit)]
         all_counts = db.count_clips_by_status()
         return {"clips": rows, "counts": all_counts}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/workspace/clips")
+def workspace_clips(status: str | None = None, limit: int = 1000) -> dict[str, Any]:
+    try:
+        _init()
+        all_items = db.list_workspace_items(limit=limit)
+        if status and status != "all":
+            items = [item for item in all_items if item["workspace_status"] == status]
+        else:
+            items = all_items
+        return {
+            "items": items,
+            "counts": _workspace_counts(all_items),
+        }
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/workspace/clips/{item_key}")
+def workspace_clip_detail(item_key: str) -> dict[str, Any]:
+    try:
+        _init()
+        item_type, item_id = _parse_workspace_key(item_key)
+        item = db.get_workspace_item(item_type, item_id)
+        if item is None:
+            raise FileNotFoundError("Элемент рабочего пространства не найден.")
+        return {"item": item}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.patch("/workspace/clips/{item_key}")
+def workspace_clip_update(item_key: str, req: WorkspaceItemUpdateRequest) -> dict[str, Any]:
+    try:
+        _init()
+        item_type, item_id = _parse_workspace_key(item_key)
+        ok = db.update_workspace_item(
+            item_type,
+            item_id,
+            workspace_status=req.workspace_status,
+            title=req.title,
+            description=req.description,
+            tags=req.tags,
+        )
+        if not ok:
+            raise FileNotFoundError("Элемент рабочего пространства не найден.")
+        item = db.get_workspace_item(item_type, item_id)
+        return {"item": item}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/workspace/clips/bulk-status")
+def workspace_clips_bulk_status(req: WorkspaceBulkStatusRequest) -> dict[str, Any]:
+    try:
+        _init()
+        parsed = [_parse_workspace_key(item) for item in req.items]
+        updated = db.bulk_update_workspace_status(parsed, req.workspace_status)
+        items = db.list_workspace_items(limit=1000)
+        return {
+            "status": "ok",
+            "updated": updated,
+            "items": items,
+            "counts": _workspace_counts(items),
+        }
     except Exception as exc:
         raise _fail(exc)
 

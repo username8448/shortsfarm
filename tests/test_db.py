@@ -159,6 +159,61 @@ def test_reset_clip_to_queued(video_in_db):
     assert row["error"] is None
 
 
+def test_workspace_lists_segments_without_clips(video_in_db, tmp_path):
+    from shortsfarm import db
+    job_id = db.create_job(video_in_db, "fast", 60)
+    db.mark_job_done(job_id)
+    segment_path = tmp_path / "segment-001.mp4"
+    segment_path.write_bytes(b"segment")
+    segment_id = db.insert_segment(video_in_db, job_id, 1, 0.0, 12.5, segment_path)
+
+    items = db.list_workspace_items()
+
+    item = next(row for row in items if row["id"] == f"segment:{segment_id}")
+    assert item["item_type"] == "segment"
+    assert item["workspace_status"] == "draft"
+    assert item["path"] == str(segment_path)
+    assert item["duration_sec"] == pytest.approx(12.5)
+
+
+def test_workspace_updates_metadata_and_filters(video_in_db, tmp_path):
+    from shortsfarm import db
+    job_id = db.create_job(video_in_db, "fast", 60)
+    db.mark_job_done(job_id)
+    segment_id = db.insert_segment(video_in_db, job_id, 1, 0.0, 20.0, tmp_path / "seg.mp4")
+
+    assert db.update_workspace_item(
+        "segment",
+        segment_id,
+        workspace_status="ready",
+        title="Short title",
+        description="Local description",
+        tags="one, two",
+    )
+
+    item = db.get_workspace_item("segment", segment_id)
+    assert item is not None
+    assert item["workspace_status"] == "ready"
+    assert item["title"] == "Short title"
+    assert item["description"] == "Local description"
+    assert item["tags"] == "one, two"
+    assert [row["id"] for row in db.list_workspace_items(status="ready")] == [f"segment:{segment_id}"]
+
+
+def test_workspace_derives_clip_status_from_render_state(video_in_db, tmp_path):
+    from shortsfarm import db
+    mid = db.insert_mark(video_in_db, None, 0.0, 10.0)
+    clip_id = db.insert_clip(video_in_db, mid)
+    db.set_clip_done(clip_id, str(tmp_path / "clip.mp4"))
+
+    item = db.get_workspace_item("clip", clip_id)
+
+    assert item is not None
+    assert item["item_type"] == "clip"
+    assert item["workspace_status"] == "ready"
+    assert item["render_status"] == "done"
+
+
 # ---------------------------------------------------------------------------
 # social_accounts / OAuth state
 # ---------------------------------------------------------------------------

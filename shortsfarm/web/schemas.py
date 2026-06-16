@@ -24,6 +24,18 @@ class OpenMpvRequest(BaseModel):
     path: str
 
 
+class WorkspaceItemUpdateRequest(BaseModel):
+    workspace_status: str | None = None
+    title: str | None = None
+    description: str | None = None
+    tags: str | None = None
+
+
+class WorkspaceBulkStatusRequest(BaseModel):
+    items: list[str] = Field(default_factory=list)
+    workspace_status: str
+
+
 class YouTubeSettingsRequest(BaseModel):
     client_id: str = ""
     client_secret: str = ""

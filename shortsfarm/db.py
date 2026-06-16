@@ -581,6 +581,313 @@ def count_clips_by_status(video_id: int | None = None) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# clip workspace metadata
+# ---------------------------------------------------------------------------
+
+WORKSPACE_ITEM_TYPES = {"segment", "clip"}
+WORKSPACE_STATUSES = {"draft", "ready", "queued", "uploaded", "failed"}
+
+
+def _normalize_workspace_item_type(value: str) -> str:
+    item_type = str(value or "").strip().lower()
+    if item_type not in WORKSPACE_ITEM_TYPES:
+        raise ValueError("Workspace item type must be 'segment' or 'clip'.")
+    return item_type
+
+
+def _normalize_workspace_status(value: str) -> str:
+    status = str(value or "").strip().lower()
+    if status not in WORKSPACE_STATUSES:
+        raise ValueError("Workspace status must be one of: draft, ready, queued, uploaded, failed.")
+    return status
+
+
+def _workspace_item_exists(con: sqlite3.Connection, item_type: str, item_id: int) -> bool:
+    table = "segments" if item_type == "segment" else "clips"
+    row = con.execute(f"SELECT id FROM {table} WHERE id=?", (item_id,)).fetchone()
+    return row is not None
+
+
+def _workspace_metadata_row(
+    con: sqlite3.Connection,
+    item_type: str,
+    item_id: int,
+) -> sqlite3.Row | None:
+    return con.execute(
+        """
+        SELECT *
+        FROM clip_workspace_metadata
+        WHERE item_type=? AND item_id=?
+        """,
+        (item_type, item_id),
+    ).fetchone()
+
+
+def _workspace_uploaded_clip_ids(con: sqlite3.Connection) -> set[int]:
+    rows = con.execute(
+        """
+        SELECT DISTINCT clip_id
+        FROM publish_jobs
+        WHERE status='done'
+          AND (youtube_video_id IS NOT NULL OR youtube_url IS NOT NULL)
+        """
+    ).fetchall()
+    return {int(row["clip_id"]) for row in rows}
+
+
+def _derive_clip_workspace_status(row: sqlite3.Row, uploaded_clip_ids: set[int]) -> str:
+    metadata_status = row["workspace_status"]
+    if metadata_status:
+        return str(metadata_status)
+    clip_id = int(row["id"])
+    if clip_id in uploaded_clip_ids:
+        return "uploaded"
+    clip_status = str(row["status"] or "")
+    if clip_status == "done":
+        return "ready"
+    if clip_status in {"queued", "rendering"}:
+        return "queued"
+    if clip_status == "failed":
+        return "failed"
+    return "draft"
+
+
+def _workspace_item_dict(
+    *,
+    item_type: str,
+    item_id: int,
+    video_id: int,
+    video_title: str,
+    source_path: str,
+    path: str,
+    duration_sec: float | None,
+    workspace_status: str,
+    title: str | None,
+    description: str | None,
+    tags: str | None,
+    created_at: str | None,
+    updated_at: str | None,
+    segment_id: int | None = None,
+    clip_id: int | None = None,
+    mark_id: int | None = None,
+    cut_mode: str | None = None,
+    render_status: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    item_path = Path(path) if path else None
+    return {
+        "id": f"{item_type}:{item_id}",
+        "item_type": item_type,
+        "item_id": item_id,
+        "segment_id": segment_id,
+        "clip_id": clip_id,
+        "video_id": video_id,
+        "video_title": video_title,
+        "source_path": source_path,
+        "path": path,
+        "folder_path": str(item_path.parent) if item_path else "",
+        "file_name": item_path.name if item_path else "",
+        "duration_sec": duration_sec,
+        "workspace_status": workspace_status,
+        "title": title or "",
+        "description": description or "",
+        "tags": tags or "",
+        "mark_id": mark_id,
+        "cut_mode": cut_mode or "",
+        "render_status": render_status or "",
+        "error": error or "",
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+
+
+def list_workspace_items(
+    status: str | None = None,
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
+    normalized_status = None if status in (None, "", "all") else _normalize_workspace_status(status)
+    uploaded_clip_ids: set[int]
+    items: list[dict[str, Any]] = []
+
+    with connect() as con:
+        uploaded_clip_ids = _workspace_uploaded_clip_ids(con)
+
+        segment_rows = con.execute(
+            """
+            SELECT
+                s.*,
+                v.title AS video_title,
+                v.source_path AS source_path,
+                wm.workspace_status,
+                wm.title AS workspace_title,
+                wm.description AS workspace_description,
+                wm.tags AS workspace_tags,
+                wm.created_at AS workspace_created_at,
+                wm.updated_at AS workspace_updated_at
+            FROM segments s
+            JOIN videos v ON v.id = s.video_id
+            LEFT JOIN clip_workspace_metadata wm
+              ON wm.item_type='segment' AND wm.item_id=s.id
+            ORDER BY s.id DESC
+            """
+        ).fetchall()
+
+        for row in segment_rows:
+            item_status = str(row["workspace_status"] or "draft")
+            items.append(
+                _workspace_item_dict(
+                    item_type="segment",
+                    item_id=int(row["id"]),
+                    segment_id=int(row["id"]),
+                    clip_id=None,
+                    video_id=int(row["video_id"]),
+                    video_title=str(row["video_title"] or ""),
+                    source_path=str(row["source_path"] or ""),
+                    path=str(row["path"] or ""),
+                    duration_sec=float(row["end_sec"] - row["start_sec"]),
+                    workspace_status=item_status,
+                    title=row["workspace_title"],
+                    description=row["workspace_description"],
+                    tags=row["workspace_tags"],
+                    created_at=row["created_at"],
+                    updated_at=row["workspace_updated_at"] or row["workspace_created_at"],
+                    render_status=None,
+                )
+            )
+
+        clip_rows = con.execute(
+            """
+            SELECT
+                c.*,
+                v.title AS video_title,
+                v.source_path AS source_path,
+                m.in_sec AS mark_in_sec,
+                m.out_sec AS mark_out_sec,
+                wm.workspace_status,
+                wm.title AS workspace_title,
+                wm.description AS workspace_description,
+                wm.tags AS workspace_tags,
+                wm.created_at AS workspace_created_at,
+                wm.updated_at AS workspace_updated_at
+            FROM clips c
+            JOIN videos v ON v.id = c.video_id
+            LEFT JOIN marks m ON m.id = c.mark_id
+            LEFT JOIN clip_workspace_metadata wm
+              ON wm.item_type='clip' AND wm.item_id=c.id
+            ORDER BY c.id DESC
+            """
+        ).fetchall()
+
+        for row in clip_rows:
+            duration_sec = None
+            if row["mark_in_sec"] is not None and row["mark_out_sec"] is not None:
+                duration_sec = float(row["mark_out_sec"] - row["mark_in_sec"])
+            item_path = row["output_path"] or row["temp_path"] or row["source_path"] or ""
+            items.append(
+                _workspace_item_dict(
+                    item_type="clip",
+                    item_id=int(row["id"]),
+                    segment_id=None,
+                    clip_id=int(row["id"]),
+                    video_id=int(row["video_id"]),
+                    video_title=str(row["video_title"] or ""),
+                    source_path=str(row["source_path"] or ""),
+                    path=str(item_path),
+                    duration_sec=duration_sec,
+                    workspace_status=_derive_clip_workspace_status(row, uploaded_clip_ids),
+                    title=row["workspace_title"],
+                    description=row["workspace_description"],
+                    tags=row["workspace_tags"],
+                    created_at=row["created_at"],
+                    updated_at=row["workspace_updated_at"] or row["workspace_created_at"],
+                    mark_id=row["mark_id"],
+                    cut_mode=row["cut_mode"],
+                    render_status=row["status"],
+                    error=row["error"],
+                )
+            )
+
+    items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    if normalized_status is not None:
+        items = [item for item in items if item["workspace_status"] == normalized_status]
+    return items[:limit]
+
+
+def get_workspace_item(item_type: str, item_id: int) -> dict[str, Any] | None:
+    item_type = _normalize_workspace_item_type(item_type)
+    item_id = int(item_id)
+    for item in list_workspace_items(limit=10000):
+        if item["item_type"] == item_type and int(item["item_id"]) == item_id:
+            return item
+    return None
+
+
+def update_workspace_item(
+    item_type: str,
+    item_id: int,
+    *,
+    workspace_status: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    tags: str | None = None,
+) -> bool:
+    item_type = _normalize_workspace_item_type(item_type)
+    item_id = int(item_id)
+    now = now_utc()
+
+    with connect() as con:
+        if not _workspace_item_exists(con, item_type, item_id):
+            return False
+        existing = _workspace_metadata_row(con, item_type, item_id)
+        resolved_status = (
+            _normalize_workspace_status(workspace_status)
+            if workspace_status is not None
+            else str(existing["workspace_status"]) if existing is not None else "draft"
+        )
+        resolved_title = title if title is not None else (existing["title"] if existing is not None else None)
+        resolved_description = (
+            description
+            if description is not None
+            else (existing["description"] if existing is not None else None)
+        )
+        resolved_tags = tags if tags is not None else (existing["tags"] if existing is not None else None)
+
+        con.execute(
+            """
+            INSERT INTO clip_workspace_metadata
+                (item_type, item_id, workspace_status, title, description, tags, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(item_type, item_id) DO UPDATE SET
+                workspace_status=excluded.workspace_status,
+                title=excluded.title,
+                description=excluded.description,
+                tags=excluded.tags,
+                updated_at=excluded.updated_at
+            """,
+            (
+                item_type,
+                item_id,
+                resolved_status,
+                resolved_title,
+                resolved_description,
+                resolved_tags,
+                now,
+                now,
+            ),
+        )
+        return True
+
+
+def bulk_update_workspace_status(items: list[tuple[str, int]], workspace_status: str) -> int:
+    status = _normalize_workspace_status(workspace_status)
+    updated = 0
+    for item_type, item_id in items:
+        if update_workspace_item(item_type, item_id, workspace_status=status):
+            updated += 1
+    return updated
+
+
+# ---------------------------------------------------------------------------
 # social_accounts (publishing integrations)
 # ---------------------------------------------------------------------------
 

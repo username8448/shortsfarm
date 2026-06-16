@@ -26,6 +26,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "003_create_review_sessions"  in versions
     assert "004_create_marks"            in versions
     assert "005_create_clips"            in versions
+    assert "018_create_clip_workspace_metadata" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -100,6 +101,18 @@ def test_publish_jobs_retry_columns_exist(tmp_data_dir):
     assert "attempt_count" in columns
     assert "last_attempt_at" in columns
     assert "next_attempt_at" in columns
+
+
+def test_clip_workspace_metadata_table(tmp_data_dir):
+    from shortsfarm import db
+    with db.connect() as con:
+        con.execute("SELECT * FROM clip_workspace_metadata LIMIT 0")
+        indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(clip_workspace_metadata)").fetchall()
+        }
+    assert "idx_clip_workspace_metadata_item" in indexes
+    assert "idx_clip_workspace_metadata_status" in indexes
 
 
 def test_idempotent(tmp_data_dir):
