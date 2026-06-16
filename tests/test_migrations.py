@@ -1,0 +1,109 @@
+"""Tests for the migration runner."""
+from __future__ import annotations
+
+import sqlite3
+
+import pytest
+
+
+def test_migrations_applied(tmp_data_dir):
+    from shortfarm import db
+    from shortfarm.migrations import run_migrations
+    applied = run_migrations()
+    # second run should apply nothing new
+    assert run_migrations() == []
+
+
+def test_schema_versions_recorded(tmp_data_dir):
+    from shortfarm import db
+    with db.connect() as con:
+        versions = {
+            row[0]
+            for row in con.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+    assert "001_initial_existing_schema" in versions
+    assert "002_add_review_status"       in versions
+    assert "003_create_review_sessions"  in versions
+    assert "004_create_marks"            in versions
+    assert "005_create_clips"            in versions
+
+
+def test_review_status_column_exists(tmp_data_dir):
+    from shortfarm import db
+    with db.connect() as con:
+        con.execute("INSERT INTO videos (source_path, title, created_at) "
+                    "VALUES ('/x.mp4', 'x', '2026-01-01T00:00:00')")
+        row = con.execute("SELECT review_status FROM videos "
+                         "WHERE source_path='/x.mp4'").fetchone()
+    assert row["review_status"] == "inbox"
+
+
+def test_review_sessions_table(tmp_data_dir):
+    from shortfarm import db
+    with db.connect() as con:
+        con.execute("SELECT * FROM review_sessions LIMIT 0")
+
+
+def test_marks_table(tmp_data_dir):
+    from shortfarm import db
+    with db.connect() as con:
+        con.execute("SELECT * FROM marks LIMIT 0")
+
+
+def test_clips_table(tmp_data_dir):
+    from shortfarm import db
+    with db.connect() as con:
+        con.execute("SELECT * FROM clips LIMIT 0")
+
+
+def test_app_settings_table(tmp_data_dir):
+    from shortfarm import db
+    with db.connect() as con:
+        con.execute("SELECT * FROM app_settings LIMIT 0")
+
+
+def test_youtube_oauth_profiles_table(tmp_data_dir):
+    from shortfarm import db
+    with db.connect() as con:
+        con.execute("SELECT * FROM youtube_oauth_profiles LIMIT 0")
+
+
+def test_social_accounts_oauth_profile_columns_exist(tmp_data_dir):
+    from shortfarm import db
+    with db.connect() as con:
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(social_accounts)").fetchall()
+        }
+    assert "oauth_profile_id" in columns
+    assert "account_email" in columns
+    assert "last_connected_at" in columns
+
+
+def test_oauth_states_oauth_profile_column_exists(tmp_data_dir):
+    from shortfarm import db
+    with db.connect() as con:
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(oauth_states)").fetchall()
+        }
+    assert "oauth_profile_id" in columns
+
+
+def test_publish_jobs_retry_columns_exist(tmp_data_dir):
+    from shortfarm import db
+    with db.connect() as con:
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(publish_jobs)").fetchall()
+        }
+    assert "attempt_count" in columns
+    assert "last_attempt_at" in columns
+    assert "next_attempt_at" in columns
+
+
+def test_idempotent(tmp_data_dir):
+    """Running migrations many times must not raise."""
+    from shortfarm.migrations import run_migrations
+    for _ in range(3):
+        run_migrations()

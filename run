@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+VENV="${SHORTFARM_VENV:-"$ROOT/.venv"}"
+PYTHON="$VENV/bin/python"
+
+if [[ ! -x "$PYTHON" ]]; then
+  cat >&2 <<EOF
+ShortFarm virtualenv is not ready: $PYTHON
+
+Create it again:
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -e .
+
+Then run:
+  ./run web
+EOF
+  exit 1
+fi
+
+exec "$PYTHON" -m shortfarm "$@"

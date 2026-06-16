@@ -1,0 +1,49 @@
+[build-system]
+requires      = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name        = "shortfarm"
+version     = "0.2.0"
+description = "Local CLI tool for MPV-assisted short video review and rendering."
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "google-api-python-client",
+    "google-auth",
+    "google-auth-oauthlib",
+    "jinja2",
+    "typer>=0.9.0",
+    "uvicorn[standard]",
+]
+
+[project.scripts]
+shortfarm = "shortfarm.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shortfarm*"]
+
+[tool.setuptools.package-data]
+shortfarm = [
+    "migrations/*.sql",
+    "scripts/*.lua",
+    "web/templates/*.html",
+    "web/static/*.css",
+    "web/static/*.js",
+    "web/static/*.svg",
+]
+
+[tool.pytest.ini_options]
+testpaths    = ["tests"]
+addopts      = "-v"
+
+[tool.coverage.run]
+source = ["shortfarm"]
+omit   = ["tests/*"]

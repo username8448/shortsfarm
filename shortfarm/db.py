@@ -1,0 +1,1466 @@
+"""SQLite persistence layer for ShortFarm.
+
+All public functions open/close their own connection so callers never have
+to manage transactions themselves.  The lone exception is `claim_inbox_video`,
+which uses an explicit BEGIN IMMEDIATE to guarantee atomic claim-and-update.
+"""
+from __future__ import annotations
+
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+from .config import (
+    DEFAULT_YOUTUBE_REDIRECT_URI,
+    YOUTUBE_CLIENT_ID_SETTING,
+    YOUTUBE_CLIENT_SECRET_SETTING,
+    YOUTUBE_REDIRECT_URI_SETTING,
+    db_path,
+    ensure_dirs,
+)
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+def now_utc() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+@contextmanager
+def connect() -> Iterator[sqlite3.Connection]:
+    ensure_dirs()
+    con = sqlite3.connect(db_path())
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode  = WAL")
+    try:
+        yield con
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def init_db() -> None:
+    """Ensure schema is up-to-date by running all pending migrations."""
+    from .migrations import run_migrations
+    run_migrations()
+    bootstrap_legacy_youtube_oauth_profile()
+
+
+# ---------------------------------------------------------------------------
+# videos
+# ---------------------------------------------------------------------------
+
+def add_video(source_path: Path, title: str, duration_sec: float | None) -> int:
+    with connect() as con:
+        try:
+            cur = con.execute(
+                """
+                INSERT INTO videos (source_path, title, duration_sec, status, created_at)
+                VALUES (?, ?, ?, 'added', ?)
+                """,
+                (str(source_path), title, duration_sec, now_utc()),
+            )
+            return int(cur.lastrowid)
+        except sqlite3.IntegrityError:
+            row = con.execute(
+                "SELECT id FROM videos WHERE source_path = ?", (str(source_path),)
+            ).fetchone()
+            if row is None:
+                raise
+            return int(row["id"])
+
+
+def get_video(video_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM videos WHERE id = ?", (video_id,)
+        ).fetchone()
+
+
+def get_video_by_source_path(source_path: Path) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM videos WHERE source_path = ?", (str(source_path),)
+        ).fetchone()
+
+
+def list_videos() -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM videos ORDER BY id DESC"
+        ).fetchall()
+
+
+def list_videos_with_counts() -> list[sqlite3.Row]:
+    """Return videos with mark/clip counters for the CLI inbox view."""
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT
+                v.*,
+                COUNT(DISTINCT m.id) AS mark_count,
+                COUNT(DISTINCT c.id) AS clip_count
+            FROM videos v
+            LEFT JOIN marks m ON m.video_id = v.id
+            LEFT JOIN clips c ON c.video_id = v.id
+            GROUP BY v.id
+            ORDER BY v.id ASC
+            """
+        ).fetchall()
+
+
+def count_videos_by_review_status() -> dict[str, int]:
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT COALESCE(review_status, 'inbox') AS status, COUNT(*) AS count
+            FROM videos
+            GROUP BY COALESCE(review_status, 'inbox')
+            """
+        ).fetchall()
+    return {str(row["status"]): int(row["count"]) for row in rows}
+
+
+def count_videos() -> int:
+    with connect() as con:
+        row = con.execute("SELECT COUNT(*) FROM videos").fetchone()
+    return int(row[0]) if row else 0
+
+
+def update_video_review_status(video_id: int, review_status: str) -> None:
+    with connect() as con:
+        con.execute(
+            "UPDATE videos SET review_status = ? WHERE id = ?",
+            (review_status, video_id),
+        )
+
+
+def claim_inbox_video() -> sqlite3.Row | None:
+    """Atomically pick the first 'inbox' video and set it to 'reviewing'.
+
+    Uses BEGIN IMMEDIATE so two concurrent terminals cannot claim the same
+    video.  Returns the (now-'reviewing') row or None if nothing available.
+    """
+    ensure_dirs()
+    con = sqlite3.connect(str(db_path()), isolation_level=None)  # autocommit
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode  = WAL")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT * FROM videos WHERE review_status = 'inbox' ORDER BY id LIMIT 1"
+        ).fetchone()
+        if row is None:
+            con.execute("COMMIT")
+            return None
+
+        result = con.execute(
+            "UPDATE videos SET review_status = 'reviewing' "
+            "WHERE id = ? AND review_status = 'inbox'",
+            (int(row["id"]),),
+        )
+        # rowcount == 0 means someone else grabbed it between our SELECT and UPDATE
+        if result.rowcount == 0:
+            con.execute("COMMIT")
+            return None
+
+        updated = con.execute(
+            "SELECT * FROM videos WHERE id = ?", (int(row["id"]),)
+        ).fetchone()
+        con.execute("COMMIT")
+        return updated
+    except Exception:
+        try:
+            con.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# jobs (split workflow - unchanged logic)
+# ---------------------------------------------------------------------------
+
+def create_job(video_id: int, mode: str, segment_seconds: int) -> int:
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO jobs (video_id, type, status, mode, segment_seconds, created_at)
+            VALUES (?, 'split', 'queued', ?, ?, ?)
+            """,
+            (video_id, mode, segment_seconds, now_utc()),
+        )
+        return int(cur.lastrowid)
+
+
+def mark_job_running(job_id: int) -> None:
+    with connect() as con:
+        con.execute(
+            "UPDATE jobs SET status='running', started_at=? WHERE id=?",
+            (now_utc(), job_id),
+        )
+
+
+def mark_job_done(job_id: int) -> None:
+    with connect() as con:
+        con.execute(
+            "UPDATE jobs SET status='done', finished_at=? WHERE id=?",
+            (now_utc(), job_id),
+        )
+
+
+def mark_job_failed(job_id: int, error: str) -> None:
+    with connect() as con:
+        con.execute(
+            "UPDATE jobs SET status='failed', error=?, finished_at=? WHERE id=?",
+            (error, now_utc(), job_id),
+        )
+
+
+def list_jobs(limit: int = 50) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT jobs.*, videos.title AS video_title
+            FROM jobs
+            JOIN videos ON videos.id = jobs.video_id
+            ORDER BY jobs.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def count_jobs_by_status() -> dict[str, int]:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT status, COUNT(*) AS count FROM jobs GROUP BY status"
+        ).fetchall()
+    return {str(row["status"]): int(row["count"]) for row in rows}
+
+
+# ---------------------------------------------------------------------------
+# segments
+# ---------------------------------------------------------------------------
+
+def insert_segment(
+    video_id: int,
+    job_id: int,
+    segment_index: int,
+    start_sec: float,
+    end_sec: float,
+    path: Path,
+) -> int:
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO segments
+                (video_id, job_id, segment_index, start_sec, end_sec, path, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (video_id, job_id, segment_index, start_sec, end_sec, str(path), now_utc()),
+        )
+        return int(cur.lastrowid)
+
+
+def _latest_done_job_id(video_id: int) -> int | None:
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT id FROM jobs
+            WHERE video_id=? AND type='split' AND status='done'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (video_id,),
+        ).fetchone()
+        return int(row["id"]) if row else None
+
+
+def list_segments(video_id: int, job_id: int | None = None) -> list[sqlite3.Row]:
+    if job_id is None:
+        job_id = _latest_done_job_id(video_id)
+    if job_id is None:
+        return []
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT * FROM segments
+            WHERE video_id=? AND job_id=?
+            ORDER BY segment_index ASC
+            """,
+            (video_id, job_id),
+        ).fetchall()
+
+
+def count_segments(video_id: int | None = None) -> int:
+    with connect() as con:
+        if video_id is None:
+            row = con.execute("SELECT COUNT(*) FROM segments").fetchone()
+        else:
+            row = con.execute(
+                "SELECT COUNT(*) FROM segments WHERE video_id=?", (video_id,)
+            ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def latest_segment_path(video_id: int | None = None) -> str | None:
+    clauses: list[str] = []
+    params: list = []
+    if video_id is not None:
+        clauses.append("video_id = ?")
+        params.append(video_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with connect() as con:
+        row = con.execute(
+            f"""
+            SELECT path FROM segments
+            {where}
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+    return str(row["path"]) if row else None
+
+
+def list_recent_segments(
+    video_id: int | None = None,
+    limit: int = 20,
+) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list = []
+    if video_id is not None:
+        clauses.append("s.video_id = ?")
+        params.append(video_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT s.*, v.title AS video_title
+            FROM segments s
+            JOIN videos v ON v.id = s.video_id
+            {where}
+            ORDER BY s.id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Input-video status helpers (split workflow)
+# ---------------------------------------------------------------------------
+
+def has_done_split_job(video_id: int) -> bool:
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT id FROM jobs
+            WHERE video_id=? AND type='split' AND status='done'
+            LIMIT 1
+            """,
+            (video_id,),
+        ).fetchone()
+        return row is not None
+
+
+def input_video_status(source_path: Path) -> str:
+    video = get_video_by_source_path(source_path)
+    if video is None:
+        return "pending"
+    return "done" if has_done_split_job(int(video["id"])) else "pending"
+
+
+# ---------------------------------------------------------------------------
+# review_sessions
+# ---------------------------------------------------------------------------
+
+def create_review_session(video_id: int, session_file: str) -> int:
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO review_sessions (video_id, session_file, status, started_at)
+            VALUES (?, ?, 'open', ?)
+            """,
+            (video_id, session_file, now_utc()),
+        )
+        return int(cur.lastrowid)
+
+
+def get_review_session(session_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM review_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+
+
+def close_review_session(session_id: int) -> None:
+    """mpv closed - waiting for import."""
+    with connect() as con:
+        con.execute(
+            "UPDATE review_sessions SET status='closed', finished_at=? WHERE id=?",
+            (now_utc(), session_id),
+        )
+
+
+def fail_review_session(session_id: int, error: str) -> None:
+    with connect() as con:
+        con.execute(
+            "UPDATE review_sessions SET status='failed', finished_at=?, error=? WHERE id=?",
+            (now_utc(), error, session_id),
+        )
+
+
+def import_review_session(session_id: int, warning: str | None = None) -> None:
+    with connect() as con:
+        con.execute(
+            "UPDATE review_sessions SET status='imported', imported_at=?, finished_at=?, error=? WHERE id=?",
+            (now_utc(), now_utc(), warning, session_id),
+        )
+
+
+def abandon_open_sessions(video_id: int) -> int:
+    """Mark all open/closed sessions for a video as abandoned. Returns count."""
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE review_sessions
+            SET status='abandoned', finished_at=?, error='Abandoned by user reset'
+            WHERE video_id=? AND status IN ('open', 'closed')
+            """,
+            (now_utc(), video_id),
+        )
+        return result.rowcount
+
+
+def list_review_sessions(video_id: int) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM review_sessions WHERE video_id=? ORDER BY id DESC",
+            (video_id,),
+        ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# marks
+# ---------------------------------------------------------------------------
+
+def insert_mark(
+    video_id: int,
+    session_id: int | None,
+    in_sec: float,
+    out_sec: float,
+    rating: int | None = None,
+    label: str | None = None,
+    source: str = "mpv",
+) -> int:
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO marks
+                (video_id, session_id, in_sec, out_sec, rating, label, source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (video_id, session_id, in_sec, out_sec, rating, label, source, now_utc()),
+        )
+        return int(cur.lastrowid)
+
+
+def list_marks(video_id: int) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM marks WHERE video_id=? ORDER BY in_sec ASC",
+            (video_id,),
+        ).fetchall()
+
+
+def count_marks(video_id: int) -> int:
+    with connect() as con:
+        row = con.execute(
+            "SELECT COUNT(*) FROM marks WHERE video_id=?", (video_id,)
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+
+# ---------------------------------------------------------------------------
+# clips
+# ---------------------------------------------------------------------------
+
+def insert_clip(
+    video_id: int,
+    mark_id: int | None,
+    cut_mode: str = "exact",
+) -> int:
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO clips (video_id, mark_id, status, cut_mode, created_at)
+            VALUES (?, ?, 'queued', ?, ?)
+            """,
+            (video_id, mark_id, cut_mode, now_utc()),
+        )
+        return int(cur.lastrowid)
+
+
+def get_clip(clip_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM clips WHERE id=?", (clip_id,)
+        ).fetchone()
+
+
+def list_clips(
+    status: str | None = None,
+    video_id: int | None = None,
+    limit: int = 500,
+) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list = []
+    if status is not None:
+        clauses.append("c.status = ?")
+        params.append(status)
+    if video_id is not None:
+        clauses.append("c.video_id = ?")
+        params.append(video_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT c.*, v.title AS video_title
+            FROM clips c
+            JOIN videos v ON v.id = c.video_id
+            {where}
+            ORDER BY c.id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+
+def count_clips(video_id: int, status: str | None = None) -> int:
+    if status:
+        with connect() as con:
+            row = con.execute(
+                "SELECT COUNT(*) FROM clips WHERE video_id=? AND status=?",
+                (video_id, status),
+            ).fetchone()
+    else:
+        with connect() as con:
+            row = con.execute(
+                "SELECT COUNT(*) FROM clips WHERE video_id=?", (video_id,)
+            ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def count_clips_by_status(video_id: int | None = None) -> dict[str, int]:
+    clauses: list[str] = []
+    params: list = []
+    if video_id is not None:
+        clauses.append("video_id = ?")
+        params.append(video_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with connect() as con:
+        rows = con.execute(
+            f"SELECT status, COUNT(*) AS count FROM clips {where} GROUP BY status",
+            params,
+        ).fetchall()
+    return {str(row["status"]): int(row["count"]) for row in rows}
+
+
+# ---------------------------------------------------------------------------
+# social_accounts (publishing integrations)
+# ---------------------------------------------------------------------------
+
+def _normalize_token(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _normalize_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    with connect() as con:
+        row = con.execute(
+            "SELECT value FROM app_settings WHERE key=?",
+            (key,),
+        ).fetchone()
+    if row is None:
+        return default
+    value = row["value"]
+    if value is None:
+        return default
+    return str(value)
+
+
+def set_setting(key: str, value: str | None, is_secret: bool = False) -> None:
+    now = now_utc()
+    with connect() as con:
+        con.execute(
+            """
+            INSERT INTO app_settings (key, value, is_secret, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,
+                is_secret=excluded.is_secret,
+                updated_at=excluded.updated_at
+            """,
+            (key, value, 1 if is_secret else 0, now, now),
+        )
+
+
+def delete_setting(key: str) -> bool:
+    with connect() as con:
+        result = con.execute(
+            "DELETE FROM app_settings WHERE key=?",
+            (key,),
+        )
+        return result.rowcount > 0
+
+
+def list_settings(mask_secrets: bool = True) -> list[dict[str, Any]]:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT * FROM app_settings ORDER BY key ASC"
+        ).fetchall()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        is_secret = bool(row["is_secret"])
+        value = row["value"]
+        if mask_secrets and is_secret and value:
+            masked_value = "********"
+        else:
+            masked_value = value
+        items.append(
+            {
+                "key": row["key"],
+                "value": masked_value,
+                "is_secret": is_secret,
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+    return items
+
+
+def create_youtube_oauth_profile(
+    *,
+    name: str,
+    client_id: str,
+    client_secret: str | None,
+    redirect_uri: str,
+    mode: str = "custom",
+    status: str = "active",
+    is_default: bool = False,
+    notes: str | None = None,
+) -> int:
+    now = now_utc()
+    with connect() as con:
+        if is_default:
+            con.execute("UPDATE youtube_oauth_profiles SET is_default = 0 WHERE is_default != 0")
+        cur = con.execute(
+            """
+            INSERT INTO youtube_oauth_profiles
+                (name, mode, client_id, client_secret, redirect_uri, status,
+                 is_default, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                mode,
+                client_id,
+                client_secret,
+                redirect_uri,
+                status,
+                1 if is_default else 0,
+                notes,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def update_youtube_oauth_profile(
+    profile_id: int,
+    *,
+    name: str | None = None,
+    mode: str | None = None,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    redirect_uri: str | None = None,
+    status: str | None = None,
+    notes: str | None = None,
+) -> bool:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM youtube_oauth_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        resolved_client_secret = row["client_secret"]
+        normalized_secret = _normalize_text(client_secret)
+        if client_secret is not None and normalized_secret:
+            resolved_client_secret = normalized_secret
+
+        con.execute(
+            """
+            UPDATE youtube_oauth_profiles
+            SET name=?, mode=?, client_id=?, client_secret=?, redirect_uri=?,
+                status=?, notes=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                name if name is not None else row["name"],
+                mode if mode is not None else row["mode"],
+                client_id if client_id is not None else row["client_id"],
+                resolved_client_secret,
+                redirect_uri if redirect_uri is not None else row["redirect_uri"],
+                status if status is not None else row["status"],
+                notes if notes is not None else row["notes"],
+                now_utc(),
+                profile_id,
+            ),
+        )
+        return True
+
+
+def get_youtube_oauth_profile(profile_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM youtube_oauth_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+
+
+def list_youtube_oauth_profiles() -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM youtube_oauth_profiles
+            ORDER BY is_default DESC, id ASC
+            """
+        ).fetchall()
+
+
+def set_default_youtube_oauth_profile(profile_id: int) -> bool:
+    with connect() as con:
+        row = con.execute(
+            "SELECT id FROM youtube_oauth_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        con.execute("UPDATE youtube_oauth_profiles SET is_default = 0 WHERE is_default != 0")
+        con.execute(
+            """
+            UPDATE youtube_oauth_profiles
+            SET is_default=1, updated_at=?
+            WHERE id=?
+            """,
+            (now_utc(), profile_id),
+        )
+        return True
+
+
+def get_default_youtube_oauth_profile() -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM youtube_oauth_profiles
+            WHERE is_default = 1
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+
+
+def delete_youtube_oauth_profile(profile_id: int) -> bool:
+    with connect() as con:
+        profile = con.execute(
+            "SELECT * FROM youtube_oauth_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        if profile is None:
+            return False
+
+        active_channels = con.execute(
+            """
+            SELECT COUNT(*)
+            FROM social_accounts
+            WHERE oauth_profile_id=? AND status='active'
+            """,
+            (profile_id,),
+        ).fetchone()
+        if active_channels and int(active_channels[0]) > 0:
+            raise ValueError("Нельзя удалить OAuth Profile с активными YouTube-каналами.")
+
+        con.execute(
+            """
+            UPDATE social_accounts
+            SET oauth_profile_id=NULL, updated_at=?
+            WHERE oauth_profile_id=?
+            """,
+            (now_utc(), profile_id),
+        )
+        con.execute("DELETE FROM youtube_oauth_profiles WHERE id=?", (profile_id,))
+
+        if int(profile["is_default"] or 0):
+            next_profile = con.execute(
+                """
+                SELECT id
+                FROM youtube_oauth_profiles
+                ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END, id ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if next_profile is not None:
+                con.execute(
+                    """
+                    UPDATE youtube_oauth_profiles
+                    SET is_default=1, updated_at=?
+                    WHERE id=?
+                    """,
+                    (now_utc(), int(next_profile["id"])),
+                )
+        return True
+
+
+def bootstrap_legacy_youtube_oauth_profile() -> sqlite3.Row | None:
+    existing = list_youtube_oauth_profiles()
+    if existing:
+        return get_default_youtube_oauth_profile() or existing[0]
+
+    stored_client_id = _normalize_text(get_setting(YOUTUBE_CLIENT_ID_SETTING))
+    stored_client_secret = _normalize_text(get_setting(YOUTUBE_CLIENT_SECRET_SETTING))
+    stored_redirect_uri = _normalize_text(get_setting(YOUTUBE_REDIRECT_URI_SETTING))
+    if not stored_client_id or not stored_client_secret:
+        return None
+
+    profile_id = create_youtube_oauth_profile(
+        name="Legacy YouTube OAuth",
+        mode="custom",
+        client_id=stored_client_id,
+        client_secret=stored_client_secret,
+        redirect_uri=stored_redirect_uri or DEFAULT_YOUTUBE_REDIRECT_URI,
+        status="active",
+        is_default=True,
+        notes="Bootstrapped from legacy app settings.",
+    )
+    return get_youtube_oauth_profile(profile_id)
+
+
+def list_social_accounts(
+    platform: str | None = None,
+    oauth_profile_id: int | None = None,
+) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list = []
+    if platform is not None:
+        clauses.append("sa.platform = ?")
+        params.append(platform)
+    if oauth_profile_id is not None:
+        clauses.append("sa.oauth_profile_id = ?")
+        params.append(oauth_profile_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT sa.*, yp.name AS profile_name
+            FROM social_accounts sa
+            LEFT JOIN youtube_oauth_profiles yp ON yp.id = sa.oauth_profile_id
+            {where}
+            ORDER BY sa.id DESC
+            """,
+            params,
+        ).fetchall()
+
+
+def get_social_account(account_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT sa.*, yp.name AS profile_name
+            FROM social_accounts sa
+            LEFT JOIN youtube_oauth_profiles yp ON yp.id = sa.oauth_profile_id
+            WHERE sa.id=?
+            """,
+            (account_id,),
+        ).fetchone()
+
+
+def save_social_account(
+    *,
+    platform: str,
+    display_name: str | None,
+    channel_id: str | None,
+    channel_title: str | None,
+    access_token: str | None,
+    refresh_token: str | None,
+    token_expires_at: str | None,
+    scopes: str | None,
+    oauth_profile_id: int | None = None,
+    account_email: str | None = None,
+    last_connected_at: str | None = None,
+    status: str = "active",
+    error: str | None = None,
+) -> int:
+    """Insert or update a publishing account.
+
+    TODO: encrypt tokens before production use.
+    """
+    with connect() as con:
+        existing = None
+        if channel_id:
+            existing = con.execute(
+                """
+                SELECT *
+                FROM social_accounts
+                WHERE platform = ? AND channel_id = ?
+                """,
+                (platform, channel_id),
+            ).fetchone()
+
+        if existing is not None:
+            account_id = int(existing["id"])
+            stored_refresh_token = _normalize_token(refresh_token) or existing["refresh_token"]
+            con.execute(
+                """
+                UPDATE social_accounts
+                SET display_name=?, channel_title=?, access_token=?, refresh_token=?,
+                    token_expires_at=?, scopes=?, oauth_profile_id=?, account_email=?,
+                    last_connected_at=?, status=?, error=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    display_name if display_name is not None else existing["display_name"],
+                    channel_title if channel_title is not None else existing["channel_title"],
+                    access_token if access_token is not None else existing["access_token"],
+                    stored_refresh_token,
+                    token_expires_at if token_expires_at is not None else existing["token_expires_at"],
+                    scopes if scopes is not None else existing["scopes"],
+                    oauth_profile_id if oauth_profile_id is not None else existing["oauth_profile_id"],
+                    _normalize_text(account_email) or existing["account_email"],
+                    last_connected_at if last_connected_at is not None else existing["last_connected_at"],
+                    status,
+                    error,
+                    now_utc(),
+                    account_id,
+                ),
+            )
+            return account_id
+
+        cur = con.execute(
+            """
+            INSERT INTO social_accounts
+                (platform, display_name, channel_id, channel_title, access_token,
+                 refresh_token, token_expires_at, scopes, oauth_profile_id, account_email,
+                 last_connected_at, status, created_at, updated_at, error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                platform,
+                display_name,
+                channel_id,
+                channel_title,
+                access_token,
+                refresh_token,
+                token_expires_at,
+                scopes,
+                oauth_profile_id,
+                _normalize_text(account_email),
+                last_connected_at,
+                status,
+                now_utc(),
+                now_utc(),
+                error,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def disconnect_social_account(account_id: int, platform: str | None = None) -> bool:
+    clauses = ["id = ?"]
+    where_params: list = [account_id]
+    if platform is not None:
+        clauses.append("platform = ?")
+        where_params.append(platform)
+    with connect() as con:
+        result = con.execute(
+            f"""
+            UPDATE social_accounts
+            SET status='disconnected', updated_at=?
+            WHERE {" AND ".join(clauses)}
+            """,
+            [now_utc(), *where_params],
+        )
+        return result.rowcount > 0
+
+
+def create_oauth_state(provider: str, state: str, oauth_profile_id: int | None = None) -> int:
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO oauth_states (provider, state, created_at, oauth_profile_id)
+            VALUES (?, ?, ?, ?)
+            """,
+            (provider, state, now_utc(), oauth_profile_id),
+        )
+        return int(cur.lastrowid)
+
+
+def consume_oauth_state(provider: str, state: str) -> sqlite3.Row | None:
+    """Mark OAuth state as consumed. Returns the consumed row or None.
+
+    TODO: expire old OAuth states by created_at.
+    """
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT *
+            FROM oauth_states
+            WHERE provider=? AND state=? AND consumed_at IS NULL
+            """,
+            (provider, state),
+        ).fetchone()
+        if row is None:
+            return None
+        result = con.execute(
+            """
+            UPDATE oauth_states
+            SET consumed_at=?
+            WHERE provider=? AND state=? AND consumed_at IS NULL
+            """,
+            (now_utc(), provider, state),
+        )
+        if result.rowcount == 0:
+            return None
+        return con.execute(
+            """
+            SELECT *
+            FROM oauth_states
+            WHERE id=?
+            """,
+            (int(row["id"]),),
+        ).fetchone()
+
+
+# ---------------------------------------------------------------------------
+# publish_jobs (YouTube uploads)
+# ---------------------------------------------------------------------------
+
+_PUBLISH_JOB_SELECT = """
+    SELECT pj.*,
+           sa.display_name AS account_display_name,
+           sa.account_email AS account_email,
+           sa.channel_id AS channel_id,
+           sa.channel_title AS channel_title,
+           sa.oauth_profile_id AS oauth_profile_id,
+           yp.name AS profile_name,
+           c.video_id AS clip_video_id,
+           c.status AS clip_status,
+           c.output_path AS clip_output_path,
+           c.cut_mode AS clip_cut_mode,
+           c.error AS clip_error,
+           v.title AS video_title,
+           v.source_path AS video_source_path
+    FROM publish_jobs pj
+    LEFT JOIN social_accounts sa ON sa.id = pj.account_id
+    LEFT JOIN youtube_oauth_profiles yp ON yp.id = sa.oauth_profile_id
+    LEFT JOIN clips c ON c.id = pj.clip_id
+    LEFT JOIN videos v ON v.id = c.video_id
+"""
+
+def create_publish_job(
+    *,
+    account_id: int,
+    clip_id: int,
+    title: str,
+    description: str | None = None,
+    tags: str | None = None,
+    category_id: str = "22",
+    privacy_status: str,
+    publish_mode: str,
+    publish_at: str | None = None,
+    made_for_kids: bool = False,
+    platform: str = "youtube",
+) -> int:
+    now = now_utc()
+    with connect() as con:
+        try:
+            cur = con.execute(
+                """
+                INSERT INTO publish_jobs
+                    (platform, account_id, clip_id, status, title, description, tags,
+                     category_id, privacy_status, publish_mode, publish_at,
+                     made_for_kids, created_at, updated_at)
+                VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    platform,
+                    account_id,
+                    clip_id,
+                    title,
+                    description,
+                    tags,
+                    category_id,
+                    privacy_status,
+                    publish_mode,
+                    publish_at,
+                    1 if made_for_kids else 0,
+                    now,
+                    now,
+                ),
+            )
+            return int(cur.lastrowid)
+        except sqlite3.IntegrityError:
+            row = con.execute(
+                """
+                SELECT *
+                FROM publish_jobs
+                WHERE platform=? AND account_id=? AND clip_id=?
+                """,
+                (platform, account_id, clip_id),
+            ).fetchone()
+            if row is None:
+                raise
+            if row["status"] in {"queued", "failed", "cancelled"}:
+                con.execute(
+                    """
+                    UPDATE publish_jobs
+                    SET status='queued',
+                        title=?,
+                        description=?,
+                        tags=?,
+                        category_id=?,
+                        privacy_status=?,
+                        publish_mode=?,
+                        publish_at=?,
+                        made_for_kids=?,
+                        error=NULL,
+                        youtube_video_id=NULL,
+                        youtube_url=NULL,
+                        started_at=NULL,
+                        finished_at=NULL,
+                        next_attempt_at=NULL,
+                        updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        title,
+                        description,
+                        tags,
+                        category_id,
+                        privacy_status,
+                        publish_mode,
+                        publish_at,
+                        1 if made_for_kids else 0,
+                        now,
+                        int(row["id"]),
+                    ),
+                )
+            return int(row["id"])
+
+
+def get_publish_job(job_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            f"""
+            {_PUBLISH_JOB_SELECT}
+            WHERE pj.id=?
+            """,
+            (job_id,),
+        ).fetchone()
+
+
+def list_publish_jobs(
+    status: str | None = None,
+    platform: str | None = "youtube",
+    limit: int = 100,
+) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list = []
+    if platform is not None:
+        clauses.append("pj.platform = ?")
+        params.append(platform)
+    if status is not None:
+        clauses.append("pj.status = ?")
+        params.append(status)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(limit)
+    with connect() as con:
+        return con.execute(
+            f"""
+            {_PUBLISH_JOB_SELECT}
+            {where}
+            ORDER BY pj.id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+
+def _claim_publish_job_where(
+    where_sql: str,
+    params: tuple[Any, ...],
+    *,
+    order_by: str = "",
+) -> sqlite3.Row | None:
+    ensure_dirs()
+    con = sqlite3.connect(str(db_path()), isolation_level=None)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode  = WAL")
+    now = now_utc()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            f"""
+            SELECT *
+            FROM publish_jobs
+            WHERE {where_sql}
+            {order_by}
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        if row is None:
+            con.execute("COMMIT")
+            return None
+
+        attempt_count = int(row["attempt_count"] or 0) + 1
+        result = con.execute(
+            """
+            UPDATE publish_jobs
+            SET status='uploading',
+                started_at=COALESCE(started_at, ?),
+                last_attempt_at=?,
+                next_attempt_at=NULL,
+                error=NULL,
+                updated_at=?,
+                attempt_count=?
+            WHERE id=? AND status=?
+            """,
+            (
+                now,
+                now,
+                now,
+                attempt_count,
+                int(row["id"]),
+                row["status"],
+            ),
+        )
+        if result.rowcount == 0:
+            con.execute("COMMIT")
+            return None
+
+        updated = con.execute(
+            "SELECT * FROM publish_jobs WHERE id=?",
+            (int(row["id"]),),
+        ).fetchone()
+        con.execute("COMMIT")
+        return updated
+    except Exception:
+        try:
+            con.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        con.close()
+
+
+def claim_publish_job(job_id: int) -> sqlite3.Row | None:
+    return _claim_publish_job_where(
+        "id=? AND status IN ('queued', 'failed')",
+        (job_id,),
+    )
+
+
+def claim_next_publish_job() -> sqlite3.Row | None:
+    now = now_utc()
+    return _claim_publish_job_where(
+        "status='queued' OR (status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?)",
+        (now,),
+        order_by=(
+            "ORDER BY CASE WHEN status='queued' THEN 0 ELSE 1 END, "
+            "COALESCE(next_attempt_at, created_at) ASC, id ASC"
+        ),
+    )
+
+
+def mark_publish_uploading(job_id: int) -> None:
+    now = now_utc()
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE publish_jobs
+            SET status='uploading',
+                started_at=COALESCE(started_at, ?),
+                last_attempt_at=COALESCE(last_attempt_at, ?),
+                next_attempt_at=NULL,
+                error=NULL,
+                updated_at=?
+            WHERE id=?
+            """,
+            (now, now, now, job_id),
+        )
+
+
+def mark_publish_done(job_id: int, youtube_video_id: str, youtube_url: str) -> None:
+    now = now_utc()
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE publish_jobs
+            SET status='done', youtube_video_id=?, youtube_url=?,
+                error=NULL, next_attempt_at=NULL, finished_at=?, updated_at=?
+            WHERE id=?
+            """,
+            (youtube_video_id, youtube_url, now, now, job_id),
+        )
+
+
+def mark_publish_failed(
+    job_id: int,
+    error: str,
+    retryable: bool = True,
+    next_attempt_at: str | None = None,
+) -> None:
+    now = now_utc()
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE publish_jobs
+            SET status='failed', error=?, next_attempt_at=?, finished_at=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                error,
+                next_attempt_at if retryable else None,
+                now,
+                now,
+                job_id,
+            ),
+        )
+
+
+def retry_publish_job(job_id: int) -> bool:
+    now = now_utc()
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE publish_jobs
+            SET status='queued',
+                error=NULL,
+                started_at=NULL,
+                finished_at=NULL,
+                youtube_video_id=NULL,
+                youtube_url=NULL,
+                next_attempt_at=NULL,
+                updated_at=?
+            WHERE id=? AND status IN ('failed', 'cancelled')
+            """,
+            (now, job_id),
+        )
+        return result.rowcount > 0
+
+
+def cancel_publish_job(job_id: int) -> bool:
+    now = now_utc()
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE publish_jobs
+            SET status='cancelled', next_attempt_at=NULL, finished_at=?, updated_at=?
+            WHERE id=? AND status IN ('queued', 'failed')
+            """,
+            (now, now, job_id),
+        )
+        return result.rowcount > 0
+
+
+def list_recent_errors(limit: int = 5) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT 'job' AS kind, id, video_id, status, error, finished_at AS at
+            FROM jobs
+            WHERE error IS NOT NULL AND error != ''
+            UNION ALL
+            SELECT 'clip' AS kind, id, video_id, status, error, rendered_at AS at
+            FROM clips
+            WHERE error IS NOT NULL AND error != ''
+            UNION ALL
+            SELECT 'review' AS kind, id, video_id, status, error, finished_at AS at
+            FROM review_sessions
+            WHERE error IS NOT NULL AND error != ''
+            ORDER BY at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def set_clip_rendering(clip_id: int, temp_path: str) -> None:
+    with connect() as con:
+        con.execute(
+            "UPDATE clips SET status='rendering', started_at=?, temp_path=? WHERE id=?",
+            (now_utc(), temp_path, clip_id),
+        )
+
+
+def set_clip_done(clip_id: int, output_path: str) -> None:
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE clips
+            SET status='done', rendered_at=?, output_path=?, temp_path=NULL
+            WHERE id=?
+            """,
+            (now_utc(), output_path, clip_id),
+        )
+
+
+def set_clip_failed(clip_id: int, error: str) -> None:
+    with connect() as con:
+        con.execute(
+            "UPDATE clips SET status='failed', rendered_at=?, error=? WHERE id=?",
+            (now_utc(), error, clip_id),
+        )
+
+
+def reset_clip_to_queued(clip_id: int) -> None:
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE clips
+            SET status='queued', error=NULL, started_at=NULL,
+                rendered_at=NULL, temp_path=NULL
+            WHERE id=?
+            """,
+            (clip_id,),
+        )

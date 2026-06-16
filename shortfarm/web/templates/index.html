@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShortFarm Web</title>
+<link rel="icon" href="/favicon.ico" type="image/svg+xml">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="sb-logo">
+      <div class="sb-logo-icon"><i class="ti ti-film"></i></div>
+      <div>
+        <div class="sb-logo-name">ShortFarm</div>
+        <div class="sb-logo-sub">web · local</div>
+      </div>
+    </div>
+
+    <nav>
+      <button class="nb on" data-v="dashboard" onclick="nav('dashboard', this)"><i class="ti ti-layout-dashboard"></i><span>Панель</span></button>
+      <button class="nb" data-v="split" onclick="nav('split', this)"><i class="ti ti-scissors"></i><span>Нарезка</span></button>
+      <button class="nb" data-v="queue" onclick="nav('queue', this)"><i class="ti ti-list"></i><span>Очередь</span><span id="nav-jobs" class="badge-pill" style="background:var(--acc-bg);color:var(--acc);"></span></button>
+      <button class="nb" data-v="videos" onclick="nav('videos', this)"><i class="ti ti-video"></i><span>Видео</span><span id="nav-videos" class="badge-pill" style="background:var(--s2);color:var(--mid);"></span></button>
+      <button class="nb" data-v="clips" onclick="nav('clips', this)"><i class="ti ti-player-play"></i><span>Клипы</span><span id="nav-clips" class="badge-pill" style="background:var(--warn-bg);color:var(--warn);"></span></button>
+      <button class="nb" data-v="publish" onclick="nav('publish', this)"><i class="ti ti-upload"></i><span>Публикация</span></button>
+      <button class="nb" data-v="settings" onclick="nav('settings', this)"><i class="ti ti-settings"></i><span>Настройки</span></button>
+    </nav>
+
+    <div class="sb-foot">
+      <div class="sb-server">
+        <div class="sb-server-lbl">server</div>
+        <div class="sb-server-val"><span class="dot" style="background:var(--ok);box-shadow:0 0 5px var(--ok);"></span><span class="mono ok">127.0.0.1:8000</span></div>
+      </div>
+    </div>
+  </aside>
+
+  <main id="main">
+    <div id="v-dashboard" class="v on">
+      <div class="ph"><h1>Панель</h1><p>локальная панель ShortFarm — нарезка, очередь, видео и клипы</p></div>
+      <div class="stats">
+        <div class="scard"><div class="sl">Видео</div><div class="sv" id="st-videos">—</div><div class="sh" id="st-videos-sub">—</div></div>
+        <div class="scard"><div class="sl">Сегменты</div><div class="sv" id="st-segments">—</div><div class="sh">всего создано</div></div>
+        <div class="scard"><div class="sl">Задачи <span id="job-pulse" class="dot" style="background:var(--acc);"></span></div><div class="sv inf" id="st-jobs">—</div><div class="sh" id="st-jobs-sub">—</div></div>
+        <div class="scard"><div class="sl">Клипы в очереди</div><div class="sv warn" id="st-clips">—</div><div class="sh" id="st-clips-sub">—</div></div>
+      </div>
+      <div id="running-banner"></div>
+      <div class="box"><div class="box-head">Последние задачи <a onclick="nav('queue',document.querySelector('[data-v=queue]'))">Все →</a></div><div id="dash-jobs"></div></div>
+      <div class="g2">
+        <div class="box" style="margin-bottom:0"><div class="box-head">Статусы видео</div><div id="video-status-bars" style="padding:12px 15px"></div></div>
+        <div class="box" style="margin-bottom:0"><div class="box-head">Последние ошибки</div><div id="recent-errors"></div></div>
+      </div>
+    </div>
+
+    <div id="v-split" class="v">
+      <div class="ph"><h1>Нарезка</h1><p>ffmpeg stream-copy без перекодирования; «План» только показывает будущие сегменты</p></div>
+      <div class="mode-toggle"><button id="mode-file" class="mtab on" onclick="setMode('file')">Один файл</button><button id="mode-folder" class="mtab" onclick="setMode('folder')">Папка</button></div>
+      <div class="split-grid">
+        <div class="box">
+          <div class="box-head">Файлы</div>
+          <div class="fs-panel">
+            <div class="fs-roots" id="fs-roots"><button class="btn-mini" disabled>Загрузка...</button></div>
+            <div class="fs-toolbar">
+              <button class="btn-mini" id="fs-up" onclick="goParentFolder()">Вверх</button>
+              <button class="btn-mini" id="fs-refresh" onclick="refreshFolder()">Обновить</button>
+              <span class="mono dim">Текущая папка</span>
+            </div>
+            <div class="fs-current mono mid" id="fs-current-path">—</div>
+            <div class="fs-breadcrumb" id="fs-breadcrumb"></div>
+            <div class="err-line" id="fs-error" style="display:none"></div>
+            <div id="fs-browser" class="fs-browser"><div class="empty">Открываю папку...</div></div>
+            <div id="selection-card" class="selection-card"><div class="empty">Выберите видео для нарезки</div></div>
+          </div>
+        </div>
+
+        <div class="box">
+          <div class="box-head">Параметры</div>
+          <div class="form-body">
+            <div class="field"><label class="field-lbl">Длина сегмента</label><div class="secs-row"><button class="secs-btn" onclick="adjSecs(-10)">−</button><span class="secs-val" id="secs-val">60s</span><button class="secs-btn" onclick="adjSecs(10)">+</button><input type="range" id="secs-range" min="10" max="300" step="5" value="60" oninput="setSecs(+this.value)" style="flex:1;margin-left:4px;"></div></div>
+            <div class="field"><label class="field-lbl">Диапазоны пропуска <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--dim)">(опционально)</span></label><div style="display:flex;gap:8px"><input id="skip-in" type="text" placeholder="00:01:30-00:05:00 или start-00:07:30" style="flex:1" onkeydown="if(event.key==='Enter'){event.preventDefault();addChip()}"><button onclick="addChip()" class="btn-mini">Добавить</button></div><div class="chips" id="chips"></div></div>
+            <div class="toggles"><label class="toggle-label"><input type="checkbox" id="overwrite"> Перезаписать</label></div>
+            <details class="manual-path">
+              <summary>Ручной путь / advanced</summary>
+              <div class="field"><label class="field-lbl" id="path-lbl">Путь</label><input id="split-path" type="text" placeholder="/home/user/videos/my_video.mp4" oninput="manualPathChanged()"></div>
+            </details>
+            <div id="split-error" class="err-line" style="display:none"></div>
+            <div id="split-message" class="result-ok"><i class="ti ti-circle-check" style="color:var(--ok);font-size:20px;flex-shrink:0"></i><div class="result-ok-text" style="flex:1"><div class="t" id="split-msg-title">Готово</div><div class="s" id="split-msg-sub">—</div></div><button onclick="resetSplit()" class="btn-mini">Новый</button></div>
+            <div class="action-row">
+              <button class="btn-secondary" id="split-plan-btn" onclick="doSplit(true)">План</button>
+              <button class="btn-primary" id="split-btn" onclick="doSplit(false)">Запустить нарезку</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="box"><div class="box-head">План / результат</div><div id="split-preview" class="empty">Выберите видео или папку и нажмите «План».</div></div>
+    </div>
+
+    <div id="v-queue" class="v" data-v="queue">
+      <div class="ph"><h1>Очередь</h1><p>история split-задач из SQLite</p></div>
+      <div class="tabs"><button class="tab on" onclick="filterJobs(this,'all')">Все<span class="cnt" id="jobs-cnt-all"></span></button><button class="tab" onclick="filterJobs(this,'queued')">В очереди<span class="cnt" id="jobs-cnt-queued"></span></button><button class="tab" onclick="filterJobs(this,'running')">В работе<span class="cnt" id="jobs-cnt-running"></span></button><button class="tab" onclick="filterJobs(this,'done')">Готово<span class="cnt" id="jobs-cnt-done"></span></button><button class="tab" onclick="filterJobs(this,'failed')">Ошибки<span class="cnt" id="jobs-cnt-failed"></span></button></div>
+      <div class="box"><div id="jobs-table"></div></div>
+    </div>
+
+    <div id="v-videos" class="v">
+      <div class="ph"><h1>Видео</h1><p>источники и статусы review: inbox → reviewing → reviewed / skipped</p></div>
+      <div class="tabs"><button class="tab on" onclick="filterVideos(this,'all')">Все<span class="cnt" id="vid-cnt-all"></span></button><button class="tab" onclick="filterVideos(this,'inbox')">Входящие<span class="cnt" id="vid-cnt-inbox"></span></button><button class="tab" onclick="filterVideos(this,'reviewing')">На просмотре<span class="cnt" id="vid-cnt-reviewing"></span></button><button class="tab" onclick="filterVideos(this,'reviewed')">Просмотрено<span class="cnt" id="vid-cnt-reviewed"></span></button><button class="tab" onclick="filterVideos(this,'skipped')">Пропущено<span class="cnt" id="vid-cnt-skipped"></span></button></div>
+      <div class="box"><div id="videos-table"></div></div>
+    </div>
+
+    <div id="v-clips" class="v">
+      <div class="ph"><h1>Клипы</h1><p>очередь exact-cut клипов из меток; рендер через ffmpeg</p></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px">
+        <div class="tabs" style="margin:0"><button class="tab on" onclick="filterClips(this,'all')">Все<span class="cnt" id="clip-cnt-all"></span></button><button class="tab" onclick="filterClips(this,'queued')">В очереди<span class="cnt" id="clip-cnt-queued"></span></button><button class="tab" onclick="filterClips(this,'rendering')">Рендер<span class="cnt" id="clip-cnt-rendering"></span></button><button class="tab" onclick="filterClips(this,'done')">Готово<span class="cnt" id="clip-cnt-done"></span></button><button class="tab" onclick="filterClips(this,'failed')">Ошибки<span class="cnt" id="clip-cnt-failed"></span></button></div>
+        <div style="display:flex;gap:8px"><button class="btn-danger" onclick="retryFailedClips()"><i class="ti ti-refresh" style="font-size:12px;vertical-align:-1px"></i> Повторить ошибки</button><button class="btn-primary" style="padding:6px 15px;font-size:11px" onclick="renderQueued()"><i class="ti ti-player-play" style="font-size:11px;vertical-align:-1px"></i> Рендер</button></div>
+      </div>
+      <div class="box"><div id="clips-table"></div></div>
+    </div>
+
+    <div id="v-publish" class="v">
+      <div class="ph"><h1>Публикация</h1><p>YouTube-каналы, готовые клипы, очередь публикации и синхронная/фоновая загрузка</p></div>
+      <div class="tabs">
+        <button class="tab on" data-pub-tab="youtube" onclick="setPublishTab('youtube', this)">YouTube</button>
+        <button class="tab" data-pub-tab="accounts" onclick="setPublishTab('accounts', this)">Аккаунты</button>
+        <button class="tab" data-pub-tab="upload-queue" onclick="setPublishTab('upload-queue', this)">Очередь загрузки</button>
+        <button class="tab" data-pub-tab="templates" onclick="setPublishTab('templates', this)">Шаблоны</button>
+      </div>
+
+      <div id="pub-youtube" class="pub-tab on">
+        <div id="publish-error" class="err-line" style="display:none;margin-bottom:14px"></div>
+        <div class="publish-grid">
+          <div class="box">
+            <div class="box-head">
+              <span>Канал и клип</span>
+              <div class="row-actions">
+                <button class="btn-mini" onclick="loadPublishView()">Обновить</button>
+                <button class="btn-primary" id="publish-connect-btn" style="padding:6px 14px;font-size:11px" onclick="startYouTubeConnect()">
+                  <i class="ti ti-brand-youtube" style="font-size:12px;vertical-align:-1px"></i> Подключить канал
+                </button>
+              </div>
+            </div>
+            <div id="publish-state"></div>
+            <div class="form-body">
+              <div class="field">
+                <label class="field-lbl">Google OAuth client</label>
+                <select id="publish-profile-select" onchange="onPublishProfileChange(this.value)"></select>
+                <div id="publish-profile-meta" class="settings-meta" style="margin-top:8px"></div>
+              </div>
+              <div class="field">
+                <label class="field-lbl">YouTube канал</label>
+                <select id="publish-account-select" onchange="onPublishAccountChange(this.value)"></select>
+                <div id="publish-account-meta" class="settings-meta" style="margin-top:8px"></div>
+              </div>
+              <div class="field">
+                <label class="field-lbl">Готовые клипы</label>
+                <div id="publish-ready-clips"></div>
+              </div>
+              <div id="publish-selected-clip" class="selection-card"><div class="empty">Выберите готовый клип для публикации</div></div>
+            </div>
+          </div>
+
+          <div class="box">
+            <div class="box-head">
+              <span>Параметры публикации</span>
+            </div>
+            <div class="form-body">
+              <div id="publish-form-error" class="err-line" style="display:none"></div>
+              <div id="publish-form-ok" class="ok-line" style="display:none"></div>
+
+              <div class="field">
+                <label class="field-lbl">Заголовок</label>
+                <input id="publish-title" type="text" placeholder="Название ролика на YouTube" oninput="updatePublishButtons()">
+              </div>
+
+              <div class="field">
+                <label class="field-lbl">Описание</label>
+                <textarea id="publish-description" rows="6" placeholder="Описание ролика"></textarea>
+              </div>
+
+              <div class="field">
+                <label class="field-lbl">Теги</label>
+                <input id="publish-tags" type="text" placeholder="через запятую: shorts, gaming, highlight">
+              </div>
+
+              <div class="field-grid">
+                <div class="field">
+                  <label class="field-lbl">Категория</label>
+                  <input id="publish-category" type="text" value="22" oninput="updatePublishButtons()">
+                </div>
+                <div class="field">
+                  <label class="field-lbl">Режим</label>
+                  <select id="publish-mode" onchange="onPublishModeChange()">
+                    <option value="private">private · приватно</option>
+                    <option value="unlisted">unlisted · по ссылке</option>
+                    <option value="public">public · публично</option>
+                    <option value="schedule">schedule · по времени</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="field" id="publish-at-field" style="display:none">
+                <label class="field-lbl">Время публикации (ISO)</label>
+                <input id="publish-at" type="text" placeholder="2026-06-15T18:00:00Z" oninput="updatePublishButtons()">
+              </div>
+
+              <div class="toggles">
+                <label class="toggle-label"><input id="publish-made-for-kids" type="checkbox"> Made for kids</label>
+              </div>
+
+              <div class="action-row">
+                <button class="btn-secondary" id="publish-enqueue-btn" onclick="submitPublish('enqueue')">Добавить в очередь</button>
+                <button class="btn-primary" id="publish-upload-btn" onclick="submitPublish('upload')">Загрузить сейчас</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="box">
+          <div class="box-head">
+            <span>Очередь публикации</span>
+            <div class="row-actions">
+              <button class="btn-mini" onclick="refreshPublishJobs()">Обновить</button>
+              <button class="btn-secondary" onclick="runPublishWorkerOnce()">Обработать очередь</button>
+            </div>
+          </div>
+          <div id="publish-jobs"></div>
+        </div>
+      </div>
+
+      <div id="pub-upload-queue" class="pub-tab">
+        <div class="box"><div class="box-head">Очередь загрузки</div><div class="empty">Основная очередь публикации уже доступна во вкладке «YouTube».</div></div>
+      </div>
+
+      <div id="pub-accounts" class="pub-tab">
+        <div class="box">
+          <div class="box-head">
+            <span>YouTube каналы</span>
+            <div class="row-actions">
+              <button class="btn-mini" onclick="loadPublishView()">Обновить</button>
+              <button class="btn-primary" id="publish-connect-btn-accounts" style="padding:6px 14px;font-size:11px" onclick="startYouTubeConnect()">
+                <i class="ti ti-brand-youtube" style="font-size:12px;vertical-align:-1px"></i> Подключить канал
+              </button>
+            </div>
+          </div>
+          <div id="publish-accounts-state"></div>
+          <div id="publish-accounts-list"></div>
+        </div>
+      </div>
+
+      <div id="pub-templates" class="pub-tab">
+        <div class="box"><div class="box-head">Шаблоны</div><div class="empty">Шаблоны title/description появятся следующим шагом.</div></div>
+      </div>
+    </div>
+
+    <div id="v-settings" class="v">
+      <div class="ph"><h1>Настройки</h1><p>OAuth client для подключения YouTube-каналов и публикации роликов</p></div>
+      <div class="tabs">
+        <button class="tab on" data-settings-tab="youtube-oauth" onclick="setSettingsTab('youtube-oauth', this)">YouTube OAuth</button>
+      </div>
+
+      <div id="settings-error" class="err-line" style="display:none;margin-bottom:14px"></div>
+      <div id="settings-ok" class="ok-line" style="display:none;margin-bottom:14px"></div>
+
+      <div id="settings-youtube-oauth" class="settings-tab on">
+        <div class="settings-grid">
+          <div class="box">
+            <div class="box-head">
+              <span>OAuth Profiles</span>
+              <div class="row-actions">
+                <button class="btn-mini" onclick="loadSettingsView()">Обновить</button>
+                <button class="btn-secondary" onclick="startNewOAuthProfile()">Новый профиль</button>
+              </div>
+            </div>
+            <div id="settings-oauth-profiles"></div>
+          </div>
+
+          <div class="box">
+            <div class="box-head">
+              <span id="settings-oauth-form-title">Импорт OAuth Client JSON</span>
+              <div class="row-actions">
+                <button class="btn-mini" onclick="setOAuthManualMode('json')">JSON</button>
+                <button class="btn-mini" onclick="setOAuthManualMode('manual')">Ручной ввод</button>
+              </div>
+            </div>
+            <div class="form-body settings-form">
+              <div class="hint-box">
+                <ol style="padding-left:18px;line-height:1.6">
+                  <li>Создайте OAuth client в Google Cloud.</li>
+                  <li>Вставьте OAuth client JSON ниже.</li>
+                  <li>После импорта перейдите к подключению YouTube-канала.</li>
+                </ol>
+              </div>
+
+              <div class="field">
+                <label class="field-lbl">Название профиля</label>
+                <input id="settings-oauth-name" type="text" placeholder="Main YouTube OAuth">
+              </div>
+
+              <div id="settings-oauth-json-wrap" class="field">
+                <label class="field-lbl">OAuth Client JSON</label>
+                <textarea id="settings-oauth-json" rows="8" placeholder='{"web":{"client_id":"...","client_secret":"...","redirect_uris":["http://127.0.0.1:8000/api/publish/youtube/oauth/callback"]}}'></textarea>
+              </div>
+
+              <div id="settings-oauth-manual-wrap" style="display:none">
+                <div class="field">
+                  <label class="field-lbl">client_id</label>
+                  <input id="settings-oauth-client-id" type="text" placeholder="Google OAuth client_id">
+                </div>
+                <div class="field">
+                  <label class="field-lbl">client_secret</label>
+                  <input id="settings-oauth-client-secret" type="password" placeholder="Google OAuth client_secret">
+                </div>
+                <div class="field">
+                  <label class="field-lbl">Redirect URI</label>
+                  <input id="settings-oauth-redirect-uri" type="text" value="http://127.0.0.1:8000/api/publish/youtube/oauth/callback">
+                </div>
+              </div>
+
+              <div class="toggles">
+                <label class="toggle-label"><input id="settings-oauth-default" type="checkbox" checked> Использовать по умолчанию</label>
+              </div>
+
+              <div class="action-row">
+                <button class="btn-primary" id="settings-oauth-save-btn" onclick="saveOAuthProfile()">Сохранить OAuth client</button>
+                <button class="btn-secondary" onclick="startNewOAuthProfile()">Очистить форму</button>
+                <button class="btn-danger" id="settings-oauth-delete-btn" style="display:none" onclick="deleteOAuthProfile()">Удалить профиль</button>
+              </div>
+              <div id="settings-oauth-status" class="settings-meta"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
