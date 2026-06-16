@@ -1,4 +1,4 @@
-"""SQLite persistence layer for ShortFarm.
+"""SQLite persistence layer for ShortsFarm.
 
 All public functions open/close their own connection so callers never have
 to manage transactions themselves.  The lone exception is `claim_inbox_video`,

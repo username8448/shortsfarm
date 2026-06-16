@@ -1,4 +1,4 @@
-"""Lightweight SQLite migration runner for ShortFarm."""
+"""Lightweight SQLite migration runner for ShortsFarm."""
 from __future__ import annotations
 
 import sqlite3

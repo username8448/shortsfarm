@@ -15,7 +15,7 @@ from . import db
 from .config import data_dir
 
 SCRIPTS_DIR = Path(__file__).resolve().parent / "scripts"
-LUA_SCRIPT   = SCRIPTS_DIR / "shortfarm.lua"
+LUA_SCRIPT   = SCRIPTS_DIR / "shortsfarm.lua"
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ def launch_review(video_id: int) -> tuple[int, Path]:
         if not LUA_SCRIPT.exists():
             raise RuntimeError(
                 f"Lua script not found: {LUA_SCRIPT}\n"
-                "Make sure shortfarm/scripts/shortfarm.lua is present."
+                "Make sure shortsfarm/scripts/shortsfarm.lua is present."
             )
 
         cmd = [
@@ -208,13 +208,13 @@ def _import_session(session_id: int, video_id: int, session_file: Path) -> None:
         db.update_video_review_status(video_id, "inbox")
         msg = "Session ended with quit - video returned to inbox"
         parse_warnings.append(msg)
-        print(f"[shortfarm] Warning: {msg}")
+        print(f"[shortsfarm] Warning: {msg}")
     else:
         # quit or no final event -> return to inbox, keep marks
         db.update_video_review_status(video_id, "inbox")
         msg = "Session ended without done/skip/quit - video returned to inbox"
         parse_warnings.append(msg)
-        print(f"[shortfarm] Warning: {msg}")
+        print(f"[shortsfarm] Warning: {msg}")
 
     warning_text = "; ".join(parse_warnings) if parse_warnings else None
     db.import_review_session(session_id, warning=warning_text)

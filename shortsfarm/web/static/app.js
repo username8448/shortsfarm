@@ -6,11 +6,11 @@ function describeNetworkError(path, err) {
     `Детали браузера: ${raw}`,
   ];
   if (window.location?.protocol === 'file:') {
-    hints.push('Страница открыта как локальный файл, а не через команду shortfarm web.');
+    hints.push('Страница открыта как локальный файл, а не через команду shortsfarm web.');
   } else {
     hints.push(`Откройте UI именно по адресу, который печатает ./run web, обычно ${origin}.`);
   }
-  hints.push('Если ShortFarm запущен в удалённой среде, контейнере, WSL или по SSH, запустите ./run web --host 0.0.0.0 и откройте проброшенный порт 8000.');
+  hints.push('Если ShortsFarm запущен в удалённой среде, контейнере, WSL или по SSH, запустите ./run web --host 0.0.0.0 и откройте проброшенный порт 8000.');
   return hints.join('\n');
 }
 
@@ -338,7 +338,7 @@ function renderFsRoots() {
 async function initFsBrowser() {
   try {
     await loadFsRoots();
-    const stored = localStorage.getItem('shortfarm.fs.lastPath');
+    const stored = localStorage.getItem('shortsfarm.fs.lastPath');
     const videosRoot = fsState.roots.find(root => root.label === 'Видео');
     const homeRoot = fsState.roots.find(root => root.label === 'Дом');
     const candidates = [stored, videosRoot?.path, homeRoot?.path, fsState.roots[0]?.path].filter(Boolean);
@@ -372,7 +372,7 @@ async function openFolder(path, options={}) {
       const input = document.getElementById('split-path');
       if (input && splitMode === 'file') input.value = '';
     }
-    localStorage.setItem('shortfarm.fs.lastPath', data.path);
+    localStorage.setItem('shortsfarm.fs.lastPath', data.path);
     renderFsRoots();
     renderBreadcrumb(data.path);
     renderFileBrowser(data);
@@ -1084,10 +1084,10 @@ async function startYouTubeConnect() {
     showToast(message, 'err');
     return;
   }
-  const popup = window.open('about:blank', 'shortfarm_youtube_oauth');
+  const popup = window.open('about:blank', 'shortsfarm_youtube_oauth');
   if (popup) {
     try {
-      popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>ShortFarm · YouTube OAuth</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f4f5;color:#18181b;font:16px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}main{padding:24px 28px;border:1px solid #d4d4d8;border-radius:14px;background:#fff;box-shadow:0 20px 40px rgba(0,0,0,.08)}h1{margin:0 0 8px;font-size:20px}p{margin:0;color:#52525b}</style></head><body><main><h1>Открываю Google OAuth…</h1><p>Подождите пару секунд.</p></main></body></html>`);
+      popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>ShortsFarm · YouTube OAuth</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f4f5;color:#18181b;font:16px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}main{padding:24px 28px;border:1px solid #d4d4d8;border-radius:14px;background:#fff;box-shadow:0 20px 40px rgba(0,0,0,.08)}h1{margin:0 0 8px;font-size:20px}p{margin:0;color:#52525b}</style></head><body><main><h1>Открываю Google OAuth…</h1><p>Подождите пару секунд.</p></main></body></html>`);
       popup.document.close();
     } catch {}
   }
@@ -1523,12 +1523,12 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 window.addEventListener('message', event => {
   if (event.origin !== window.location.origin) return;
-  if (event.data?.type === 'shortfarm-youtube-oauth-complete' || event.data?.type === 'shortfarm-youtube-oauth-error') {
+  if (event.data?.type === 'shortsfarm-youtube-oauth-complete' || event.data?.type === 'shortsfarm-youtube-oauth-error') {
     handleOAuthEvent(event.data);
   }
 });
 window.addEventListener('storage', event => {
-  if (event.key === 'shortfarm.youtube.oauth.event' && event.newValue) {
+  if (event.key === 'shortsfarm.youtube.oauth.event' && event.newValue) {
     try {
       handleOAuthEvent(JSON.parse(event.newValue));
     } catch {

@@ -5,18 +5,18 @@ import sqlite3
 from pathlib import Path
 
 
-APP_NAME = "shortfarm"
+APP_NAME = "shortsfarm"
 YOUTUBE_CLIENT_ID_SETTING = "youtube_client_id"
 YOUTUBE_CLIENT_SECRET_SETTING = "youtube_client_secret"
 YOUTUBE_REDIRECT_URI_SETTING = "youtube_redirect_uri"
 DEFAULT_YOUTUBE_REDIRECT_URI = "http://127.0.0.1:8000/api/publish/youtube/oauth/callback"
 
 def data_dir() -> Path:
-    env_value = os.environ.get("SHORTFARM_HOME")
+    env_value = os.environ.get("SHORTSFARM_HOME")
     if env_value:
         return Path(env_value).expanduser().resolve()
 
-    return Path("shortfarm-data").resolve()
+    return Path("shortsfarm-data").resolve()
 
 
 def input_dir() -> Path:

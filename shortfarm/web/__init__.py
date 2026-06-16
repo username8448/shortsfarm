@@ -1,1 +1,0 @@
-"""ShortFarm local web UI."""

@@ -1,10 +1,10 @@
-# Гайд по использованию ShortFarm
+# Гайд по использованию ShortsFarm
 
 Самый частый сценарий:
 
 ```bash
 source .venv/bin/activate
-shortfarm split video.mp4
+shortsfarm split video.mp4
 ```
 
 Если не хотите активировать окружение, можно запускать так:
@@ -21,7 +21,7 @@ shortfarm split video.mp4
 cd /home/user/data/development/my-projects/shortsfarm
 ```
 
-Если вы случайно находитесь внутри папки `shortfarm/`, поднимитесь на уровень выше:
+Если вы случайно находитесь внутри папки `shortsfarm/`, поднимитесь на уровень выше:
 
 ```bash
 cd ..
@@ -33,38 +33,38 @@ cd ..
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-shortfarm init
-shortfarm doctor
+shortsfarm init
+shortsfarm doctor
 ```
 
-После `source .venv/bin/activate` команда доступна просто как `shortfarm`.
+После `source .venv/bin/activate` команда доступна просто как `shortsfarm`.
 
-Данные, база и готовые файлы по умолчанию лежат в папке `shortfarm-data` внутри проекта.
+Данные, база и готовые файлы по умолчанию лежат в папке `shortsfarm-data` внутри проекта.
 
 ## Быстро нарезать одно видео
 
 Нарезать видео по 60 секунд:
 
 ```bash
-shortfarm split video.mp4
+shortsfarm split video.mp4
 ```
 
 Указать другую длину куска:
 
 ```bash
-shortfarm split video.mp4 --seconds 30
+shortsfarm split video.mp4 --seconds 30
 ```
 
 Посмотреть план без нарезки и без записи в базу:
 
 ```bash
-shortfarm split video.mp4 --dry-run
+shortsfarm split video.mp4 --dry-run
 ```
 
 Готовые файлы появятся в:
 
 ```text
-shortfarm-data/output/split/<имя_видео>/<timestamp>/
+shortsfarm-data/output/split/<имя_видео>/<timestamp>/
 ```
 
 ## Пропустить части видео при нарезке
@@ -72,31 +72,31 @@ shortfarm-data/output/split/<имя_видео>/<timestamp>/
 Пропустить начало до `00:07:30`:
 
 ```bash
-shortfarm split video.mp4 --skip start-00:07:30
+shortsfarm split video.mp4 --skip start-00:07:30
 ```
 
 Пропустить всё после `01:37:00`:
 
 ```bash
-shortfarm split video.mp4 --skip 01:37:00-end
+shortsfarm split video.mp4 --skip 01:37:00-end
 ```
 
 Пропустить середину:
 
 ```bash
-shortfarm split video.mp4 --skip 00:20:00-00:25:00
+shortsfarm split video.mp4 --skip 00:20:00-00:25:00
 ```
 
 Можно указать несколько `--skip`:
 
 ```bash
-shortfarm split video.mp4 --skip start-00:07:30 --skip 01:37:00-end
+shortsfarm split video.mp4 --skip start-00:07:30 --skip 01:37:00-end
 ```
 
 Можно использовать обёртку `skip(...)`:
 
 ```bash
-shortfarm split video.mp4 --skip "skip(start-00:07:30, 01:37:00-end)"
+shortsfarm split video.mp4 --skip "skip(start-00:07:30, 01:37:00-end)"
 ```
 
 Поддерживаемые форматы времени:
@@ -114,47 +114,47 @@ end
 Нарезать все видеофайлы в папке:
 
 ```bash
-shortfarm split-folder ./videos
+shortsfarm split-folder ./videos
 ```
 
 Нарезать по 30 секунд:
 
 ```bash
-shortfarm split-folder ./videos --seconds 30
+shortsfarm split-folder ./videos --seconds 30
 ```
 
 С пропуском диапазонов:
 
 ```bash
-shortfarm split-folder ./videos --skip start-00:07:30 --skip 01:37:00-end
+shortsfarm split-folder ./videos --skip start-00:07:30 --skip 01:37:00-end
 ```
 
 Только посмотреть план:
 
 ```bash
-shortfarm split-folder ./videos --dry-run
+shortsfarm split-folder ./videos --dry-run
 ```
 
-Если одно видео в папке упадёт с ошибкой, ShortFarm покажет ошибку и продолжит остальные файлы.
+Если одно видео в папке упадёт с ошибкой, ShortsFarm покажет ошибку и продолжит остальные файлы.
 
 ## Ручной просмотр через mpv
 
 Открыть конкретное видео на ручную разметку:
 
 ```bash
-shortfarm review video.mp4
+shortsfarm review video.mp4
 ```
 
 Открыть следующее необработанное видео:
 
 ```bash
-shortfarm review-next
+shortsfarm review-next
 ```
 
 Повторно открыть уже просмотренное или пропущенное видео:
 
 ```bash
-shortfarm review video.mp4 --force
+shortsfarm review video.mp4 --force
 ```
 
 ## Горячие клавиши в mpv
@@ -183,19 +183,19 @@ shortfarm review video.mp4 --force
 Показать общую сводку:
 
 ```bash
-shortfarm status
+shortsfarm status
 ```
 
 Показать подробную сводку:
 
 ```bash
-shortfarm status --details
+shortsfarm status --details
 ```
 
 Показать состояние конкретного видео:
 
 ```bash
-shortfarm status video.mp4
+shortsfarm status video.mp4
 ```
 
 В сводке видны статусы видео, очередь клипов, количество готовых сегментов и последние ошибки.
@@ -205,25 +205,25 @@ shortfarm status video.mp4
 Показать очередь клипов и последние сегменты:
 
 ```bash
-shortfarm queue
+shortsfarm queue
 ```
 
 Показать только failed-клипы:
 
 ```bash
-shortfarm queue --failed
+shortsfarm queue --failed
 ```
 
 Показать готовые клипы:
 
 ```bash
-shortfarm queue --done
+shortsfarm queue --done
 ```
 
 Показать очередь по одному видео:
 
 ```bash
-shortfarm queue --video video.mp4
+shortsfarm queue --video video.mp4
 ```
 
 ## Рендер клипов после ручной разметки
@@ -231,19 +231,19 @@ shortfarm queue --video video.mp4
 Если вы размечали видео через `mpv`, клипы попадают в очередь. Нарендерить несколько клипов:
 
 ```bash
-shortfarm render --limit 5
+shortsfarm render --limit 5
 ```
 
 Нарендерить всю очередь:
 
 ```bash
-shortfarm render-all
+shortsfarm render-all
 ```
 
 Проверить результат:
 
 ```bash
-shortfarm queue --done
+shortsfarm queue --done
 ```
 
 ## Повторить failed-клипы
@@ -251,19 +251,19 @@ shortfarm queue --done
 Вернуть failed-клипы в очередь:
 
 ```bash
-shortfarm retry-failed
+shortsfarm retry-failed
 ```
 
 Вернуть один failed-клип:
 
 ```bash
-shortfarm retry-failed --clip-id 7
+shortsfarm retry-failed --clip-id 7
 ```
 
 После этого снова запустите рендер:
 
 ```bash
-shortfarm render --limit 5
+shortsfarm render --limit 5
 ```
 
 ## Безопасная очистка temp-файлов
@@ -271,7 +271,7 @@ shortfarm render --limit 5
 Удалить только временные файлы failed/rendering-клипов:
 
 ```bash
-shortfarm clean
+shortsfarm clean
 ```
 
 Готовые output-файлы эта команда не удаляет.
@@ -288,21 +288,21 @@ shortfarm clean
 ./run status
 ```
 
-Если `.venv/bin/shortfarm` ещё нет, `./run` покажет команды установки.
+Если `.venv/bin/shortsfarm` ещё нет, `./run` покажет команды установки.
 
 ## Advanced/debug команды
 
 Обычно они не нужны. Они оставлены для совместимости и диагностики:
 
 ```bash
-shortfarm debug add video.mp4
-shortfarm debug inbox
-shortfarm debug jobs
-shortfarm debug clips
-shortfarm debug marks 12
-shortfarm debug segments 12
-shortfarm debug review-id 12
-shortfarm debug split-id 12
+shortsfarm debug add video.mp4
+shortsfarm debug inbox
+shortsfarm debug jobs
+shortsfarm debug clips
+shortsfarm debug marks 12
+shortsfarm debug segments 12
+shortsfarm debug review-id 12
+shortsfarm debug split-id 12
 ```
 
-Старые alias вроде `shortfarm add`, `shortfarm inbox`, `shortfarm clips`, `shortfarm marks`, `shortfarm segments` тоже сохранены, но для обычной работы лучше использовать новый интерфейс: `split`, `review`, `status`, `queue`.
+Старые alias вроде `shortsfarm add`, `shortsfarm inbox`, `shortsfarm clips`, `shortsfarm marks`, `shortsfarm segments` тоже сохранены, но для обычной работы лучше использовать новый интерфейс: `split`, `review`, `status`, `queue`.

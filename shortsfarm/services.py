@@ -590,7 +590,7 @@ def open_video_for_review(
     elif status == "reviewing":
         raise ValueError(
             f"Video {video_id} is already being reviewed.\n"
-            "Use:  shortfarm review reset <video_id>  to reset it."
+            "Use:  shortsfarm review reset <video_id>  to reset it."
         )
 
     elif status in ("reviewed", "skipped", "failed"):

@@ -9,33 +9,33 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def test_add_video_returns_id(dummy_video):
-    from shortfarm import db
+    from shortsfarm import db
     vid = db.add_video(dummy_video, "test", 120.0)
     assert isinstance(vid, int) and vid > 0
 
 
 def test_add_video_idempotent(dummy_video):
-    from shortfarm import db
+    from shortsfarm import db
     id1 = db.add_video(dummy_video, "test", 120.0)
     id2 = db.add_video(dummy_video, "test", 120.0)
     assert id1 == id2
 
 
 def test_get_video(video_in_db):
-    from shortfarm import db
+    from shortsfarm import db
     row = db.get_video(video_in_db)
     assert row is not None
     assert row["review_status"] == "inbox"
 
 
 def test_update_review_status(video_in_db):
-    from shortfarm import db
+    from shortsfarm import db
     db.update_video_review_status(video_in_db, "reviewed")
     assert db.get_video(video_in_db)["review_status"] == "reviewed"
 
 
 def test_claim_inbox_video(video_in_db):
-    from shortfarm import db
+    from shortsfarm import db
     claimed = db.claim_inbox_video()
     assert claimed is not None
     assert int(claimed["id"]) == video_in_db
@@ -43,12 +43,12 @@ def test_claim_inbox_video(video_in_db):
 
 
 def test_claim_inbox_video_empty(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     assert db.claim_inbox_video() is None
 
 
 def test_claim_inbox_video_no_double_claim(video_in_db):
-    from shortfarm import db
+    from shortsfarm import db
     db.claim_inbox_video()
     second = db.claim_inbox_video()
     assert second is None          # already claimed
@@ -59,21 +59,21 @@ def test_claim_inbox_video_no_double_claim(video_in_db):
 # ---------------------------------------------------------------------------
 
 def test_create_review_session(video_in_db, tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
     sid = db.create_review_session(video_in_db, str(tmp_path / "s.jsonl"))
     row = db.get_review_session(sid)
     assert row["status"] == "open"
 
 
 def test_close_review_session(video_in_db, tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
     sid = db.create_review_session(video_in_db, str(tmp_path / "s.jsonl"))
     db.close_review_session(sid)
     assert db.get_review_session(sid)["status"] == "closed"
 
 
 def test_fail_review_session(video_in_db, tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
     sid = db.create_review_session(video_in_db, str(tmp_path / "s.jsonl"))
     db.fail_review_session(sid, "boom")
     row = db.get_review_session(sid)
@@ -82,7 +82,7 @@ def test_fail_review_session(video_in_db, tmp_path):
 
 
 def test_import_review_session(video_in_db, tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
     sid = db.create_review_session(video_in_db, str(tmp_path / "s.jsonl"))
     db.import_review_session(sid, warning="minor warn")
     row = db.get_review_session(sid)
@@ -91,7 +91,7 @@ def test_import_review_session(video_in_db, tmp_path):
 
 
 def test_abandon_open_sessions(video_in_db, tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
     sid1 = db.create_review_session(video_in_db, str(tmp_path / "a.jsonl"))
     sid2 = db.create_review_session(video_in_db, str(tmp_path / "b.jsonl"))
     count = db.abandon_open_sessions(video_in_db)
@@ -105,7 +105,7 @@ def test_abandon_open_sessions(video_in_db, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_insert_mark(video_in_db, tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
     sid = db.create_review_session(video_in_db, str(tmp_path / "s.jsonl"))
     mid = db.insert_mark(video_in_db, sid, 10.0, 70.0)
     rows = db.list_marks(video_in_db)
@@ -115,7 +115,7 @@ def test_insert_mark(video_in_db, tmp_path):
 
 
 def test_count_marks(video_in_db, tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
     sid = db.create_review_session(video_in_db, str(tmp_path / "s.jsonl"))
     db.insert_mark(video_in_db, sid, 0.0,  30.0)
     db.insert_mark(video_in_db, sid, 30.0, 60.0)
@@ -127,7 +127,7 @@ def test_count_marks(video_in_db, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_insert_and_list_clip(video_in_db, tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
     mid = db.insert_mark(video_in_db, None, 0.0, 60.0)
     cid = db.insert_clip(video_in_db, mid)
     clips = db.list_clips(status="queued")
@@ -135,7 +135,7 @@ def test_insert_and_list_clip(video_in_db, tmp_path):
 
 
 def test_clip_lifecycle(video_in_db, tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
     mid = db.insert_mark(video_in_db, None, 0.0, 60.0)
     cid = db.insert_clip(video_in_db, mid)
 
@@ -149,7 +149,7 @@ def test_clip_lifecycle(video_in_db, tmp_path):
 
 
 def test_reset_clip_to_queued(video_in_db):
-    from shortfarm import db
+    from shortsfarm import db
     mid = db.insert_mark(video_in_db, None, 0.0, 60.0)
     cid = db.insert_clip(video_in_db, mid)
     db.set_clip_failed(cid, "oops")
@@ -164,7 +164,7 @@ def test_reset_clip_to_queued(video_in_db):
 # ---------------------------------------------------------------------------
 
 def test_save_social_account_keeps_existing_refresh_token_when_missing():
-    from shortfarm import db
+    from shortsfarm import db
 
     account_id = db.save_social_account(
         platform="youtube",
@@ -199,7 +199,7 @@ def test_save_social_account_keeps_existing_refresh_token_when_missing():
 
 
 def test_save_social_account_replaces_refresh_token_when_present():
-    from shortfarm import db
+    from shortsfarm import db
 
     db.save_social_account(
         platform="youtube",
@@ -231,7 +231,7 @@ def test_save_social_account_replaces_refresh_token_when_present():
 
 
 def test_oauth_state_is_single_use():
-    from shortfarm import db
+    from shortsfarm import db
 
     db.create_oauth_state("youtube", "state-1", oauth_profile_id=7)
 
@@ -243,7 +243,7 @@ def test_oauth_state_is_single_use():
 
 
 def test_app_settings_save_read_mask_and_delete():
-    from shortfarm import db
+    from shortsfarm import db
 
     db.set_setting("youtube_client_id", "client-id")
     db.set_setting("youtube_client_secret", "secret-value", is_secret=True)
@@ -262,7 +262,7 @@ def test_app_settings_save_read_mask_and_delete():
 
 
 def test_create_multiple_youtube_oauth_profiles_and_set_default():
-    from shortfarm import db
+    from shortsfarm import db
 
     profile_one = db.create_youtube_oauth_profile(
         name="Profile One",
@@ -289,7 +289,7 @@ def test_create_multiple_youtube_oauth_profiles_and_set_default():
 
 
 def test_bootstrap_legacy_youtube_oauth_profile_from_settings():
-    from shortfarm import db
+    from shortsfarm import db
 
     db.set_setting("youtube_client_id", "legacy-client")
     db.set_setting("youtube_client_secret", "legacy-secret", is_secret=True)
@@ -306,7 +306,7 @@ def test_bootstrap_legacy_youtube_oauth_profile_from_settings():
 
 
 def test_delete_profile_with_active_channels_is_blocked():
-    from shortfarm import db
+    from shortsfarm import db
 
     profile_id = db.create_youtube_oauth_profile(
         name="Profile One",
@@ -334,7 +334,7 @@ def test_delete_profile_with_active_channels_is_blocked():
 
 
 def test_claim_next_publish_job_sets_uploading_atomically(tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
 
     source = tmp_path / "video.mp4"
     source.write_bytes(b"video")

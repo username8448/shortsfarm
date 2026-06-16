@@ -6,7 +6,7 @@ import pytest
 
 
 def _make_profile(name: str = "Profile", *, is_default: bool = True) -> int:
-    from shortfarm import db
+    from shortsfarm import db
 
     return db.create_youtube_oauth_profile(
         name=name,
@@ -19,7 +19,7 @@ def _make_profile(name: str = "Profile", *, is_default: bool = True) -> int:
 
 
 def _make_done_clip(tmp_path: Path, *, output_exists: bool = True) -> tuple[int, Path]:
-    from shortfarm import db
+    from shortsfarm import db
 
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
@@ -34,7 +34,7 @@ def _make_done_clip(tmp_path: Path, *, output_exists: bool = True) -> tuple[int,
 
 
 def _make_queued_clip(tmp_path: Path) -> int:
-    from shortfarm import db
+    from shortsfarm import db
 
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
@@ -44,7 +44,7 @@ def _make_queued_clip(tmp_path: Path) -> int:
 
 
 def _make_account(*, status: str = "active", oauth_profile_id: int | None = None) -> int:
-    from shortfarm import db
+    from shortsfarm import db
 
     profile_id = oauth_profile_id if oauth_profile_id is not None else _make_profile()
     return db.save_social_account(
@@ -69,8 +69,8 @@ def _make_job(
     publish_at: str | None = None,
     title: str = "Test",
 ) -> int:
-    from shortfarm import db
-    from shortfarm.publish_youtube import validate_publish_options
+    from shortsfarm import db
+    from shortsfarm.publish_youtube import validate_publish_options
 
     validated = validate_publish_options(
         title=title,
@@ -93,7 +93,7 @@ def _make_job(
 
 
 def _patch_success_upload(monkeypatch: pytest.MonkeyPatch, capture: dict) -> None:
-    from shortfarm import publish_youtube
+    from shortsfarm import publish_youtube
 
     class Request:
         def next_chunk(self):
@@ -115,8 +115,8 @@ def _patch_success_upload(monkeypatch: pytest.MonkeyPatch, capture: dict) -> Non
 
 
 def test_upload_rejects_clip_not_done(tmp_path):
-    from shortfarm import db
-    from shortfarm.publish_youtube import upload_clip_to_youtube
+    from shortsfarm import db
+    from shortsfarm.publish_youtube import upload_clip_to_youtube
 
     account_id = _make_account()
     clip_id = _make_queued_clip(tmp_path)
@@ -129,8 +129,8 @@ def test_upload_rejects_clip_not_done(tmp_path):
 
 
 def test_upload_rejects_empty_output_path(tmp_path):
-    from shortfarm import db
-    from shortfarm.publish_youtube import upload_clip_to_youtube
+    from shortsfarm import db
+    from shortsfarm.publish_youtube import upload_clip_to_youtube
 
     account_id = _make_account()
     clip_id = _make_queued_clip(tmp_path)
@@ -145,8 +145,8 @@ def test_upload_rejects_empty_output_path(tmp_path):
 
 
 def test_upload_rejects_missing_output_file(tmp_path):
-    from shortfarm import db
-    from shortfarm.publish_youtube import upload_clip_to_youtube
+    from shortsfarm import db
+    from shortsfarm.publish_youtube import upload_clip_to_youtube
 
     account_id = _make_account()
     clip_id, _output = _make_done_clip(tmp_path, output_exists=False)
@@ -159,8 +159,8 @@ def test_upload_rejects_missing_output_file(tmp_path):
 
 
 def test_upload_rejects_inactive_account(tmp_path):
-    from shortfarm import db
-    from shortfarm.publish_youtube import upload_clip_to_youtube
+    from shortsfarm import db
+    from shortsfarm.publish_youtube import upload_clip_to_youtube
 
     account_id = _make_account(status="disconnected")
     clip_id, _output = _make_done_clip(tmp_path)
@@ -173,7 +173,7 @@ def test_upload_rejects_inactive_account(tmp_path):
 
 
 def test_create_publish_job_does_not_duplicate_clip_account(tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
 
     account_id = _make_account()
     clip_id, _output = _make_done_clip(tmp_path)
@@ -185,7 +185,7 @@ def test_create_publish_job_does_not_duplicate_clip_account(tmp_path):
 
 
 def test_create_publish_job_requeues_failed_job(tmp_path):
-    from shortfarm import db
+    from shortsfarm import db
 
     account_id = _make_account()
     clip_id, _output = _make_done_clip(tmp_path)
@@ -210,7 +210,7 @@ def test_create_publish_job_requeues_failed_job(tmp_path):
     ],
 )
 def test_upload_privacy_modes(monkeypatch, tmp_path, mode, expected):
-    from shortfarm.publish_youtube import upload_clip_to_youtube
+    from shortsfarm.publish_youtube import upload_clip_to_youtube
 
     capture: dict = {}
     _patch_success_upload(monkeypatch, capture)
@@ -227,14 +227,14 @@ def test_upload_privacy_modes(monkeypatch, tmp_path, mode, expected):
 
 
 def test_schedule_requires_publish_at():
-    from shortfarm.publish_youtube import validate_publish_options
+    from shortsfarm.publish_youtube import validate_publish_options
 
     with pytest.raises(ValueError, match="publish_at обязателен"):
         validate_publish_options(title="Test", publish_mode="schedule", publish_at=None)
 
 
 def test_schedule_sets_private_and_publish_at(monkeypatch, tmp_path):
-    from shortfarm.publish_youtube import upload_clip_to_youtube
+    from shortsfarm.publish_youtube import upload_clip_to_youtube
 
     capture: dict = {}
     _patch_success_upload(monkeypatch, capture)
@@ -254,8 +254,8 @@ def test_schedule_sets_private_and_publish_at(monkeypatch, tmp_path):
 
 
 def test_upload_success_saves_youtube_fields(monkeypatch, tmp_path):
-    from shortfarm import db
-    from shortfarm.publish_youtube import upload_clip_to_youtube
+    from shortsfarm import db
+    from shortsfarm.publish_youtube import upload_clip_to_youtube
 
     capture: dict = {}
     _patch_success_upload(monkeypatch, capture)
@@ -272,8 +272,8 @@ def test_upload_success_saves_youtube_fields(monkeypatch, tmp_path):
 
 
 def test_upload_failure_marks_job_failed(monkeypatch, tmp_path):
-    from shortfarm import db, publish_youtube
-    from shortfarm.publish_youtube import upload_clip_to_youtube
+    from shortsfarm import db, publish_youtube
+    from shortsfarm.publish_youtube import upload_clip_to_youtube
 
     class Request:
         def next_chunk(self):
@@ -302,8 +302,8 @@ def test_upload_failure_marks_job_failed(monkeypatch, tmp_path):
 
 
 def test_transient_upload_failure_sets_next_attempt_at(monkeypatch, tmp_path):
-    from shortfarm import db, publish_youtube
-    from shortfarm.publish_youtube import upload_clip_to_youtube
+    from shortsfarm import db, publish_youtube
+    from shortsfarm.publish_youtube import upload_clip_to_youtube
 
     class RetryableError(Exception):
         def __init__(self):
@@ -340,8 +340,8 @@ def test_transient_upload_failure_sets_next_attempt_at(monkeypatch, tmp_path):
 
 
 def test_enqueue_clip_creates_queued_job(tmp_path):
-    from shortfarm.web import api
-    from shortfarm.web.schemas import YouTubeUploadRequest
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeUploadRequest
 
     account_id = _make_account()
     clip_id, _output = _make_done_clip(tmp_path)
@@ -366,7 +366,7 @@ def test_enqueue_clip_creates_queued_job(tmp_path):
 
 
 def test_publish_jobs_api_returns_context(tmp_path):
-    from shortfarm.web import api
+    from shortsfarm.web import api
 
     account_id = _make_account()
     clip_id, _output = _make_done_clip(tmp_path)
@@ -382,8 +382,8 @@ def test_publish_jobs_api_returns_context(tmp_path):
 
 
 def test_retry_failed_job_requeues_job(tmp_path):
-    from shortfarm import db
-    from shortfarm.web import api
+    from shortsfarm import db
+    from shortsfarm.web import api
 
     account_id = _make_account()
     clip_id, _output = _make_done_clip(tmp_path)
@@ -397,8 +397,8 @@ def test_retry_failed_job_requeues_job(tmp_path):
 
 
 def test_cancel_publish_job_marks_cancelled(tmp_path):
-    from shortfarm import db
-    from shortfarm.web import api
+    from shortsfarm import db
+    from shortsfarm.web import api
 
     account_id = _make_account()
     clip_id, _output = _make_done_clip(tmp_path)
@@ -411,8 +411,8 @@ def test_cancel_publish_job_marks_cancelled(tmp_path):
 
 
 def test_publish_job_run_calls_upload(monkeypatch, tmp_path):
-    from shortfarm import db
-    from shortfarm.web import api
+    from shortsfarm import db
+    from shortsfarm.web import api
 
     account_id = _make_account()
     clip_id, _output = _make_done_clip(tmp_path)
@@ -431,7 +431,7 @@ def test_publish_job_run_calls_upload(monkeypatch, tmp_path):
 
 
 def test_worker_once_processes_queued_job(monkeypatch, tmp_path):
-    from shortfarm import db, publish_youtube
+    from shortsfarm import db, publish_youtube
 
     account_id = _make_account()
     clip_id, _output = _make_done_clip(tmp_path)
@@ -452,8 +452,8 @@ def test_worker_once_processes_queued_job(monkeypatch, tmp_path):
 
 
 def test_old_account_without_profile_can_use_default_profile(monkeypatch, tmp_path):
-    from shortfarm import db
-    from shortfarm.publish_youtube import upload_clip_to_youtube
+    from shortsfarm import db
+    from shortsfarm.publish_youtube import upload_clip_to_youtube
 
     _make_profile()
     capture: dict = {}

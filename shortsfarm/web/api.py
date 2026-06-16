@@ -795,7 +795,7 @@ def _oauth_page(title: str, message: str, *, ok: bool) -> HTMLResponse:
     safe_message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     payload = json.dumps(
         {
-            "type": "shortfarm-youtube-oauth-complete" if ok else "shortfarm-youtube-oauth-error",
+            "type": "shortsfarm-youtube-oauth-complete" if ok else "shortsfarm-youtube-oauth-error",
             "ok": ok,
             "message": message,
         },
@@ -806,8 +806,8 @@ def _oauth_page(title: str, message: str, *, ok: bool) -> HTMLResponse:
     (function () {{
       const payload = {payload};
       try {{
-        localStorage.setItem('shortfarm.youtube.oauth.event', JSON.stringify(payload));
-        localStorage.setItem('shortfarm.youtube.oauth.updated', String(Date.now()));
+        localStorage.setItem('shortsfarm.youtube.oauth.event', JSON.stringify(payload));
+        localStorage.setItem('shortsfarm.youtube.oauth.updated', String(Date.now()));
       }} catch (err) {{}}
       try {{
         if (window.opener && !window.opener.closed) {{
@@ -1148,7 +1148,7 @@ def youtube_oauth_callback(
         )
         return _oauth_page(
             "YouTube аккаунт подключён",
-            "Можно закрыть эту вкладку и вернуться в ShortFarm. Затем нажмите «Обновить» в разделе «Публикация».",
+            "Можно закрыть эту вкладку и вернуться в ShortsFarm. Затем нажмите «Обновить» в разделе «Публикация».",
             ok=True,
         )
     except Exception as exc:

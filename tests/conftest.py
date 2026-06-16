@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for ShortFarm tests."""
+"""Shared pytest fixtures for ShortsFarm tests."""
 from __future__ import annotations
 
 import os
@@ -14,20 +14,20 @@ from typer.testing import CliRunner
 
 @pytest.fixture(autouse=True)
 def tmp_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Set SHORTFARM_HOME to a fresh tmp directory for each test."""
-    home = tmp_path / "shortfarm-data"
+    """Set SHORTSFARM_HOME to a fresh tmp directory for each test."""
+    home = tmp_path / "shortsfarm-data"
     home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("SHORTFARM_HOME", str(home))
+    monkeypatch.setenv("SHORTSFARM_HOME", str(home))
     monkeypatch.delenv("YOUTUBE_CLIENT_ID", raising=False)
     monkeypatch.delenv("YOUTUBE_CLIENT_SECRET", raising=False)
     monkeypatch.delenv("YOUTUBE_REDIRECT_URI", raising=False)
 
     # Re-import config so cached Path objects are refreshed
     import importlib
-    import shortfarm.config as cfg
+    import shortsfarm.config as cfg
     importlib.reload(cfg)
 
-    from shortfarm import db
+    from shortsfarm import db
     db.init_db()
 
     return home
@@ -59,7 +59,7 @@ def dummy_video(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def video_in_db(dummy_video: Path) -> int:
-    from shortfarm import db
+    from shortsfarm import db
     return db.add_video(
         source_path  = dummy_video,
         title        = dummy_video.stem,
@@ -73,7 +73,7 @@ def video_in_db(dummy_video: Path) -> int:
 
 @pytest.fixture
 def mark_in_db(video_in_db: int, tmp_path: Path) -> dict:
-    from shortfarm import db
+    from shortsfarm import db
     session_id = db.create_review_session(video_in_db, str(tmp_path / "s.jsonl"))
     mark_id    = db.insert_mark(
         video_id   = video_in_db,

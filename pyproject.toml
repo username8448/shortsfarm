@@ -3,7 +3,7 @@ requires      = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name        = "shortfarm"
+name        = "shortsfarm"
 version     = "0.2.0"
 description = "Local CLI tool for MPV-assisted short video review and rendering."
 requires-python = ">=3.11"
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-shortfarm = "shortfarm.cli:app"
+shortsfarm = "shortsfarm.cli:app"
 
 [project.optional-dependencies]
 dev = [
@@ -28,10 +28,10 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["shortfarm*"]
+include = ["shortsfarm*"]
 
 [tool.setuptools.package-data]
-shortfarm = [
+shortsfarm = [
     "migrations/*.sql",
     "scripts/*.lua",
     "web/templates/*.html",
@@ -45,5 +45,5 @@ testpaths    = ["tests"]
 addopts      = "-v"
 
 [tool.coverage.run]
-source = ["shortfarm"]
+source = ["shortsfarm"]
 omit   = ["tests/*"]

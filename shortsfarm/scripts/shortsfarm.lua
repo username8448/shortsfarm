@@ -1,5 +1,5 @@
 --[[
-  shortfarm.lua - ShortFarm MPV review script
+  shortsfarm.lua - ShortsFarm MPV review script
   ============================================
   Hotkeys
     i  set IN point
@@ -30,12 +30,12 @@ local final_written = false
 -- -------------------------------------------------------------------------
 local function write_line(line)
     if marks_file == "" then
-        mp.msg.warn("[shortfarm] marks-file not set - events not saved")
+        mp.msg.warn("[shortsfarm] marks-file not set - events not saved")
         return
     end
     local f = io.open(marks_file, "a")
     if not f then
-        mp.msg.error("[shortfarm] cannot open: " .. marks_file)
+        mp.msg.error("[shortsfarm] cannot open: " .. marks_file)
         return
     end
     f:write(line .. "\n")
@@ -149,6 +149,6 @@ mp.register_event("shutdown", function()
 end)
 
 mp.msg.info(
-    "[shortfarm] loaded  marks-file=" ..
+    "[shortsfarm] loaded  marks-file=" ..
     (marks_file ~= "" and marks_file or "(not set)")
 )

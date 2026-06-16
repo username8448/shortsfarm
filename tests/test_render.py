@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock, call
 
 
 def _make_mark_and_clip(video_id: int) -> tuple[int, int]:
-    from shortfarm import db
+    from shortsfarm import db
     mid = db.insert_mark(video_id, None, 5.0, 65.0)
     cid = db.insert_clip(video_id, mid, cut_mode="exact")
     return mid, cid
@@ -18,17 +18,17 @@ def _make_mark_and_clip(video_id: int) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 def test_render_clip_success(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.render import render_clip
+    from shortsfarm import db
+    from shortsfarm.render import render_clip
 
     mid, cid = _make_mark_and_clip(video_in_db)
 
     fake = MagicMock()
     fake.returncode = 0
 
-    with patch("shortfarm.render.require_binary", return_value="ffmpeg"), \
-         patch("shortfarm.render.subprocess.run", return_value=fake), \
-         patch("shortfarm.render.shutil.move") as mock_move:
+    with patch("shortsfarm.render.require_binary", return_value="ffmpeg"), \
+         patch("shortsfarm.render.subprocess.run", return_value=fake), \
+         patch("shortsfarm.render.shutil.move") as mock_move:
         output = render_clip(cid)
 
     # Clip should be done
@@ -42,8 +42,8 @@ def test_render_clip_success(video_in_db, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_render_clip_ffmpeg_fails(video_in_db):
-    from shortfarm import db
-    from shortfarm.render import render_clip
+    from shortsfarm import db
+    from shortsfarm.render import render_clip
 
     mid, cid = _make_mark_and_clip(video_in_db)
 
@@ -51,8 +51,8 @@ def test_render_clip_ffmpeg_fails(video_in_db):
     fake.returncode = 1
     fake.stderr = "ffmpeg error line\n" * 5
 
-    with patch("shortfarm.render.require_binary", return_value="ffmpeg"), \
-         patch("shortfarm.render.subprocess.run", return_value=fake), \
+    with patch("shortsfarm.render.require_binary", return_value="ffmpeg"), \
+         patch("shortsfarm.render.subprocess.run", return_value=fake), \
          pytest.raises(RuntimeError, match="ffmpeg failed"):
         render_clip(cid)
 
@@ -60,8 +60,8 @@ def test_render_clip_ffmpeg_fails(video_in_db):
 
 
 def test_render_clip_missing_source_marks_failed(video_in_db):
-    from shortfarm import db
-    from shortfarm.render import render_clip
+    from shortsfarm import db
+    from shortsfarm.render import render_clip
 
     video = db.get_video(video_in_db)
     Path(str(video["source_path"])).unlink()
@@ -80,8 +80,8 @@ def test_render_clip_missing_source_marks_failed(video_in_db):
 # ---------------------------------------------------------------------------
 
 def test_render_clip_wrong_status(video_in_db):
-    from shortfarm import db
-    from shortfarm.render import render_clip
+    from shortsfarm import db
+    from shortsfarm.render import render_clip
 
     mid, cid = _make_mark_and_clip(video_in_db)
     db.set_clip_done(cid, "/fake/path.mp4")
@@ -95,8 +95,8 @@ def test_render_clip_wrong_status(video_in_db):
 # ---------------------------------------------------------------------------
 
 def test_retry_failed_clips(video_in_db):
-    from shortfarm import db
-    from shortfarm.render import retry_failed_clips
+    from shortsfarm import db
+    from shortsfarm.render import retry_failed_clips
 
     mid, cid = _make_mark_and_clip(video_in_db)
     db.set_clip_failed(cid, "timeout")
@@ -108,8 +108,8 @@ def test_retry_failed_clips(video_in_db):
 
 
 def test_retry_failed_skips_existing_output(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.render import retry_failed_clips
+    from shortsfarm import db
+    from shortsfarm.render import retry_failed_clips
 
     mid, cid = _make_mark_and_clip(video_in_db)
     existing = tmp_path / "out.mp4"
@@ -133,8 +133,8 @@ def test_retry_failed_skips_existing_output(video_in_db, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_render_queued_batch(video_in_db):
-    from shortfarm import db
-    from shortfarm.render import render_queued
+    from shortsfarm import db
+    from shortsfarm.render import render_queued
 
     for i in range(3):
         mid = db.insert_mark(video_in_db, None, float(i * 70), float(i * 70 + 60))
@@ -143,17 +143,17 @@ def test_render_queued_batch(video_in_db):
     fake = MagicMock()
     fake.returncode = 0
 
-    with patch("shortfarm.render.require_binary", return_value="ffmpeg"), \
-         patch("shortfarm.render.subprocess.run", return_value=fake), \
-         patch("shortfarm.render.shutil.move"):
+    with patch("shortsfarm.render.require_binary", return_value="ffmpeg"), \
+         patch("shortsfarm.render.subprocess.run", return_value=fake), \
+         patch("shortsfarm.render.shutil.move"):
         results = render_queued(limit=2)
 
     assert len(results) == 2
 
 
 def test_render_all_marks_preflight_failure_failed(video_in_db):
-    from shortfarm import db
-    from shortfarm.render import render_all_queued
+    from shortsfarm import db
+    from shortsfarm.render import render_all_queued
 
     video = db.get_video(video_in_db)
     Path(str(video["source_path"])).unlink()

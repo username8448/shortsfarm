@@ -31,7 +31,7 @@ from .services import (
 # ---------------------------------------------------------------------------
 
 app = typer.Typer(
-    name="shortfarm",
+    name="shortsfarm",
     help="Local CLI tool for simple video splitting and MPV-assisted review.",
     no_args_is_help=True,
 )
@@ -103,8 +103,8 @@ def _resolve_existing_video_path(path: Path) -> tuple[Path, int]:
     row = db.get_video_by_source_path(resolved)
     if row is None:
         raise ValueError(
-            f"File is not in ShortFarm yet: {resolved}\n"
-            "Use 'shortfarm split <file>' or 'shortfarm review <file>' first."
+            f"File is not in ShortsFarm yet: {resolved}\n"
+            "Use 'shortsfarm split <file>' or 'shortsfarm review <file>' first."
         )
     return resolved, int(row["id"])
 
@@ -299,7 +299,7 @@ def init() -> None:
     """Create local data folders and run database migrations."""
     ensure_dirs()
     db.init_db()
-    typer.echo("Initialized ShortFarm data directory:")
+    typer.echo("Initialized ShortsFarm data directory:")
     typer.echo(f"  data:   {data_dir()}")
     typer.echo(f"  input:  {input_dir()}")
     typer.echo(f"  output: {output_dir()}")
@@ -494,7 +494,7 @@ def split_file_cmd(
 
 @app.command("fast-split", hidden=True)
 def fast_split_cmd(
-    video_id: int = typer.Argument(..., help="Video ID from 'shortfarm videos'"),
+    video_id: int = typer.Argument(..., help="Video ID from 'shortsfarm videos'"),
     seconds: int = typer.Option(60, "--seconds", "-s", help="Segment length in seconds"),
     skip: list[str] = typer.Option(
         [],
@@ -645,35 +645,35 @@ def review_cmd(
 
         if video_id is not None:
             if target is not None or args:
-                die("Use either 'shortfarm review --id <id>' or 'shortfarm review <file>'.")
+                die("Use either 'shortsfarm review --id <id>' or 'shortsfarm review <file>'.")
             _review_video_id(video_id, force=force)
             return
 
         if target is None:
-            die("Use: shortfarm review <video-file>")
+            die("Use: shortsfarm review <video-file>")
 
         if target == "inbox":
             if args:
-                die("Use: shortfarm review inbox")
+                die("Use: shortsfarm review inbox")
             _review_next()
             return
 
         if target == "open-id":
             if not args or not _is_int_token(args[0]):
-                die("Use: shortfarm review open-id <video_id>")
+                die("Use: shortsfarm review open-id <video_id>")
             _review_video_id(int(args[0]), force=force)
             return
 
         if target == "open":
             if not args:
-                die("Use: shortfarm review open <video-file>")
+                die("Use: shortsfarm review open <video-file>")
             _review_video_path(Path(args[0]), force=force)
             return
 
         if target == "reset":
             args = [arg for arg in args if arg != "--abandon-open-session"]
             if not args or not _is_int_token(args[0]):
-                die("Use: shortfarm review reset <video_id>")
+                die("Use: shortsfarm review reset <video_id>")
             _review_reset(int(args[0]))
             return
 
@@ -1127,7 +1127,7 @@ def _write_web_pid() -> Path:
         except ValueError:
             existing_pid = None
     if existing_pid and _is_process_alive(existing_pid):
-        raise RuntimeError(f"ShortFarm web уже запущен: PID {existing_pid}")
+        raise RuntimeError(f"ShortsFarm web уже запущен: PID {existing_pid}")
     path.write_text(f"{os.getpid()}\n", encoding="utf-8")
     return path
 
@@ -1166,7 +1166,7 @@ def web_cmd(
             webbrowser.open(url)
 
         uvicorn.run(
-            "shortfarm.web.app:create_app",
+            "shortsfarm.web.app:create_app",
             factory=True,
             host=host,
             port=port,
@@ -1183,29 +1183,29 @@ def web_cmd(
 
 @app.command("stop")
 def stop_cmd() -> None:
-    """Stop the local ShortFarm web server started by 'shortfarm web'."""
+    """Stop the local ShortsFarm web server started by 'shortsfarm web'."""
     try:
         ensure_dirs()
         pid_path = _web_pid_path()
         if not pid_path.exists():
-            typer.echo("ShortFarm web is not running.")
+            typer.echo("ShortsFarm web is not running.")
             return
 
         try:
             pid = int(pid_path.read_text(encoding="utf-8").strip())
         except ValueError:
             _remove_web_pid(pid_path)
-            typer.echo("Removed stale ShortFarm web pid file.")
+            typer.echo("Removed stale ShortsFarm web pid file.")
             return
 
         if not _is_process_alive(pid):
             _remove_web_pid(pid_path)
-            typer.echo(f"ShortFarm web is not running. Removed stale pid file for PID {pid}.")
+            typer.echo(f"ShortsFarm web is not running. Removed stale pid file for PID {pid}.")
             return
 
         os.kill(pid, signal.SIGTERM)
         _remove_web_pid(pid_path)
-        typer.echo(f"Stopped ShortFarm web server PID {pid}.")
+        typer.echo(f"Stopped ShortsFarm web server PID {pid}.")
     except Exception as exc:
         die(str(exc))
 

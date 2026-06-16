@@ -2,8 +2,8 @@ from __future__ import annotations
 
 
 def test_youtube_config_prefers_db_settings(monkeypatch):
-    from shortfarm import db
-    import shortfarm.config as cfg
+    from shortsfarm import db
+    import shortsfarm.config as cfg
 
     monkeypatch.setenv("YOUTUBE_CLIENT_ID", "env-client")
     monkeypatch.setenv("YOUTUBE_CLIENT_SECRET", "env-secret")
@@ -19,7 +19,7 @@ def test_youtube_config_prefers_db_settings(monkeypatch):
 
 
 def test_youtube_config_env_fallback_when_db_settings_absent(monkeypatch):
-    import shortfarm.config as cfg
+    import shortsfarm.config as cfg
 
     monkeypatch.setenv("YOUTUBE_CLIENT_ID", "env-client")
     monkeypatch.setenv("YOUTUBE_CLIENT_SECRET", "env-secret")

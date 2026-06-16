@@ -26,7 +26,7 @@ def _mock_mpv_run(session_file: Path, events: list[dict]):
 # ---------------------------------------------------------------------------
 
 def test_parse_marks_basic():
-    from shortfarm.mpv_session import _parse_marks
+    from shortsfarm.mpv_session import _parse_marks
     events = [
         {"event": "mark",       "in": 10.0, "out": 70.0},
         {"event": "quick_clip", "in": 80.0, "out": 140.0},
@@ -37,7 +37,7 @@ def test_parse_marks_basic():
 
 
 def test_parse_marks_undo():
-    from shortfarm.mpv_session import _parse_marks
+    from shortsfarm.mpv_session import _parse_marks
     events = [
         {"event": "mark", "in": 0.0, "out": 60.0},
         {"event": "mark", "in": 60.0, "out": 120.0},
@@ -49,14 +49,14 @@ def test_parse_marks_undo():
 
 
 def test_parse_marks_undo_empty():
-    from shortfarm.mpv_session import _parse_marks
+    from shortsfarm.mpv_session import _parse_marks
     # undo on empty list should not crash
     marks = _parse_marks([{"event": "undo"}])
     assert marks == []
 
 
 def test_parse_marks_invalid_range():
-    from shortfarm.mpv_session import _parse_marks
+    from shortsfarm.mpv_session import _parse_marks
     # out <= in should be skipped
     events = [{"event": "mark", "in": 100.0, "out": 50.0}]
     assert _parse_marks(events) == []
@@ -67,7 +67,7 @@ def test_parse_marks_invalid_range():
 # ---------------------------------------------------------------------------
 
 def _setup_session(video_in_db, tmp_path, events):
-    from shortfarm import db
+    from shortsfarm import db
     session_file = tmp_path / "sess.jsonl"
     session_id   = db.create_review_session(video_in_db, str(session_file))
     db.update_video_review_status(video_in_db, "reviewing")
@@ -77,8 +77,8 @@ def _setup_session(video_in_db, tmp_path, events):
 
 
 def test_import_done(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.mpv_session import _import_session
+    from shortsfarm import db
+    from shortsfarm.mpv_session import _import_session
 
     events = [
         {"event": "mark", "in": 10.0, "out": 70.0},
@@ -94,8 +94,8 @@ def test_import_done(video_in_db, tmp_path):
 
 
 def test_import_skip(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.mpv_session import _import_session
+    from shortsfarm import db
+    from shortsfarm.mpv_session import _import_session
 
     sid, sf = _setup_session(video_in_db, tmp_path, [{"event": "skip"}])
     _import_session(session_id=sid, video_id=video_in_db, session_file=sf)
@@ -104,8 +104,8 @@ def test_import_skip(video_in_db, tmp_path):
 
 
 def test_import_quit_returns_to_inbox(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.mpv_session import _import_session
+    from shortsfarm import db
+    from shortsfarm.mpv_session import _import_session
 
     events = [
         {"event": "mark", "in": 5.0, "out": 65.0},
@@ -121,8 +121,8 @@ def test_import_quit_returns_to_inbox(video_in_db, tmp_path):
 
 
 def test_import_no_final_event(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.mpv_session import _import_session
+    from shortsfarm import db
+    from shortsfarm.mpv_session import _import_session
 
     events = [{"event": "mark", "in": 0.0, "out": 60.0}]
     sid, sf = _setup_session(video_in_db, tmp_path, events)
@@ -133,8 +133,8 @@ def test_import_no_final_event(video_in_db, tmp_path):
 
 
 def test_import_missing_file(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.mpv_session import _import_session
+    from shortsfarm import db
+    from shortsfarm.mpv_session import _import_session
 
     session_file = tmp_path / "nonexistent.jsonl"
     sid = db.create_review_session(video_in_db, str(session_file))
@@ -147,8 +147,8 @@ def test_import_missing_file(video_in_db, tmp_path):
 
 
 def test_import_bad_json_lines_skipped(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.mpv_session import _import_session
+    from shortsfarm import db
+    from shortsfarm.mpv_session import _import_session
 
     session_file = tmp_path / "sess.jsonl"
     session_file.write_text(
@@ -171,8 +171,8 @@ def test_import_bad_json_lines_skipped(video_in_db, tmp_path):
 
 
 def test_import_non_object_json_lines_skipped(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.mpv_session import _import_session
+    from shortsfarm import db
+    from shortsfarm.mpv_session import _import_session
 
     session_file = tmp_path / "sess.jsonl"
     session_file.write_text(
@@ -194,8 +194,8 @@ def test_import_non_object_json_lines_skipped(video_in_db, tmp_path):
 
 
 def test_import_invalid_rating_and_label_do_not_break_import(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.mpv_session import _import_session
+    from shortsfarm import db
+    from shortsfarm.mpv_session import _import_session
 
     events = [
         {"event": "mark", "in": 0.0, "out": 60.0, "rating": 99, "label": {"x": 1}},
@@ -213,8 +213,8 @@ def test_import_invalid_rating_and_label_do_not_break_import(video_in_db, tmp_pa
 
 
 def test_import_undo_affects_clips(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.mpv_session import _import_session
+    from shortsfarm import db
+    from shortsfarm.mpv_session import _import_session
 
     events = [
         {"event": "mark", "in": 0.0,  "out": 60.0},
@@ -230,8 +230,8 @@ def test_import_undo_affects_clips(video_in_db, tmp_path):
 
 
 def test_import_is_idempotent_after_success(video_in_db, tmp_path):
-    from shortfarm import db
-    from shortfarm.mpv_session import _import_session
+    from shortsfarm import db
+    from shortsfarm.mpv_session import _import_session
 
     events = [
         {"event": "mark", "in": 10.0, "out": 70.0},
@@ -251,11 +251,11 @@ def test_launch_review_missing_mpv_records_failed_session(
     video_in_db,
     monkeypatch,
 ):
-    from shortfarm import db
-    from shortfarm.mpv_session import launch_review
+    from shortsfarm import db
+    from shortsfarm.mpv_session import launch_review
 
     db.update_video_review_status(video_in_db, "reviewing")
-    monkeypatch.setattr("shortfarm.mpv_session.shutil.which", lambda name: None)
+    monkeypatch.setattr("shortsfarm.mpv_session.shutil.which", lambda name: None)
 
     with pytest.raises(RuntimeError, match="mpv failed to start"):
         launch_review(video_in_db)

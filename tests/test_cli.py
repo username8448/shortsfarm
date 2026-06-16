@@ -11,15 +11,15 @@ from unittest.mock import patch, MagicMock
 # ---------------------------------------------------------------------------
 
 def test_init(runner):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["init"])
     assert result.exit_code == 0
     assert "Initialized" in result.output
 
 
 def test_doctor_missing_ffmpeg(runner, tmp_data_dir):
-    from shortfarm.cli import app
-    with patch("shortfarm.ffmpeg_tools.shutil.which", return_value=None):
+    from shortsfarm.cli import app
+    with patch("shortsfarm.ffmpeg_tools.shutil.which", return_value=None):
         result = runner.invoke(app, ["doctor"])
     assert result.exit_code != 0 or "ERROR" in (result.output + result.stderr)
 
@@ -29,15 +29,15 @@ def test_doctor_missing_ffmpeg(runner, tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 def test_videos_empty(runner):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["videos"])
     assert result.exit_code == 0
     assert "No videos" in result.output
 
 
 def test_add_and_list(runner, dummy_video):
-    from shortfarm.cli import app
-    with patch("shortfarm.services.probe_duration", return_value=60.0):
+    from shortsfarm.cli import app
+    with patch("shortsfarm.services.probe_duration", return_value=60.0):
         r = runner.invoke(app, ["add", str(dummy_video)])
     assert r.exit_code == 0
     assert "Added video" in r.output
@@ -47,7 +47,7 @@ def test_add_and_list(runner, dummy_video):
 
 
 def test_add_missing_file(runner, tmp_data_dir):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["add", "/no/such/video.mp4"])
     assert result.exit_code != 0
 
@@ -57,14 +57,14 @@ def test_add_missing_file(runner, tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 def test_inbox_empty(runner, tmp_data_dir):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["inbox"])
     assert result.exit_code == 0
 
 
 def test_inbox_shows_video(runner, tmp_data_dir, dummy_video):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
     db.add_video(dummy_video, dummy_video.stem, 60.0)
 
@@ -79,22 +79,22 @@ def test_inbox_shows_video(runner, tmp_data_dir, dummy_video):
 # ---------------------------------------------------------------------------
 
 def test_marks_empty(runner, video_in_db):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["marks", str(video_in_db)])
     assert result.exit_code == 0
     assert "No marks" in result.output
 
 
 def test_marks_with_data(runner, mark_in_db):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["marks", str(mark_in_db["video_id"])])
     assert result.exit_code == 0
     assert "10.00" in result.output
 
 
 def test_skip_cmd(runner, video_in_db):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
     result = runner.invoke(app, ["skip", str(video_in_db)])
     assert result.exit_code == 0
     assert db.get_video(video_in_db)["review_status"] == "skipped"
@@ -105,23 +105,23 @@ def test_skip_cmd(runner, video_in_db):
 # ---------------------------------------------------------------------------
 
 def test_review_inbox_no_videos(runner, tmp_data_dir):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["review", "inbox"])
     assert result.exit_code == 0
     assert "No inbox" in result.output
 
 
 def test_review_open_id_already_reviewing(runner, video_in_db):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
     db.update_video_review_status(video_in_db, "reviewing")
     result = runner.invoke(app, ["review", "open-id", str(video_in_db)])
     assert result.exit_code != 0
 
 
 def test_review_reset(runner, video_in_db, tmp_path):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
     db.update_video_review_status(video_in_db, "reviewing")
     db.create_review_session(video_in_db, str(tmp_path / "s.jsonl"))
 
@@ -135,14 +135,14 @@ def test_review_reset(runner, video_in_db, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_clips_empty(runner, tmp_data_dir):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["clips"])
     assert result.exit_code == 0
     assert "No clips" in result.output
 
 
 def test_clips_list(runner, mark_in_db):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["clips", "--status", "queued"])
     assert result.exit_code == 0
     assert "queued" in result.output
@@ -153,29 +153,29 @@ def test_clips_list(runner, mark_in_db):
 # ---------------------------------------------------------------------------
 
 def test_render_no_queued(runner, tmp_data_dir):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["render"])
     assert result.exit_code == 0
     assert "No queued" in result.output
 
 
 def test_render_all_no_queued(runner, tmp_data_dir):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["render-all"])
     assert result.exit_code == 0
     assert "No queued" in result.output
 
 
 def test_fast_split_with_skip(runner, video_in_db):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
     def fake_cut(input_path, output_path, start_sec, end_sec):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"x")
         return output_path
 
-    with patch("shortfarm.services.fast_cut_range", side_effect=fake_cut):
+    with patch("shortsfarm.services.fast_cut_range", side_effect=fake_cut):
         result = runner.invoke(
             app,
             [
@@ -202,16 +202,16 @@ def test_fast_split_with_skip(runner, video_in_db):
 # ---------------------------------------------------------------------------
 
 def test_split_file_default_creates_segments(runner, tmp_data_dir, dummy_video):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
     def fake_cut(input_path, output_path, start_sec, end_sec):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"x")
         return output_path
 
-    with patch("shortfarm.services.probe_duration", return_value=125.0), \
-         patch("shortfarm.services.fast_cut_range", side_effect=fake_cut) as cut:
+    with patch("shortsfarm.services.probe_duration", return_value=125.0), \
+         patch("shortsfarm.services.fast_cut_range", side_effect=fake_cut) as cut:
         result = runner.invoke(app, ["split", str(dummy_video)])
 
     assert result.exit_code == 0, result.output
@@ -230,16 +230,16 @@ def test_split_file_default_creates_segments(runner, tmp_data_dir, dummy_video):
 
 
 def test_split_file_with_skip_ranges(runner, dummy_video):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
     def fake_cut(input_path, output_path, start_sec, end_sec):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"x")
         return output_path
 
-    with patch("shortfarm.services.probe_duration", return_value=180.0), \
-         patch("shortfarm.services.fast_cut_range", side_effect=fake_cut):
+    with patch("shortsfarm.services.probe_duration", return_value=180.0), \
+         patch("shortsfarm.services.fast_cut_range", side_effect=fake_cut):
         result = runner.invoke(
             app,
             [
@@ -262,11 +262,11 @@ def test_split_file_with_skip_ranges(runner, dummy_video):
 
 
 def test_split_file_dry_run_does_not_touch_db_or_ffmpeg(runner, dummy_video):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
-    with patch("shortfarm.services.probe_duration", return_value=125.0), \
-         patch("shortfarm.services.fast_cut_range") as cut:
+    with patch("shortsfarm.services.probe_duration", return_value=125.0), \
+         patch("shortsfarm.services.fast_cut_range") as cut:
         result = runner.invoke(app, ["split", str(dummy_video), "--dry-run"])
 
     assert result.exit_code == 0, result.output
@@ -278,7 +278,7 @@ def test_split_file_dry_run_does_not_touch_db_or_ffmpeg(runner, dummy_video):
 
 
 def test_split_folder_continues_after_one_file_error(runner, tmp_path):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
 
     folder = tmp_path / "videos"
     folder.mkdir()
@@ -297,8 +297,8 @@ def test_split_folder_continues_after_one_file_error(runner, tmp_path):
         output_path.write_bytes(b"x")
         return output_path
 
-    with patch("shortfarm.services.probe_duration", side_effect=fake_probe), \
-         patch("shortfarm.services.fast_cut_range", side_effect=fake_cut):
+    with patch("shortsfarm.services.probe_duration", side_effect=fake_probe), \
+         patch("shortsfarm.services.fast_cut_range", side_effect=fake_cut):
         result = runner.invoke(app, ["split-folder", str(folder)])
 
     assert result.exit_code == 0, result.output
@@ -308,11 +308,11 @@ def test_split_folder_continues_after_one_file_error(runner, tmp_path):
 
 
 def test_review_file_auto_adds_and_launches(runner, dummy_video):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
-    with patch("shortfarm.services.probe_duration", return_value=60.0), \
-         patch("shortfarm.cli._do_launch_review") as launch:
+    with patch("shortsfarm.services.probe_duration", return_value=60.0), \
+         patch("shortsfarm.cli._do_launch_review") as launch:
         result = runner.invoke(app, ["review", str(dummy_video)])
 
     assert result.exit_code == 0, result.output
@@ -323,10 +323,10 @@ def test_review_file_auto_adds_and_launches(runner, dummy_video):
 
 
 def test_review_next_user_alias(runner, video_in_db):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
-    with patch("shortfarm.cli._do_launch_review") as launch:
+    with patch("shortsfarm.cli._do_launch_review") as launch:
         result = runner.invoke(app, ["review-next"])
 
     assert result.exit_code == 0, result.output
@@ -335,7 +335,7 @@ def test_review_next_user_alias(runner, video_in_db):
 
 
 def test_status_summary(runner, mark_in_db):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output
     assert "Videos:" in result.output
@@ -344,7 +344,7 @@ def test_status_summary(runner, mark_in_db):
 
 
 def test_status_for_file(runner, dummy_video, video_in_db):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["status", str(dummy_video)])
     assert result.exit_code == 0, result.output
     assert "review_status" in result.output
@@ -352,7 +352,7 @@ def test_status_for_file(runner, dummy_video, video_in_db):
 
 
 def test_queue_user_command(runner, mark_in_db):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
     result = runner.invoke(app, ["queue"])
     assert result.exit_code == 0, result.output
     assert "Clips:" in result.output
@@ -360,9 +360,9 @@ def test_queue_user_command(runner, mark_in_db):
 
 
 def test_debug_aliases(runner, dummy_video, video_in_db):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
 
-    with patch("shortfarm.services.probe_duration", return_value=60.0):
+    with patch("shortsfarm.services.probe_duration", return_value=60.0):
         result = runner.invoke(app, ["debug", "add", str(dummy_video)])
     assert result.exit_code == 0, result.output
 
@@ -378,9 +378,9 @@ def test_debug_aliases(runner, dummy_video, video_in_db):
 
 
 def test_debug_review_id(runner, video_in_db):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
 
-    with patch("shortfarm.cli._do_launch_review") as launch:
+    with patch("shortsfarm.cli._do_launch_review") as launch:
         result = runner.invoke(app, ["debug", "review-id", str(video_in_db)])
 
     assert result.exit_code == 0, result.output
@@ -388,7 +388,7 @@ def test_debug_review_id(runner, video_in_db):
 
 
 def test_debug_split_id(runner, video_in_db):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
 
     def fake_split(input_path, output_dir, output_pattern, segment_seconds, mode):
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -396,7 +396,7 @@ def test_debug_split_id(runner, video_in_db):
         first.write_bytes(b"x")
         return [first]
 
-    with patch("shortfarm.services.split_video", side_effect=fake_split):
+    with patch("shortsfarm.services.split_video", side_effect=fake_split):
         result = runner.invoke(app, ["debug", "split-id", str(video_in_db)])
 
     assert result.exit_code == 0, result.output
@@ -405,29 +405,29 @@ def test_debug_split_id(runner, video_in_db):
 
 def test_render_calls_ffmpeg(runner, mark_in_db, tmp_path):
     """Render should call ffmpeg and mark clip as done."""
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
     fake_result = MagicMock()
     fake_result.returncode = 0
     fake_result.stderr = ""
 
-    with patch("shortfarm.render.require_binary", return_value="ffmpeg"), \
-         patch("shortfarm.render.subprocess.run", return_value=fake_result), \
-         patch("shortfarm.render.shutil.move") as mock_move:
+    with patch("shortsfarm.render.require_binary", return_value="ffmpeg"), \
+         patch("shortsfarm.render.subprocess.run", return_value=fake_result), \
+         patch("shortsfarm.render.shutil.move") as mock_move:
 
         result = runner.invoke(app, ["render", "--limit", "5"])
 
     assert result.exit_code == 0
     # the clip should now be in a terminal state
-    from shortfarm import db
+    from shortsfarm import db
     clip = db.get_clip(mark_in_db["clip_id"])
     assert clip["status"] in ("done", "failed")
 
 
 def test_retry_failed(runner, mark_in_db):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
     db.set_clip_failed(mark_in_db["clip_id"], "some error")
 
     result = runner.invoke(app, ["retry-failed"])
@@ -436,9 +436,9 @@ def test_retry_failed(runner, mark_in_db):
 
 
 def test_clean_removes_only_known_temp_files(runner, mark_in_db):
-    from shortfarm.cli import app
-    from shortfarm import db
-    from shortfarm.config import output_dir
+    from shortsfarm.cli import app
+    from shortsfarm import db
+    from shortsfarm.config import output_dir
 
     temp = output_dir() / "clips" / "clip_000001.tmp.mp4"
     temp.parent.mkdir(parents=True, exist_ok=True)
@@ -458,8 +458,8 @@ def test_clean_removes_only_known_temp_files(runner, mark_in_db):
 
 
 def test_youtube_profiles_cmd(runner):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
     db.create_youtube_oauth_profile(
         name="CLI Profile",
@@ -477,8 +477,8 @@ def test_youtube_profiles_cmd(runner):
 
 
 def test_youtube_accounts_cmd(runner):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
     profile_id = db.create_youtube_oauth_profile(
         name="CLI Profile",
@@ -508,9 +508,9 @@ def test_youtube_accounts_cmd(runner):
 
 
 def test_youtube_connect_cmd(runner):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
 
-    with patch("shortfarm.web.api.youtube_connect_start", return_value={
+    with patch("shortsfarm.web.api.youtube_connect_start", return_value={
         "auth_url": "https://accounts.google.com/o/oauth2/auth?state=test",
         "oauth_profile_id": 1,
         "profile_name": "CLI Profile",
@@ -523,7 +523,7 @@ def test_youtube_connect_cmd(runner):
 
 
 def test_stop_no_pid_file(runner):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
 
     result = runner.invoke(app, ["stop"])
 
@@ -532,24 +532,24 @@ def test_stop_no_pid_file(runner):
 
 
 def test_stop_sends_sigterm_and_removes_pid_file(runner, tmp_data_dir):
-    from shortfarm.cli import app
+    from shortsfarm.cli import app
 
     pid_path = tmp_data_dir / "web.pid"
     pid_path.write_text("12345\n", encoding="utf-8")
 
-    with patch("shortfarm.cli._is_process_alive", return_value=True), patch("shortfarm.cli.os.kill") as kill:
+    with patch("shortsfarm.cli._is_process_alive", return_value=True), patch("shortsfarm.cli.os.kill") as kill:
         result = runner.invoke(app, ["stop"])
 
     assert result.exit_code == 0, result.output
     kill.assert_called_once()
     assert kill.call_args.args[0] == 12345
-    assert "Stopped ShortFarm web server PID 12345" in result.output
+    assert "Stopped ShortsFarm web server PID 12345" in result.output
     assert not pid_path.exists()
 
 
 def test_publish_worker_once(runner, tmp_path):
-    from shortfarm.cli import app
-    from shortfarm import db
+    from shortsfarm.cli import app
+    from shortsfarm import db
 
     profile_id = db.create_youtube_oauth_profile(
         name="Worker Profile",
@@ -592,7 +592,7 @@ def test_publish_worker_once(runner, tmp_path):
         made_for_kids=False,
     )
 
-    with patch("shortfarm.publish_youtube.run_publish_worker", return_value=1) as worker:
+    with patch("shortsfarm.publish_youtube.run_publish_worker", return_value=1) as worker:
         result = runner.invoke(app, ["publish-worker", "--once", "--limit", "1"])
 
     assert result.exit_code == 0, result.output

@@ -4,7 +4,37 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-shortfarm-data/
+shortsfarm-data/
 *.tmp.mp4
 
 *.egg-info/
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+.logs/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Node
+node_modules/
+dist/
+build/
+
+# Editor
+.vscode/
+.idea/
+.DS_Store

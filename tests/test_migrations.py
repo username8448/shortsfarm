@@ -7,15 +7,15 @@ import pytest
 
 
 def test_migrations_applied(tmp_data_dir):
-    from shortfarm import db
-    from shortfarm.migrations import run_migrations
+    from shortsfarm import db
+    from shortsfarm.migrations import run_migrations
     applied = run_migrations()
     # second run should apply nothing new
     assert run_migrations() == []
 
 
 def test_schema_versions_recorded(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     with db.connect() as con:
         versions = {
             row[0]
@@ -29,7 +29,7 @@ def test_schema_versions_recorded(tmp_data_dir):
 
 
 def test_review_status_column_exists(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     with db.connect() as con:
         con.execute("INSERT INTO videos (source_path, title, created_at) "
                     "VALUES ('/x.mp4', 'x', '2026-01-01T00:00:00')")
@@ -39,37 +39,37 @@ def test_review_status_column_exists(tmp_data_dir):
 
 
 def test_review_sessions_table(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     with db.connect() as con:
         con.execute("SELECT * FROM review_sessions LIMIT 0")
 
 
 def test_marks_table(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     with db.connect() as con:
         con.execute("SELECT * FROM marks LIMIT 0")
 
 
 def test_clips_table(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     with db.connect() as con:
         con.execute("SELECT * FROM clips LIMIT 0")
 
 
 def test_app_settings_table(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     with db.connect() as con:
         con.execute("SELECT * FROM app_settings LIMIT 0")
 
 
 def test_youtube_oauth_profiles_table(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     with db.connect() as con:
         con.execute("SELECT * FROM youtube_oauth_profiles LIMIT 0")
 
 
 def test_social_accounts_oauth_profile_columns_exist(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     with db.connect() as con:
         columns = {
             row["name"]
@@ -81,7 +81,7 @@ def test_social_accounts_oauth_profile_columns_exist(tmp_data_dir):
 
 
 def test_oauth_states_oauth_profile_column_exists(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     with db.connect() as con:
         columns = {
             row["name"]
@@ -91,7 +91,7 @@ def test_oauth_states_oauth_profile_column_exists(tmp_data_dir):
 
 
 def test_publish_jobs_retry_columns_exist(tmp_data_dir):
-    from shortfarm import db
+    from shortsfarm import db
     with db.connect() as con:
         columns = {
             row["name"]
@@ -104,6 +104,6 @@ def test_publish_jobs_retry_columns_exist(tmp_data_dir):
 
 def test_idempotent(tmp_data_dir):
     """Running migrations many times must not raise."""
-    from shortfarm.migrations import run_migrations
+    from shortsfarm.migrations import run_migrations
     for _ in range(3):
         run_migrations()

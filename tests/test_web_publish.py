@@ -58,7 +58,7 @@ class _FakeFlow:
     @property
     def credentials(self):
         from datetime import datetime, timezone
-        from shortfarm.youtube_oauth import YOUTUBE_SCOPES
+        from shortsfarm.youtube_oauth import YOUTUBE_SCOPES
 
         class Credentials:
             token = "access-token"
@@ -138,8 +138,8 @@ def _auth_url_scopes(auth_url: str) -> set[str]:
 
 
 def test_youtube_accounts_response_hides_tokens():
-    from shortfarm import db
-    from shortfarm.web import api
+    from shortsfarm import db
+    from shortsfarm.web import api
 
     profile_id = db.create_youtube_oauth_profile(
         name="Profile One",
@@ -175,8 +175,8 @@ def test_youtube_accounts_response_hides_tokens():
 
 
 def test_youtube_settings_save_and_get_hide_secret():
-    from shortfarm.web import api
-    from shortfarm.web.schemas import YouTubeSettingsRequest
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeSettingsRequest
 
     data = api.youtube_settings_save(
         YouTubeSettingsRequest(
@@ -198,8 +198,8 @@ def test_youtube_settings_save_and_get_hide_secret():
 
 
 def test_import_client_json_web_format_works():
-    from shortfarm.web import api
-    from shortfarm.web.schemas import YouTubeClientJsonImportRequest
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeClientJsonImportRequest
 
     data = api.youtube_settings_import_client_json(
         YouTubeClientJsonImportRequest(
@@ -214,8 +214,8 @@ def test_import_client_json_web_format_works():
 
 
 def test_import_client_json_installed_format_works():
-    from shortfarm.web import api
-    from shortfarm.web.schemas import YouTubeClientJsonImportRequest
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeClientJsonImportRequest
 
     data = api.youtube_settings_import_client_json(
         YouTubeClientJsonImportRequest(
@@ -230,7 +230,7 @@ def test_import_client_json_installed_format_works():
 
 
 def test_youtube_connect_start_without_settings_returns_russian_error(monkeypatch):
-    from shortfarm.web import api
+    from shortsfarm.web import api
 
     monkeypatch.delenv("YOUTUBE_CLIENT_ID", raising=False)
     monkeypatch.delenv("YOUTUBE_CLIENT_SECRET", raising=False)
@@ -248,9 +248,9 @@ def test_youtube_connect_start_without_settings_returns_russian_error(monkeypatc
 
 
 def test_youtube_connect_start_works_with_settings_saved_via_ui(monkeypatch):
-    from shortfarm.web import api
-    from shortfarm.web.schemas import YouTubeSettingsRequest
-    from shortfarm.youtube_oauth import YOUTUBE_SCOPES
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeSettingsRequest
+    from shortsfarm.youtube_oauth import YOUTUBE_SCOPES
 
     api.youtube_settings_save(
         YouTubeSettingsRequest(
@@ -281,9 +281,9 @@ def test_youtube_connect_start_works_with_settings_saved_via_ui(monkeypatch):
 
 
 def test_youtube_connect_start_web_oauth_does_not_enable_pkce(monkeypatch):
-    from shortfarm import db
-    from shortfarm.web import api
-    from shortfarm.youtube_oauth import YOUTUBE_SCOPES
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.youtube_oauth import YOUTUBE_SCOPES
 
     db.create_youtube_oauth_profile(
         name="Web Profile",
@@ -306,8 +306,8 @@ def test_youtube_connect_start_web_oauth_does_not_enable_pkce(monkeypatch):
 
 
 def test_oauth_profiles_api_hides_client_secret():
-    from shortfarm import db
-    from shortfarm.web import api
+    from shortsfarm import db
+    from shortsfarm.web import api
 
     db.create_youtube_oauth_profile(
         name="Profile One",
@@ -328,8 +328,8 @@ def test_oauth_profiles_api_hides_client_secret():
 
 
 def test_oauth_profiles_import_web_format_works():
-    from shortfarm.web import api
-    from shortfarm.web.schemas import YouTubeOAuthProfileImportRequest
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeOAuthProfileImportRequest
 
     data = api.youtube_oauth_profiles_import(
         YouTubeOAuthProfileImportRequest(
@@ -347,8 +347,8 @@ def test_oauth_profiles_import_web_format_works():
 
 
 def test_oauth_profiles_import_installed_format_works():
-    from shortfarm.web import api
-    from shortfarm.web.schemas import YouTubeOAuthProfileImportRequest
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeOAuthProfileImportRequest
 
     data = api.youtube_oauth_profiles_import(
         YouTubeOAuthProfileImportRequest(
@@ -363,9 +363,9 @@ def test_oauth_profiles_import_installed_format_works():
 
 
 def test_youtube_connect_start_uses_selected_profile(monkeypatch):
-    from shortfarm import db
-    from shortfarm.web import api
-    from shortfarm.web.schemas import YouTubeConnectStartRequest
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeConnectStartRequest
 
     db.create_youtube_oauth_profile(
         name="Profile One",
@@ -393,8 +393,8 @@ def test_youtube_connect_start_uses_selected_profile(monkeypatch):
 
 
 def test_youtube_connect_start_uses_default_profile_if_missing_id(monkeypatch):
-    from shortfarm import db
-    from shortfarm.web import api
+    from shortsfarm import db
+    from shortsfarm.web import api
 
     profile_id = db.create_youtube_oauth_profile(
         name="Default Profile",
@@ -413,10 +413,10 @@ def test_youtube_connect_start_uses_default_profile_if_missing_id(monkeypatch):
 
 
 def test_youtube_callback_saves_social_account_with_oauth_profile_id(monkeypatch):
-    from shortfarm import db
-    from shortfarm.web import api
-    from shortfarm.web.schemas import YouTubeConnectStartRequest
-    from shortfarm.youtube_oauth import YOUTUBE_SCOPES
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeConnectStartRequest
+    from shortsfarm.youtube_oauth import YOUTUBE_SCOPES
 
     profile_id = db.create_youtube_oauth_profile(
         name="Callback Profile",
@@ -455,7 +455,7 @@ def test_youtube_callback_saves_social_account_with_oauth_profile_id(monkeypatch
 
 
 def test_youtube_callback_without_state_returns_russian_html_error():
-    from shortfarm.web import api
+    from shortsfarm.web import api
 
     response = api.youtube_oauth_callback(code="dummy", state=None)
     body = response.body.decode("utf-8")
@@ -466,7 +466,7 @@ def test_youtube_callback_without_state_returns_russian_html_error():
 
 
 def test_youtube_callback_invalid_state_returns_russian_html_error():
-    from shortfarm.web import api
+    from shortsfarm.web import api
 
     response = api.youtube_oauth_callback(code="dummy", state="invalid")
     body = response.body.decode("utf-8")
@@ -477,8 +477,8 @@ def test_youtube_callback_invalid_state_returns_russian_html_error():
 
 
 def test_youtube_callback_error_allows_second_auth_attempt(monkeypatch):
-    from shortfarm import db
-    from shortfarm.web import api
+    from shortsfarm import db
+    from shortsfarm.web import api
 
     profile_id = db.create_youtube_oauth_profile(
         name="Retry Profile",

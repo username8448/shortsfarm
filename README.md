@@ -1,4 +1,4 @@
-# ShortFarm
+# ShortsFarm
 
 Local CLI workflow for reviewing long videos in `mpv`, marking useful fragments, and rendering them into short clips with `ffmpeg`.
 
@@ -15,25 +15,25 @@ The implementation follows `ТЗ проекта.pdf`; the `пример/` direct
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/shortfarm doctor
+.venv/bin/shortsfarm doctor
 ```
 
-By default ShortFarm stores its SQLite DB and generated files in `./shortfarm-data`. To use another location:
+By default ShortsFarm stores its SQLite DB and generated files in `./shortsfarm-data`. To use another location:
 
 ```bash
-export SHORTFARM_HOME=/path/to/shortfarm-data
+export SHORTSFARM_HOME=/path/to/shortsfarm-data
 ```
 
 ## Main Workflow
 
 ```bash
-.venv/bin/shortfarm init
-.venv/bin/shortfarm add /path/to/video.mp4
-.venv/bin/shortfarm inbox
-.venv/bin/shortfarm review inbox
-.venv/bin/shortfarm clips --status queued
-.venv/bin/shortfarm render --limit 5
-.venv/bin/shortfarm clips --status done
+.venv/bin/shortsfarm init
+.venv/bin/shortsfarm add /path/to/video.mp4
+.venv/bin/shortsfarm inbox
+.venv/bin/shortsfarm review inbox
+.venv/bin/shortsfarm clips --status queued
+.venv/bin/shortsfarm render --limit 5
+.venv/bin/shortsfarm clips --status done
 ```
 
 ## MPV Hotkeys
@@ -49,24 +49,24 @@ export SHORTFARM_HOME=/path/to/shortfarm-data
 ## Useful Commands
 
 ```bash
-.venv/bin/shortfarm review open-id <video_id>
-.venv/bin/shortfarm review open-id <video_id> --force
-.venv/bin/shortfarm review open /path/to/video.mp4
-.venv/bin/shortfarm review reset <video_id>
-.venv/bin/shortfarm marks <video_id>
-.venv/bin/shortfarm skip <video_id>
-.venv/bin/shortfarm clips --status failed
-.venv/bin/shortfarm retry-failed
-.venv/bin/shortfarm retry-failed --clip-id <clip_id>
-.venv/bin/shortfarm render-all
+.venv/bin/shortsfarm review open-id <video_id>
+.venv/bin/shortsfarm review open-id <video_id> --force
+.venv/bin/shortsfarm review open /path/to/video.mp4
+.venv/bin/shortsfarm review reset <video_id>
+.venv/bin/shortsfarm marks <video_id>
+.venv/bin/shortsfarm skip <video_id>
+.venv/bin/shortsfarm clips --status failed
+.venv/bin/shortsfarm retry-failed
+.venv/bin/shortsfarm retry-failed --clip-id <clip_id>
+.venv/bin/shortsfarm render-all
 ```
 
 The legacy split/cut flow is also available:
 
 ```bash
-.venv/bin/shortfarm split <video_id> --seconds 60 --mode fast
-.venv/bin/shortfarm cut
-.venv/bin/shortfarm cut-all
+.venv/bin/shortsfarm split <video_id> --seconds 60 --mode fast
+.venv/bin/shortsfarm cut
+.venv/bin/shortsfarm cut-all
 ```
 
 ## Tests
