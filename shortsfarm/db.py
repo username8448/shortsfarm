@@ -755,6 +755,9 @@ def _workspace_item_dict(
     clip_id: int | None = None,
     publish_clip_id: int | None = None,
     publish_job_id: int | None = None,
+    publish_job_status: str | None = None,
+    publish_youtube_url: str | None = None,
+    publish_error: str | None = None,
     mark_id: int | None = None,
     cut_mode: str | None = None,
     render_status: str | None = None,
@@ -772,6 +775,9 @@ def _workspace_item_dict(
         "clip_id": clip_id,
         "publish_clip_id": publish_clip_id,
         "publish_job_id": publish_job_id,
+        "publish_job_status": publish_job_status or "",
+        "publish_youtube_url": publish_youtube_url or "",
+        "publish_error": publish_error or "",
         "video_id": video_id,
         "video_title": video_title,
         "source_path": source_path,
@@ -818,13 +824,10 @@ def list_workspace_items(
                 v.title AS video_title,
                 v.source_path AS source_path,
                 pc.id AS publish_clip_id,
-                (
-                    SELECT pj.id
-                    FROM publish_jobs pj
-                    WHERE pj.clip_id=pc.id
-                    ORDER BY pj.id DESC
-                    LIMIT 1
-                ) AS publish_job_id,
+                pj.id AS publish_job_id,
+                pj.status AS publish_job_status,
+                pj.youtube_url AS publish_youtube_url,
+                pj.error AS publish_error,
                 wm.workspace_status,
                 wm.title AS workspace_title,
                 wm.description AS workspace_description,
@@ -836,6 +839,13 @@ def list_workspace_items(
             FROM segments s
             JOIN videos v ON v.id = s.video_id
             LEFT JOIN clips pc ON pc.source_segment_id=s.id
+            LEFT JOIN publish_jobs pj ON pj.id = (
+                SELECT latest_pj.id
+                FROM publish_jobs latest_pj
+                WHERE latest_pj.clip_id=pc.id
+                ORDER BY latest_pj.id DESC
+                LIMIT 1
+            )
             LEFT JOIN clip_workspace_metadata wm
               ON wm.item_type='segment' AND wm.item_id=s.id
             {hidden_clause}
@@ -853,6 +863,9 @@ def list_workspace_items(
                     clip_id=None,
                     publish_clip_id=row["publish_clip_id"],
                     publish_job_id=row["publish_job_id"],
+                    publish_job_status=row["publish_job_status"],
+                    publish_youtube_url=row["publish_youtube_url"],
+                    publish_error=row["publish_error"],
                     video_id=int(row["video_id"]),
                     video_title=str(row["video_title"] or ""),
                     source_path=str(row["source_path"] or ""),
@@ -885,10 +898,21 @@ def list_workspace_items(
                 wm.created_at AS workspace_created_at,
                 wm.updated_at AS workspace_updated_at,
                 wm.hidden_at AS workspace_hidden_at,
-                wm.missing_confirmed_at AS workspace_missing_confirmed_at
+                wm.missing_confirmed_at AS workspace_missing_confirmed_at,
+                pj.id AS publish_job_id,
+                pj.status AS publish_job_status,
+                pj.youtube_url AS publish_youtube_url,
+                pj.error AS publish_error
             FROM clips c
             JOIN videos v ON v.id = c.video_id
             LEFT JOIN marks m ON m.id = c.mark_id
+            LEFT JOIN publish_jobs pj ON pj.id = (
+                SELECT latest_pj.id
+                FROM publish_jobs latest_pj
+                WHERE latest_pj.clip_id=c.id
+                ORDER BY latest_pj.id DESC
+                LIMIT 1
+            )
             LEFT JOIN clip_workspace_metadata wm
               ON wm.item_type='clip' AND wm.item_id=c.id
             {hidden_clause}
@@ -909,6 +933,10 @@ def list_workspace_items(
                     segment_id=None,
                     clip_id=int(row["id"]),
                     publish_clip_id=int(row["id"]),
+                    publish_job_id=row["publish_job_id"],
+                    publish_job_status=row["publish_job_status"],
+                    publish_youtube_url=row["publish_youtube_url"],
+                    publish_error=row["publish_error"],
                     video_id=int(row["video_id"]),
                     video_title=str(row["video_title"] or ""),
                     source_path=str(row["source_path"] or ""),
@@ -1702,6 +1730,22 @@ def get_publish_job(job_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
+def get_publish_job_for_clip(
+    *,
+    account_id: int,
+    clip_id: int,
+    platform: str = "youtube",
+) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            f"""
+            {_PUBLISH_JOB_SELECT}
+            WHERE pj.platform=? AND pj.account_id=? AND pj.clip_id=?
+            """,
+            (platform, account_id, clip_id),
+        ).fetchone()
+
+
 def list_publish_jobs(
     status: str | None = None,
     platform: str | None = "youtube",
@@ -1887,6 +1931,7 @@ def mark_publish_failed(
 def retry_publish_job(job_id: int) -> bool:
     now = now_utc()
     with connect() as con:
+        job = con.execute("SELECT clip_id FROM publish_jobs WHERE id=?", (job_id,)).fetchone()
         result = con.execute(
             """
             UPDATE publish_jobs
@@ -1902,12 +1947,18 @@ def retry_publish_job(job_id: int) -> bool:
             """,
             (now, job_id),
         )
-        return result.rowcount > 0
+        ok = result.rowcount > 0
+        if ok and job is not None:
+            identity = _workspace_identity_for_publish_clip(con, int(job["clip_id"]))
+            if identity is not None:
+                _upsert_workspace_status(con, identity[0], identity[1], "queued", now)
+        return ok
 
 
 def cancel_publish_job(job_id: int) -> bool:
     now = now_utc()
     with connect() as con:
+        job = con.execute("SELECT clip_id FROM publish_jobs WHERE id=?", (job_id,)).fetchone()
         result = con.execute(
             """
             UPDATE publish_jobs
@@ -1916,7 +1967,12 @@ def cancel_publish_job(job_id: int) -> bool:
             """,
             (now, now, job_id),
         )
-        return result.rowcount > 0
+        ok = result.rowcount > 0
+        if ok and job is not None:
+            identity = _workspace_identity_for_publish_clip(con, int(job["clip_id"]))
+            if identity is not None:
+                _upsert_workspace_status(con, identity[0], identity[1], "draft", now)
+        return ok
 
 
 def list_recent_errors(limit: int = 5) -> list[sqlite3.Row]:

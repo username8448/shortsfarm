@@ -337,3 +337,27 @@ def test_publish_done_and_failed_update_workspace_segment_status(video_in_db, tm
 
     assert db.get_workspace_item("segment", first_id)["workspace_status"] == "uploaded"
     assert db.get_workspace_item("segment", second_id)["workspace_status"] == "failed"
+
+
+def test_publish_cancel_and_retry_update_workspace_segment_status(video_in_db, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspaceItemUpdateRequest, WorkspaceYouTubeEnqueueRequest
+    account_id = _make_youtube_account()
+    segment_id = _make_segment(video_in_db, tmp_path)
+    api.workspace_clip_update(
+        f"segment:{segment_id}",
+        WorkspaceItemUpdateRequest(workspace_status="ready"),
+    )
+    item = api.workspace_clips_youtube_enqueue(
+        WorkspaceYouTubeEnqueueRequest(item_keys=[f"segment:{segment_id}"], account_id=account_id)
+    )["items"][0]
+
+    api.publish_job_cancel(item["job_id"])
+    assert db.get_workspace_item("segment", segment_id)["workspace_status"] == "draft"
+
+    api.publish_job_retry(item["job_id"], None)
+    workspace_item = db.get_workspace_item("segment", segment_id)
+    assert workspace_item["workspace_status"] == "queued"
+    assert workspace_item["publish_job_id"] == item["job_id"]
+    assert workspace_item["publish_job_status"] == "queued"

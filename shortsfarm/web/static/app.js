@@ -229,6 +229,10 @@ let lastPublishJobs = [];
 let lastReadyPublishClips = [];
 let editingOAuthProfileId = null;
 let oauthManualMode = 'json';
+let publishJobFilter = 'all';
+let selectedPublishJobIds = new Set();
+let hiddenDonePublishJobIds = new Set();
+let publishBatchSize = 3;
 const workspaceYoutubeState = {
   selectedAccountId: null,
   busy: false,
@@ -929,7 +933,8 @@ function renderClipsTable(rows) {
     const playablePath = item.path || item.source_path;
     const title = workspaceTitle(item);
     const renderInfo = item.render_status ? `<div class="mono dim">render: ${esc(ruStatus(item.render_status))}</div>` : '';
-    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${videoThumb(playablePath, title)}<div style="min-width:0;flex:1"><div class="mono txt ov" title="${esc(title)}">${esc(title)}</div><div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${missingBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
+    const publishInfo = item.publish_job_status ? `<div class="mono dim">publish #${esc(item.publish_job_id || '')}: ${esc(ruStatus(item.publish_job_status))}</div>` : '';
+    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${videoThumb(playablePath, title)}<div style="min-width:0;flex:1"><div class="mono txt ov" title="${esc(title)}">${esc(title)}</div><div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}${publishInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${missingBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
   }).join('')}</tbody></table>`;
   renderWorkspaceBulkState();
 }
@@ -964,9 +969,41 @@ function workspaceYoutubeRequestBody(items) {
 }
 function workspaceYoutubeSummary(data) {
   const created = data?.created || 0;
+  const updated = data?.updated || 0;
   const skipped = data?.skipped || 0;
   const errors = data?.errors || 0;
-  return `В очередь: ${created} · пропущено: ${skipped} · ошибок: ${errors}`;
+  return `Добавлено в очередь: ${created} · обновлено: ${updated} · пропущено: ${skipped} · ошибок: ${errors}`;
+}
+function workspaceYoutubeSkippedText(data) {
+  const skipped = data?.skipped_items || [];
+  if (!skipped.length) return '';
+  return skipped.slice(0, 12).map(item => `${item.item_key}: ${item.reason}`).join('\n');
+}
+function confirmYoutubeBatch(count, mode, actionText) {
+  const visibility = mode || 'private';
+  if (count > 5) {
+    const ok = confirm(`Вы собираетесь ${actionText || 'отправить'} ${count} видео в YouTube. Видимость: ${visibility}. Продолжить?`);
+    if (!ok) return false;
+  }
+  if (visibility === 'public') {
+    return confirm('Видео будут опубликованы публично. Это действие может быть видно зрителям. Продолжить?');
+  }
+  return true;
+}
+function publishVisibilitySummary(jobs, fallback = 'private') {
+  const values = Array.from(new Set((jobs || []).map(job => job.privacy_status || job.publish_mode || fallback).filter(Boolean)));
+  if (!values.length) return fallback;
+  return values.length === 1 ? values[0] : values.join('/');
+}
+function confirmPublishJobsBatch(jobs, count, actionText) {
+  const selectedJobs = jobs || [];
+  const effectiveCount = Number(count || selectedJobs.length || 0);
+  const visibility = publishVisibilitySummary(selectedJobs, 'private');
+  if (!confirmYoutubeBatch(effectiveCount, visibility, actionText)) return false;
+  if (selectedJobs.some(job => (job.privacy_status || job.publish_mode) === 'public') && visibility !== 'public') {
+    return confirm('Среди выбранных видео есть публичные публикации. Это действие может быть видно зрителям. Продолжить?');
+  }
+  return true;
 }
 async function applyWorkspaceYoutubeResponse(data) {
   const workspace = data?.workspace || {};
@@ -987,6 +1024,8 @@ async function enqueueWorkspaceItemsToYouTube(items, runNow = false) {
     showToast('Сначала подключите YouTube-канал в настройках публикации.', 'err');
     return;
   }
+  const mode = document.getElementById('workspace-youtube-mode')?.value || 'private';
+  if (!confirmYoutubeBatch(selected.length, mode, runNow ? 'загрузить' : 'отправить')) return;
   if (runNow && !confirm('Добавить выбранные видео в очередь и сразу запустить загрузку?')) return;
   workspaceYoutubeState.busy = true;
   renderWorkspaceYoutubeControls();
@@ -1000,6 +1039,8 @@ async function enqueueWorkspaceItemsToYouTube(items, runNow = false) {
     const data = await api.post('/api/workspace/clips/youtube/enqueue', workspaceYoutubeRequestBody(selected));
     await applyWorkspaceYoutubeResponse(data);
     showToast(workspaceYoutubeSummary(data));
+    const skippedText = workspaceYoutubeSkippedText(data);
+    if (skippedText) alert(`Пропущенные элементы:\n${skippedText}`);
     if (runNow && (data.created || 0) > 0) {
       const worker = await api.post('/api/publish/worker/run-once', {limit: Math.max(1, data.created || 1)});
       showToast(`Запущена загрузка. Обработано jobs: ${worker.processed || 0}`);
@@ -1149,6 +1190,9 @@ function renderWorkspaceDetail() {
   const readyDisabled = item.workspace_status === 'ready' ? ' disabled' : '';
   const draftDisabled = item.workspace_status === 'draft' ? ' disabled' : '';
   const youtubeDisabled = (!getWorkspaceYoutubeAccount() || item.missing || item.workspace_status !== 'ready') ? ' disabled' : '';
+  const publishPanel = item.publish_job_id
+    ? `<div class="missing-panel publish-panel">${badge(item.publish_job_status || 'queued')}<div><b>Publish job #${esc(item.publish_job_id)}</b><p>${item.publish_youtube_url ? `<a class="link-video mono txt" href="${esc(item.publish_youtube_url)}" target="_blank" rel="noopener noreferrer">Открыть YouTube</a>` : 'YouTube URL пока нет.'}${item.publish_error ? `<br><span class="err">${esc(shortErrorText(item.publish_error))}</span>` : ''}</p></div></div>`
+    : '';
   el.innerHTML = `<div class="workspace-detail-body">
     <div class="workspace-preview">${videoThumb(playablePath, title)}</div>
     <div class="workspace-detail-head">
@@ -1158,6 +1202,7 @@ function renderWorkspaceDetail() {
       </div>
     </div>
     ${missingNotice}
+    ${publishPanel}
     <div class="workspace-meta">
       <div><span>Источник</span><b>${esc(item.video_title || '—')}</b></div>
       <div><span>Длительность</span><b>${esc(formatDurationSec(item.duration_sec))}</b></div>
@@ -1459,24 +1504,88 @@ function renderSelectedPublishClip() {
   el.innerHTML = `<div class="selection-card-body"><div class="selection-title">Выбран клип</div><div class="selected-video-row">${videoThumb(playable, clip.video_title || 'clip')}<div style="min-width:0;flex:1"><div class="selection-name">${esc(clip.video_title || `Клип #${clip.id}`)}</div><div class="selection-meta mono">${esc(shortPath(clip.output_path || playable || '—'))}</div></div><div class="row-actions">${mpvButton(playable)}</div></div></div>`;
 }
 
+function publishJobCountsFromItems(items) {
+  const counts = {all: items.length, queued: 0, uploading: 0, done: 0, failed: 0, cancelled: 0};
+  for (const job of items) {
+    const status = job.status || 'queued';
+    if (Object.prototype.hasOwnProperty.call(counts, status)) counts[status] += 1;
+  }
+  return counts;
+}
+function renderPublishJobCounts() {
+  const counts = publishJobCountsFromItems(lastPublishJobs.filter(job => !hiddenDonePublishJobIds.has(Number(job.id))));
+  for (const key of ['all','queued','uploading','done','failed','cancelled']) {
+    const el = document.getElementById('pubjob-cnt-' + key);
+    if (el) el.textContent = key === 'all' ? counts.all : (counts[key] || '');
+  }
+}
+function getVisiblePublishJobs() {
+  return lastPublishJobs.filter(job => {
+    if (hiddenDonePublishJobIds.has(Number(job.id))) return false;
+    if (publishJobFilter === 'all') return true;
+    return job.status === publishJobFilter;
+  });
+}
+function filterPublishJobs(tab, status) {
+  publishJobFilter = status || 'all';
+  document.querySelectorAll('[data-publish-filter]').forEach(item => item.classList.remove('on'));
+  if (tab) tab.classList.add('on');
+  renderPublishJobsTable();
+}
+function togglePublishJobSelection(jobId, checked) {
+  const id = Number(jobId);
+  if (checked) selectedPublishJobIds.add(id);
+  else selectedPublishJobIds.delete(id);
+  renderPublishJobSelectionState();
+}
+function renderPublishJobSelectionState() {
+  document.querySelectorAll('[data-publish-selected-count]').forEach(el => {
+    el.textContent = selectedPublishJobIds.size ? `Выбрано jobs: ${selectedPublishJobIds.size}` : '';
+  });
+}
+function shortErrorText(value) {
+  const text = String(value || '');
+  return text.length > 90 ? text.slice(0, 87) + '...' : text;
+}
+function showPublishJobError(jobId) {
+  const job = lastPublishJobs.find(item => Number(item.id) === Number(jobId));
+  if (!job?.error) return;
+  alert(job.error);
+}
+async function copyPublishJobError(jobId) {
+  const job = lastPublishJobs.find(item => Number(item.id) === Number(jobId));
+  if (!job?.error) return;
+  try {
+    await navigator.clipboard.writeText(job.error);
+    showToast('Ошибка скопирована');
+  } catch {
+    alert(job.error);
+  }
+}
 function renderPublishJobsTable() {
   const el = document.getElementById('publish-jobs');
   if (!el) return;
-  if (!lastPublishJobs.length) {
+  renderPublishJobCounts();
+  const rows = getVisiblePublishJobs();
+  selectedPublishJobIds = new Set(Array.from(selectedPublishJobIds).filter(id => lastPublishJobs.some(job => Number(job.id) === Number(id))));
+  if (!rows.length) {
     el.innerHTML = '<div class="empty">Публикаций пока нет. Выберите канал и добавьте клип в очередь.</div>';
     return;
   }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Канал</th><th>Клип</th><th>Заголовок</th><th>Режим</th><th>Статус</th><th>YouTube</th><th>Попытки</th><th>Ошибка</th><th>Действие</th></tr></thead><tbody>${lastPublishJobs.map(job => {
-    const youtubeLink = job.youtube_url ? `<a class="link-video mono txt" href="${esc(job.youtube_url)}" target="_blank" rel="noopener noreferrer">${esc(shortPath(job.youtube_url))}</a>` : '—';
+  el.innerHTML = `<div class="workspace-selected-line mono dim" data-publish-selected-count></div><table class="tbl publish-jobs-table"><thead><tr><th></th><th>Job</th><th>Status</th><th>Title</th><th>Channel</th><th>Privacy</th><th>Mode</th><th>File</th><th>Created</th><th>Started</th><th>Finished</th><th>Attempts</th><th>Error</th><th>YouTube</th><th>Action</th></tr></thead><tbody>${rows.map(job => {
+    const selected = selectedPublishJobIds.has(Number(job.id));
+    const youtubeLink = job.youtube_url ? `<a class="btn-mini" href="${esc(job.youtube_url)}" target="_blank" rel="noopener noreferrer">Открыть YouTube</a>` : '—';
     const clipPath = job.clip_output_path || job.video_source_path || '';
     const profile = job.profile_name ? `<div class="mono dim">${esc(job.profile_name)}</div>` : '';
+    const err = job.error ? `<button class="link-video err mono" title="${esc(job.error)}" onclick="showPublishJobError(${Number(job.id)})">${esc(shortErrorText(job.error))}</button><button class="btn-mini" onclick="copyPublishJobError(${Number(job.id)})">Копировать</button>` : '—';
     const actions = [];
     if (job.can_retry) actions.push(`<button class="btn-mini" onclick="retryPublishJob(${Number(job.id)})">Retry</button>`);
     if (job.can_run) actions.push(`<button class="btn-mini" onclick="runPublishJob(${Number(job.id)})">Run now</button>`);
     if (job.can_cancel) actions.push(`<button class="btn-danger" onclick="cancelPublishJob(${Number(job.id)})">Cancel</button>`);
     actions.push(mpvButton(clipPath, 'MPV'));
-    return `<tr><td class="mono dim">#${job.id}</td><td><div class="mono txt">${esc(job.channel_title || job.account_display_name || '—')}</div>${profile}</td><td><div class="mono txt">${esc(job.video_title || `clip #${job.clip_id}`)}</div><div class="mono dim ov">${esc(shortPath(job.clip_output_path || '—'))}</div></td><td class="mono mid ov">${esc(job.title || '—')}</td><td class="mono dim">${esc(job.publish_mode || 'private')}</td><td>${badge(job.status)}</td><td>${youtubeLink}</td><td class="mono txt">${esc(job.attempt_count || 0)}</td><td class="err ov">${esc(job.error || '')}</td><td><div class="row-actions">${actions.join('')}</div></td></tr>`;
+    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="togglePublishJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td>${badge(job.status)}</td><td class="mono mid ov" title="${esc(job.title || '')}">${esc(job.title || '—')}</td><td><div class="mono txt">${esc(job.channel_title || job.account_display_name || '—')}</div>${profile}</td><td class="mono dim">${esc(job.privacy_status || 'private')}</td><td class="mono dim">${esc(job.publish_mode || 'private')}</td><td class="mono dim ov" title="${esc(clipPath)}">${esc(shortPath(clipPath || '—'))}</td><td class="mono dim">${esc(formatMtime(job.created_at))}</td><td class="mono dim">${esc(formatMtime(job.started_at))}</td><td class="mono dim">${esc(formatMtime(job.finished_at))}</td><td class="mono txt">${esc(job.attempt_count || 0)}</td><td><div class="row-actions">${err}</div></td><td>${youtubeLink}</td><td><div class="row-actions">${actions.join('')}</div></td></tr>`;
   }).join('')}</tbody></table>`;
+  renderPublishJobSelectionState();
 }
 
 function renderPublishView() {
@@ -1518,9 +1627,98 @@ async function refreshPublishJobs() {
     const data = await api.get('/api/publish/jobs?limit=200');
     lastPublishJobs = data.jobs || [];
     renderPublishJobsTable();
+    if (currentView === 'clips') {
+      await refreshWorkspaceList();
+      renderWorkspaceListAndDetail();
+    }
   } catch (err) {
     renderPublishError(`Не удалось загрузить очередь публикации:\n${err.message || err}`);
   }
+}
+
+function selectedPublishJobList() {
+  return Array.from(selectedPublishJobIds)
+    .map(id => lastPublishJobs.find(job => Number(job.id) === Number(id)))
+    .filter(Boolean);
+}
+function nextRunnablePublishJobs(limit) {
+  return lastPublishJobs
+    .filter(job => job.status === 'queued')
+    .sort((a, b) => Number(a.id) - Number(b.id))
+    .slice(0, Number(limit || 0));
+}
+
+async function runPublishWorkerBatch(limit = null) {
+  const batchLimit = Number(limit || document.getElementById('publish-batch-size')?.value || publishBatchSize || 3);
+  const jobs = nextRunnablePublishJobs(batchLimit);
+  if (!confirmPublishJobsBatch(jobs, batchLimit, 'запустить загрузку для')) return;
+  renderPublishError('');
+  try {
+    const data = await api.post('/api/publish/worker/run-once', {limit: batchLimit});
+    showToast(`Обработано publish jobs: ${data.processed || 0}`);
+    await refreshPublishJobs();
+  } catch (err) {
+    renderPublishError(`Не удалось обработать очередь публикации:\n${err.message || err}`);
+  }
+}
+
+async function runSelectedPublishJobs() {
+  const jobs = selectedPublishJobList().filter(job => job.can_run);
+  if (!jobs.length) {
+    showToast('Среди выбранных нет jobs для запуска', 'err');
+    return;
+  }
+  if (!confirmPublishJobsBatch(jobs, jobs.length, 'запустить загрузку для')) return;
+  renderPublishError('');
+  try {
+    const data = await api.post('/api/publish/jobs/bulk-run', {job_ids: jobs.map(job => Number(job.id))});
+    showToast(`Запущено: ${data.summary?.processed || 0} · ошибок: ${data.summary?.errors || 0}`);
+    await refreshPublishJobs();
+  } catch (err) {
+    renderPublishError(`Не удалось запустить выбранные jobs:\n${err.message || err}`);
+  }
+}
+
+async function retryFailedPublishJobs() {
+  const selected = selectedPublishJobList().filter(job => job.status === 'failed' || job.status === 'cancelled');
+  const jobs = selected.length ? selected : getVisiblePublishJobs().filter(job => job.status === 'failed');
+  if (!jobs.length) {
+    showToast('Failed jobs не найдены', 'err');
+    return;
+  }
+  renderPublishError('');
+  try {
+    const data = await api.post('/api/publish/jobs/bulk-retry', {job_ids: jobs.map(job => Number(job.id))});
+    showToast(`Возвращено в очередь: ${data.summary?.updated || 0} · пропущено: ${data.summary?.skipped || 0}`);
+    await refreshPublishJobs();
+  } catch (err) {
+    renderPublishError(`Не удалось повторить failed jobs:\n${err.message || err}`);
+  }
+}
+
+async function cancelSelectedPublishJobs() {
+  const jobs = selectedPublishJobList().filter(job => job.status === 'queued' || job.status === 'failed');
+  if (!jobs.length) {
+    showToast('Среди выбранных нет queued/failed jobs', 'err');
+    return;
+  }
+  if (!confirm(`Отменить выбранные publish jobs: ${jobs.length}?`)) return;
+  renderPublishError('');
+  try {
+    const data = await api.post('/api/publish/jobs/bulk-cancel', {job_ids: jobs.map(job => Number(job.id))});
+    showToast(`Отменено: ${data.summary?.updated || 0} · пропущено: ${data.summary?.skipped || 0}`);
+    await refreshPublishJobs();
+  } catch (err) {
+    renderPublishError(`Не удалось отменить jobs:\n${err.message || err}`);
+  }
+}
+
+function hideDonePublishJobs() {
+  for (const job of lastPublishJobs) {
+    if (job.status === 'done') hiddenDonePublishJobIds.add(Number(job.id));
+  }
+  renderPublishJobsTable();
+  showToast('Done jobs скрыты из вида');
 }
 
 async function startYouTubeConnect() {
@@ -1867,13 +2065,15 @@ async function submitPublish(mode) {
   }
   hideInlineError('publish-form-error');
   hideInlineOk('publish-form-ok');
+  const body = publishRequestBody();
+  if (!confirmYoutubeBatch(1, body.publish_mode, mode === 'upload' ? 'загрузить' : 'отправить')) return;
   publishState.busy = true;
   updatePublishButtons();
   try {
     const endpoint = mode === 'upload'
       ? `/api/publish/youtube/clips/${Number(clip.id)}/upload`
       : `/api/publish/youtube/clips/${Number(clip.id)}/enqueue`;
-    const data = await api.post(endpoint, publishRequestBody());
+    const data = await api.post(endpoint, body);
     const job = data.job || {};
     const message = mode === 'upload'
       ? `Видео загружено: ${job.youtube_url || 'YouTube URL пока не получен'}`

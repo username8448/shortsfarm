@@ -51,6 +51,7 @@ from ..youtube_oauth import YOUTUBE_SCOPES
 from .schemas import (
     OpenMpvRequest,
     PublishJobRetryRequest,
+    PublishJobsBulkRequest,
     PublishWorkerRunOnceRequest,
     RenderRequest,
     RetryFailedRequest,
@@ -368,6 +369,8 @@ def _youtube_oauth_profile_dict(row: Any) -> dict[str, Any]:
 
 
 def _publish_job_dict(row: Any) -> dict[str, Any]:
+    source_segment_id = _row(row, "clip_source_segment_id")
+    workspace_item_key = f"segment:{source_segment_id}" if source_segment_id is not None else f"clip:{int(row['clip_id'])}"
     return {
         "id": int(row["id"]),
         "platform": _row(row, "platform", "youtube"),
@@ -402,6 +405,8 @@ def _publish_job_dict(row: Any) -> dict[str, Any]:
         "clip_status": _row(row, "clip_status", "") or "",
         "clip_output_path": _row(row, "clip_output_path", "") or "",
         "clip_cut_mode": _row(row, "clip_cut_mode", "") or "",
+        "clip_source_segment_id": source_segment_id,
+        "workspace_item_key": workspace_item_key,
         "video_title": _row(row, "video_title", "") or "",
         "video_source_path": _row(row, "video_source_path", "") or "",
         "can_retry": _row(row, "status") in {"failed", "cancelled"},
@@ -1395,6 +1400,79 @@ def publish_job_cancel(job_id: int) -> dict[str, Any]:
         raise _fail(exc)
 
 
+@router.post("/publish/jobs/bulk-run")
+def publish_jobs_bulk_run(req: PublishJobsBulkRequest) -> dict[str, Any]:
+    try:
+        _init()
+        results: list[dict[str, Any]] = []
+        summary = {"processed": 0, "errors": 0}
+        for job_id in req.job_ids:
+            try:
+                job = run_publish_job_now(int(job_id))
+                results.append({"job_id": int(job_id), "status": "done", "job": _publish_job_dict(job)})
+                summary["processed"] += 1
+            except Exception as exc:
+                results.append({"job_id": int(job_id), "status": "error", "error": str(exc) or exc.__class__.__name__})
+                summary["errors"] += 1
+        return {"status": "ok", "summary": summary, "results": results}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/publish/jobs/bulk-retry")
+def publish_jobs_bulk_retry(req: PublishJobsBulkRequest) -> dict[str, Any]:
+    try:
+        _init()
+        results: list[dict[str, Any]] = []
+        summary = {"updated": 0, "skipped": 0, "errors": 0}
+        for job_id in req.job_ids:
+            try:
+                job = db.get_publish_job(int(job_id))
+                if job is None:
+                    raise FileNotFoundError(f"Publish job {job_id} not found")
+                if job["status"] not in {"failed", "cancelled"}:
+                    summary["skipped"] += 1
+                    results.append({"job_id": int(job_id), "status": "skipped", "reason": "Можно повторить только failed или cancelled."})
+                    continue
+                ok = db.retry_publish_job(int(job_id))
+                updated = db.get_publish_job(int(job_id))
+                results.append({"job_id": int(job_id), "status": "queued" if ok else "skipped", "job": _publish_job_dict(updated) if updated else None})
+                summary["updated" if ok else "skipped"] += 1
+            except Exception as exc:
+                summary["errors"] += 1
+                results.append({"job_id": int(job_id), "status": "error", "error": str(exc) or exc.__class__.__name__})
+        return {"status": "ok", "summary": summary, "results": results}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/publish/jobs/bulk-cancel")
+def publish_jobs_bulk_cancel(req: PublishJobsBulkRequest) -> dict[str, Any]:
+    try:
+        _init()
+        results: list[dict[str, Any]] = []
+        summary = {"updated": 0, "skipped": 0, "errors": 0}
+        for job_id in req.job_ids:
+            try:
+                job = db.get_publish_job(int(job_id))
+                if job is None:
+                    raise FileNotFoundError(f"Publish job {job_id} not found")
+                if job["status"] not in {"queued", "failed"}:
+                    summary["skipped"] += 1
+                    results.append({"job_id": int(job_id), "status": "skipped", "reason": "Можно отменить только queued или failed."})
+                    continue
+                ok = db.cancel_publish_job(int(job_id))
+                updated = db.get_publish_job(int(job_id))
+                results.append({"job_id": int(job_id), "status": "cancelled" if ok else "skipped", "job": _publish_job_dict(updated) if updated else None})
+                summary["updated" if ok else "skipped"] += 1
+            except Exception as exc:
+                summary["errors"] += 1
+                results.append({"job_id": int(job_id), "status": "error", "error": str(exc) or exc.__class__.__name__})
+        return {"status": "ok", "summary": summary, "results": results}
+    except Exception as exc:
+        raise _fail(exc)
+
+
 @router.post("/publish/jobs/{job_id}/run")
 def publish_job_run(job_id: int) -> dict[str, Any]:
     try:
@@ -1679,6 +1757,8 @@ def workspace_clips_youtube_enqueue(req: WorkspaceYouTubeEnqueueRequest) -> dict
         items: list[dict[str, Any]] = []
         skipped_items: list[dict[str, str]] = []
         jobs: list[dict[str, Any]] = []
+        created = 0
+        updated = 0
         errors = 0
         seen: set[str] = set()
 
@@ -1704,6 +1784,7 @@ def workspace_clips_youtube_enqueue(req: WorkspaceYouTubeEnqueueRequest) -> dict
                 else:
                     clip_id = item_id
 
+                existing_job = db.get_publish_job_for_clip(account_id=req.account_id, clip_id=clip_id)
                 job_id = _workspace_create_publish_job(item=item, clip_id=clip_id, req=req)
                 job = db.get_publish_job(job_id)
                 if job is None:
@@ -1711,6 +1792,12 @@ def workspace_clips_youtube_enqueue(req: WorkspaceYouTubeEnqueueRequest) -> dict
                 validate_publish_job(job)
                 job_payload = _publish_job_dict(job)
                 workspace_status = "uploaded" if job_payload["status"] == "done" else "queued"
+                if job_payload["status"] == "done":
+                    skipped_items.append(_workspace_youtube_skip(item_key, "Уже загружено"))
+                elif existing_job is None:
+                    created += 1
+                else:
+                    updated += 1
                 db.update_workspace_item(item_type, item_id, workspace_status=workspace_status)
                 items.append({
                     "item_key": item["id"],
@@ -1726,7 +1813,8 @@ def workspace_clips_youtube_enqueue(req: WorkspaceYouTubeEnqueueRequest) -> dict
         workspace_items = db.list_workspace_items(limit=1000)
         return {
             "status": "ok",
-            "created": sum(1 for item in items if item["status"] == "queued"),
+            "created": created,
+            "updated": updated,
             "skipped": len(skipped_items),
             "errors": errors,
             "jobs": jobs,

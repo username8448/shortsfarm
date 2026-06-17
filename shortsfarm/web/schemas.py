@@ -140,5 +140,9 @@ class PublishJobRetryRequest(BaseModel):
     pass
 
 
+class PublishJobsBulkRequest(BaseModel):
+    job_ids: list[int] = Field(default_factory=list)
+
+
 class PublishWorkerRunOnceRequest(BaseModel):
     limit: int = Field(default=3, gt=0)

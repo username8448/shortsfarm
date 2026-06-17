@@ -272,9 +272,32 @@
           <div class="box-head">
             <span>Очередь публикации</span>
             <div class="row-actions">
-              <button class="btn-mini" onclick="refreshPublishJobs()">Обновить</button>
-              <button class="btn-secondary" onclick="runPublishWorkerOnce()">Обработать очередь</button>
+              <button class="btn-mini" onclick="refreshPublishJobs()">Обновить очередь</button>
+              <button class="btn-mini" onclick="runPublishWorkerBatch(1)">Запустить 1</button>
+              <button class="btn-mini" onclick="runPublishWorkerBatch(3)">Запустить 3</button>
+              <button class="btn-secondary" onclick="runSelectedPublishJobs()">Запустить выбранные</button>
+              <button class="btn-mini" onclick="retryFailedPublishJobs()">Повторить failed</button>
+              <button class="btn-danger" onclick="cancelSelectedPublishJobs()">Отменить выбранные queued</button>
+              <button class="btn-mini" onclick="hideDonePublishJobs()">Очистить done из вида</button>
             </div>
+          </div>
+          <div class="publish-queue-toolbar">
+            <div class="tabs compact-tabs" style="margin:0">
+              <button class="tab on" data-publish-filter="all" onclick="filterPublishJobs(this,'all')">Все<span class="cnt" id="pubjob-cnt-all"></span></button>
+              <button class="tab" data-publish-filter="queued" onclick="filterPublishJobs(this,'queued')">В очереди<span class="cnt" id="pubjob-cnt-queued"></span></button>
+              <button class="tab" data-publish-filter="uploading" onclick="filterPublishJobs(this,'uploading')">Загружается<span class="cnt" id="pubjob-cnt-uploading"></span></button>
+              <button class="tab" data-publish-filter="done" onclick="filterPublishJobs(this,'done')">Загружено<span class="cnt" id="pubjob-cnt-done"></span></button>
+              <button class="tab" data-publish-filter="failed" onclick="filterPublishJobs(this,'failed')">Ошибки<span class="cnt" id="pubjob-cnt-failed"></span></button>
+              <button class="tab" data-publish-filter="cancelled" onclick="filterPublishJobs(this,'cancelled')">Отменено<span class="cnt" id="pubjob-cnt-cancelled"></span></button>
+            </div>
+            <label class="toggle-label">batch size
+              <select id="publish-batch-size" onchange="publishBatchSize=Number(this.value)||3">
+                <option value="1">1</option>
+                <option value="3" selected>3</option>
+                <option value="5">5</option>
+                <option value="10">10</option>
+              </select>
+            </label>
           </div>
           <div id="publish-jobs"></div>
         </div>

@@ -379,6 +379,27 @@ def test_publish_jobs_api_returns_context(tmp_path):
     assert job["channel_title"] == "Channel"
     assert job["profile_name"] == "Profile"
     assert job["video_title"] == "source"
+    assert job["privacy_status"] == "private"
+    assert job["publish_mode"] == "private"
+    assert job["workspace_item_key"] == f"clip:{clip_id}"
+
+
+def test_publish_jobs_api_filters_by_status(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+
+    account_id = _make_account()
+    first_clip_id, _first_output = _make_done_clip(tmp_path)
+    second_clip_id, _second_output = _make_done_clip(tmp_path)
+    queued_id = _make_job(account_id=account_id, clip_id=first_clip_id)
+    failed_id = _make_job(account_id=account_id, clip_id=second_clip_id)
+    db.mark_publish_failed(failed_id, "boom", retryable=False)
+
+    queued = api.publish_jobs(status="queued")
+    failed = api.publish_jobs(status="failed")
+
+    assert [job["id"] for job in queued["jobs"]] == [queued_id]
+    assert [job["id"] for job in failed["jobs"]] == [failed_id]
 
 
 def test_retry_failed_job_requeues_job(tmp_path):
@@ -408,6 +429,64 @@ def test_cancel_publish_job_marks_cancelled(tmp_path):
 
     assert result["job"]["status"] == "cancelled"
     assert db.get_publish_job(job_id)["status"] == "cancelled"
+
+
+def test_done_job_response_contains_youtube_url(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+
+    account_id = _make_account()
+    clip_id, _output = _make_done_clip(tmp_path)
+    job_id = _make_job(account_id=account_id, clip_id=clip_id)
+    db.mark_publish_done(job_id, "yt-done", "https://www.youtube.com/watch?v=yt-done")
+
+    result = api.publish_jobs(status="done")
+
+    assert result["jobs"][0]["youtube_url"] == "https://www.youtube.com/watch?v=yt-done"
+
+
+def test_publish_jobs_bulk_retry_and_cancel(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import PublishJobsBulkRequest
+
+    account_id = _make_account()
+    first_clip_id, _first_output = _make_done_clip(tmp_path)
+    second_clip_id, _second_output = _make_done_clip(tmp_path)
+    failed_id = _make_job(account_id=account_id, clip_id=first_clip_id)
+    queued_id = _make_job(account_id=account_id, clip_id=second_clip_id)
+    db.mark_publish_failed(failed_id, "boom", retryable=False)
+
+    retry = api.publish_jobs_bulk_retry(PublishJobsBulkRequest(job_ids=[failed_id]))
+    assert retry["summary"]["updated"] == 1
+    assert db.get_publish_job(failed_id)["status"] == "queued"
+
+    cancel = api.publish_jobs_bulk_cancel(PublishJobsBulkRequest(job_ids=[queued_id, failed_id]))
+
+    assert cancel["summary"]["updated"] == 2
+    assert db.get_publish_job(queued_id)["status"] == "cancelled"
+    assert db.get_publish_job(failed_id)["status"] == "cancelled"
+
+
+def test_publish_jobs_bulk_run(monkeypatch, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import PublishJobsBulkRequest
+
+    account_id = _make_account()
+    clip_id, _output = _make_done_clip(tmp_path)
+    job_id = _make_job(account_id=account_id, clip_id=clip_id)
+
+    def fake_run(job_id_arg: int):
+        db.mark_publish_done(job_id_arg, "yt-bulk", "https://www.youtube.com/watch?v=yt-bulk")
+        return db.get_publish_job(job_id_arg)
+
+    monkeypatch.setattr(api, "run_publish_job_now", fake_run)
+
+    result = api.publish_jobs_bulk_run(PublishJobsBulkRequest(job_ids=[job_id]))
+
+    assert result["summary"]["processed"] == 1
+    assert result["results"][0]["job"]["youtube_url"] == "https://www.youtube.com/watch?v=yt-bulk"
 
 
 def test_publish_job_run_calls_upload(monkeypatch, tmp_path):

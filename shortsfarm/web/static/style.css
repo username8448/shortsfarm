@@ -379,6 +379,26 @@ button:disabled { opacity: .4; cursor: not-allowed; }
   grid-template-columns: 1.05fr .95fr;
   gap: 16px;
 }
+.publish-queue-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.compact-tabs .tab {
+  padding: 5px 9px;
+}
+.publish-jobs-table th,
+.publish-jobs-table td {
+  padding: 7px 8px;
+  vertical-align: top;
+}
+.publish-jobs-table {
+  min-width: 1240px;
+}
 
 .field-grid {
   display: grid;
