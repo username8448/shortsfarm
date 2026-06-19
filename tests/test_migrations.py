@@ -28,6 +28,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "005_create_clips"            in versions
     assert "018_create_clip_workspace_metadata" in versions
     assert "019_add_workspace_hidden_at" in versions
+    assert "021_add_workspace_preparation" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -118,6 +119,11 @@ def test_clip_workspace_metadata_table(tmp_data_dir):
         }
     assert "hidden_at" in columns
     assert "missing_confirmed_at" in columns
+    assert "target_aspect" in columns
+    assert "prepared_path" in columns
+    assert "prepared_at" in columns
+    assert "prepare_status" in columns
+    assert "prepare_error" in columns
     assert "idx_clip_workspace_metadata_item" in indexes
     assert "idx_clip_workspace_metadata_status" in indexes
     assert "idx_clip_workspace_metadata_hidden" in indexes
@@ -135,7 +141,10 @@ def test_clips_source_segment_id_column_exists(tmp_data_dir):
             for row in con.execute("PRAGMA index_list(clips)").fetchall()
         }
     assert "source_segment_id" in columns
+    assert "source_clip_id" in columns
+    assert "source_aspect" in columns
     assert "idx_clips_source_segment_id" in indexes
+    assert "idx_clips_source_clip_aspect" in indexes
 
 
 def test_idempotent(tmp_data_dir):

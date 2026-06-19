@@ -222,6 +222,7 @@ let lastClips = [];
 let workspaceFilter = 'all';
 let selectedWorkspaceKeys = new Set();
 let currentWorkspaceItemKey = null;
+let workspaceDetailDirty = false;
 let lastOutputs = [];
 let lastYoutubeAccounts = [];
 let lastYoutubeProfiles = [];
@@ -779,7 +780,7 @@ async function loadClips() {
     renderClipCounts(data.counts || {});
     renderWorkspaceYoutubeControls();
     renderClipsTable(getVisibleWorkspaceItems());
-    renderWorkspaceDetail();
+    if (!workspaceDetailDirty) renderWorkspaceDetail();
   } catch (err) {
     showError('clips-table', err);
   }
@@ -818,6 +819,12 @@ function workspaceTypeLabel(item) {
 }
 function workspaceTitle(item) {
   return item?.title || item?.file_name || `${workspaceTypeLabel(item)} #${item?.item_id || ''}`;
+}
+function targetAspectLabel(value) {
+  const aspect = value || 'original';
+  if (aspect === '16x9') return '16:9';
+  if (aspect === '9x16') return '9:16';
+  return 'Original';
 }
 function formatDurationSec(seconds) {
   if (seconds === null || seconds === undefined) return '—';
@@ -884,6 +891,13 @@ function renderWorkspaceType(item) {
 function missingBadge(item) {
   return item?.missing ? '<span class="badge b-err">Файл отсутствует</span>' : '';
 }
+function prepareBadge(item) {
+  if (!item) return '';
+  if (item.prepare_status === 'done' && item.prepared_file_exists) return '<span class="badge b-ok">Подготовлено</span>';
+  if ((item.target_aspect || 'original') !== 'original') return '<span class="badge b-warn">Нужно подготовить</span>';
+  if (item.prepare_status === 'failed') return '<span class="badge b-err">Ошибка подготовки</span>';
+  return '';
+}
 function workspaceOpenFileButton(item, label='Открыть') {
   const path = item?.path || item?.source_path || '';
   if (!path || item?.missing || !item?.file_exists) {
@@ -903,6 +917,7 @@ function toggleWorkspaceSelection(key, checked) {
   renderWorkspaceBulkState();
 }
 function selectWorkspaceItem(key) {
+  workspaceDetailDirty = false;
   currentWorkspaceItemKey = key;
   if (key) selectedWorkspaceKeys.add(key);
   renderClipsTable(getVisibleWorkspaceItems());
@@ -934,7 +949,8 @@ function renderClipsTable(rows) {
     const title = workspaceTitle(item);
     const renderInfo = item.render_status ? `<div class="mono dim">render: ${esc(ruStatus(item.render_status))}</div>` : '';
     const publishInfo = item.publish_job_status ? `<div class="mono dim">publish #${esc(item.publish_job_id || '')}: ${esc(ruStatus(item.publish_job_status))}</div>` : '';
-    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${videoThumb(playablePath, title)}<div style="min-width:0;flex:1"><div class="mono txt ov" title="${esc(title)}">${esc(title)}</div><div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}${publishInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${missingBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
+    const prepareInfo = `<div class="mono dim">format: ${esc(targetAspectLabel(item.target_aspect))}${item.prepare_status && item.prepare_status !== 'none' ? ` · ${esc(ruStatus(item.prepare_status))}` : ''}</div>`;
+    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${videoThumb(playablePath, title)}<div style="min-width:0;flex:1"><div class="mono txt ov" title="${esc(title)}">${esc(title)}</div><div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}${prepareInfo}${publishInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${missingBadge(item)}${prepareBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
   }).join('')}</tbody></table>`;
   renderWorkspaceBulkState();
 }
@@ -968,11 +984,12 @@ function workspaceYoutubeRequestBody(items) {
   };
 }
 function workspaceYoutubeSummary(data) {
+  const prepared = data?.prepared || 0;
   const created = data?.created || 0;
   const updated = data?.updated || 0;
   const skipped = data?.skipped || 0;
   const errors = data?.errors || 0;
-  return `Добавлено в очередь: ${created} · обновлено: ${updated} · пропущено: ${skipped} · ошибок: ${errors}`;
+  return `Подготовлено: ${prepared} · добавлено в очередь: ${created} · обновлено: ${updated} · пропущено: ${skipped} · ошибок: ${errors}`;
 }
 function workspaceYoutubeSkippedText(data) {
   const skipped = data?.skipped_items || [];
@@ -1041,8 +1058,9 @@ async function enqueueWorkspaceItemsToYouTube(items, runNow = false) {
     showToast(workspaceYoutubeSummary(data));
     const skippedText = workspaceYoutubeSkippedText(data);
     if (skippedText) alert(`Пропущенные элементы:\n${skippedText}`);
-    if (runNow && (data.created || 0) > 0) {
-      const worker = await api.post('/api/publish/worker/run-once', {limit: Math.max(1, data.created || 1)});
+    const runnableJobs = (data.created || 0) + (data.updated || 0);
+    if (runNow && runnableJobs > 0) {
+      const worker = await api.post('/api/publish/worker/run-once', {limit: Math.max(1, runnableJobs)});
       showToast(`Запущена загрузка. Обработано jobs: ${worker.processed || 0}`);
       await refreshWorkspaceList();
       renderWorkspaceListAndDetail();
@@ -1093,6 +1111,45 @@ async function bulkSetWorkspaceStatus(status) {
     showToast(`Обновлено: ${data.updated || 0}`);
   } catch (err) {
     showToast(err.message || 'Не удалось обновить статус', 'err');
+  }
+}
+async function refreshWorkspaceFromPrepareResponse(data) {
+  const workspace = data?.workspace || {};
+  lastClips = workspace.items || lastClips;
+  renderClipCounts(workspace.counts || workspaceCountsFromItems(lastClips));
+  renderWorkspaceListAndDetail();
+}
+async function prepareSelectedWorkspaceItems() {
+  const items = Array.from(selectedWorkspaceKeys);
+  if (!items.length) {
+    showToast('Сначала выберите сегменты или клипы', 'err');
+    return;
+  }
+  const target = document.getElementById('workspace-bulk-target-aspect')?.value || 'original';
+  try {
+    const data = await api.post('/api/workspace/clips/bulk-prepare', {item_keys: items, target_aspect: target});
+    await refreshWorkspaceFromPrepareResponse(data);
+    showToast(`Подготовлено: ${data.prepared || 0} · пропущено: ${data.skipped || 0} · ошибок: ${data.errors || 0}`);
+    const skipped = data.skipped_items || [];
+    if (skipped.length) alert(`Пропущенные элементы:\n${skipped.slice(0, 12).map(item => `${item.item_key}: ${item.reason}`).join('\n')}`);
+  } catch (err) {
+    showToast(err.message || 'Не удалось подготовить выбранные', 'err');
+  }
+}
+async function prepareCurrentWorkspaceItem() {
+  const item = workspaceItemByKey(currentWorkspaceItemKey);
+  if (!item) return;
+  try {
+    await saveWorkspaceDetail({silent: true, rerender: false});
+    const target = document.getElementById('workspace-target-aspect')?.value || item.target_aspect || 'original';
+    const data = await api.post(`/api/workspace/clips/${encodeURIComponent(item.id)}/prepare`, {target_aspect: target});
+    const updated = data.item;
+    lastClips = lastClips.map(row => row.id === updated.id ? updated : row);
+    currentWorkspaceItemKey = updated.id;
+    renderWorkspaceListAndDetail();
+    showToast(`Видео подготовлено: ${targetAspectLabel(updated.target_aspect)}`);
+  } catch (err) {
+    showToast(err.message || 'Не удалось подготовить видео', 'err');
   }
 }
 function openSelectedWorkspaceFolder() {
@@ -1189,10 +1246,15 @@ function renderWorkspaceDetail() {
     : `<button class="btn-danger" onclick="deleteWorkspaceItem('${esc(item.id)}')">Удалить файл</button>`;
   const readyDisabled = item.workspace_status === 'ready' ? ' disabled' : '';
   const draftDisabled = item.workspace_status === 'draft' ? ' disabled' : '';
-  const youtubeDisabled = (!getWorkspaceYoutubeAccount() || item.missing || item.workspace_status !== 'ready') ? ' disabled' : '';
+  const canRefreshPublishJob = ['queued', 'failed', 'cancelled'].includes(item.publish_job_status);
+  const youtubeDisabled = (!getWorkspaceYoutubeAccount() || item.missing || (item.workspace_status !== 'ready' && !canRefreshPublishJob)) ? ' disabled' : '';
+  const canUpdateYoutube = item.publish_job_status === 'done'
+    && Boolean(item.publish_job_id)
+    && Boolean(item.publish_youtube_video_id || item.publish_youtube_url);
   const publishPanel = item.publish_job_id
     ? `<div class="missing-panel publish-panel">${badge(item.publish_job_status || 'queued')}<div><b>Publish job #${esc(item.publish_job_id)}</b><p>${item.publish_youtube_url ? `<a class="link-video mono txt" href="${esc(item.publish_youtube_url)}" target="_blank" rel="noopener noreferrer">Открыть YouTube</a>` : 'YouTube URL пока нет.'}${item.publish_error ? `<br><span class="err">${esc(shortErrorText(item.publish_error))}</span>` : ''}</p></div></div>`
     : '';
+  const preparedPanel = `<div class="missing-panel publish-panel">${prepareBadge(item) || badge(item.prepare_status || 'none')}<div><b>Подготовленный файл</b><p>${item.prepared_path ? `<span title="${esc(item.prepared_path)}">${esc(shortPath(item.prepared_path))}</span>` : 'Файл ещё не подготовлен.'}${item.prepare_error ? `<br><span class="err">${esc(shortErrorText(item.prepare_error))}</span>` : ''}</p></div></div>`;
   el.innerHTML = `<div class="workspace-detail-body">
     <div class="workspace-preview">${videoThumb(playablePath, title)}</div>
     <div class="workspace-detail-head">
@@ -1203,32 +1265,41 @@ function renderWorkspaceDetail() {
     </div>
     ${missingNotice}
     ${publishPanel}
+    ${preparedPanel}
     <div class="workspace-meta">
       <div><span>Источник</span><b>${esc(item.video_title || '—')}</b></div>
       <div><span>Длительность</span><b>${esc(formatDurationSec(item.duration_sec))}</b></div>
       <div><span>Файл</span><b title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</b></div>
       <div><span>Папка</span><b title="${esc(item.folder_path || '')}">${esc(shortPath(item.folder_path || '—'))}</b></div>
     </div>
-    <div class="field"><label class="field-lbl">Статус</label><select id="workspace-status" onchange="updateWorkspaceDetailActionState()"><option value="draft">Черновик</option><option value="ready">Готово</option><option value="queued">В очереди</option><option value="uploaded">Загружено</option><option value="failed">Ошибка</option></select></div>
-    <div class="field"><label class="field-lbl">Название</label><input id="workspace-title" type="text" value="${esc(item.title || '')}" placeholder="${esc(item.file_name || title)}"></div>
-    <div class="field"><label class="field-lbl">Описание</label><textarea id="workspace-description" rows="5" placeholder="Локальное описание для будущей публикации">${esc(item.description || '')}</textarea></div>
-    <div class="field"><label class="field-lbl">Теги</label><input id="workspace-tags" type="text" value="${esc(item.tags || '')}" placeholder="через запятую"></div>
+    <div class="field"><label class="field-lbl">Статус</label><select id="workspace-status" onchange="markWorkspaceDetailDirty();updateWorkspaceDetailActionState()"><option value="draft">Черновик</option><option value="ready">Готово</option><option value="queued">В очереди</option><option value="uploaded">Загружено</option><option value="failed">Ошибка</option></select></div>
+    <div class="field"><label class="field-lbl">Формат видео</label><select id="workspace-target-aspect" onchange="markWorkspaceDetailDirty()"><option value="original">Original</option><option value="16x9">16:9</option><option value="9x16">9:16</option></select></div>
+    <div class="field"><label class="field-lbl">Название</label><input id="workspace-title" type="text" value="${esc(item.title || '')}" placeholder="${esc(item.file_name || title)}" oninput="markWorkspaceDetailDirty()"></div>
+    <div class="field"><label class="field-lbl">Описание</label><textarea id="workspace-description" rows="5" placeholder="Локальное описание для будущей публикации" oninput="markWorkspaceDetailDirty()">${esc(item.description || '')}</textarea></div>
+    <div class="field"><label class="field-lbl">Теги</label><input id="workspace-tags" type="text" value="${esc(item.tags || '')}" placeholder="через запятую" oninput="markWorkspaceDetailDirty()"></div>
     <div class="workspace-detail-actions">
       <button class="btn-primary" onclick="saveWorkspaceDetail()">Сохранить</button>
       ${workspaceOpenFileButton(item, 'Открыть файл')}
       ${workspaceOpenFolderButton(item, 'Открыть папку')}
+      <button class="btn-secondary" onclick="prepareCurrentWorkspaceItem()">Подготовить видео</button>
       <button class="btn-secondary" onclick="setCurrentWorkspaceStatus('ready')"${readyDisabled}>Сделать готовым</button>
       <button class="btn-secondary" onclick="setCurrentWorkspaceStatus('draft')"${draftDisabled}>Вернуть в черновики</button>
       ${fileAction}
       <button class="btn-secondary" id="workspace-detail-enqueue-youtube" onclick="enqueueCurrentWorkspaceToYouTube(false)"${youtubeDisabled}>Добавить в очередь YouTube</button>
       <button class="btn-primary" id="workspace-detail-upload-youtube" onclick="enqueueCurrentWorkspaceToYouTube(true)"${youtubeDisabled}>Загрузить сейчас</button>
+      ${canUpdateYoutube ? '<button class="btn-primary" onclick="updateCurrentWorkspaceYoutubeMetadata()">Обновить данные на YouTube</button>' : ''}
       <button class="btn-secondary stub-action" onclick="futureFeature('Субтитры')">Добавить субтитры</button>
       <button class="btn-secondary stub-action" onclick="futureFeature('Уникализация')">Уникализировать</button>
     </div>
   </div>`;
   const statusEl = document.getElementById('workspace-status');
   if (statusEl) statusEl.value = item.workspace_status || 'draft';
+  const aspectEl = document.getElementById('workspace-target-aspect');
+  if (aspectEl) aspectEl.value = item.target_aspect || 'original';
   updateWorkspaceDetailActionState();
+}
+function markWorkspaceDetailDirty() {
+  workspaceDetailDirty = true;
 }
 function currentWorkspaceFormPayload(item) {
   return {
@@ -1236,12 +1307,17 @@ function currentWorkspaceFormPayload(item) {
     title: document.getElementById('workspace-title')?.value || '',
     description: document.getElementById('workspace-description')?.value || '',
     tags: document.getElementById('workspace-tags')?.value || '',
+    target_aspect: document.getElementById('workspace-target-aspect')?.value || item.target_aspect || 'original',
   };
 }
 function updateWorkspaceDetailActionState() {
   const item = workspaceItemByKey(currentWorkspaceItemKey);
   const status = document.getElementById('workspace-status')?.value || item?.workspace_status || 'draft';
-  const canPublish = Boolean(getWorkspaceYoutubeAccount()) && Boolean(item) && !item.missing && status === 'ready';
+  const canRefreshPublishJob = ['queued', 'failed', 'cancelled'].includes(item?.publish_job_status);
+  const canPublish = Boolean(getWorkspaceYoutubeAccount())
+    && Boolean(item)
+    && !item.missing
+    && (status === 'ready' || canRefreshPublishJob);
   ['workspace-detail-enqueue-youtube', 'workspace-detail-upload-youtube'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = !canPublish;
@@ -1254,6 +1330,7 @@ async function saveWorkspaceDetail(options = {}) {
   try {
     const data = await api.patch(`/api/workspace/clips/${encodeURIComponent(item.id)}`, currentWorkspaceFormPayload(item));
     const updated = data.item;
+    workspaceDetailDirty = false;
     lastClips = lastClips.map(row => row.id === updated.id ? updated : row);
     currentWorkspaceItemKey = updated.id;
     if (rerender) {
@@ -1266,6 +1343,30 @@ async function saveWorkspaceDetail(options = {}) {
   } catch (err) {
     if (!silent) showToast(err.message || 'Не удалось сохранить', 'err');
     throw err;
+  }
+}
+async function updateCurrentWorkspaceYoutubeMetadata() {
+  const item = workspaceItemByKey(currentWorkspaceItemKey);
+  if (!item?.publish_job_id || item.publish_job_status !== 'done') return;
+  try {
+    const updated = await saveWorkspaceDetail({silent: true, rerender: false});
+    if (!updated) return;
+    await api.post(
+      `/api/publish/jobs/${encodeURIComponent(item.publish_job_id)}/youtube/update-metadata`,
+      {
+        title: updated.title || '',
+        description: updated.description || '',
+        tags: updated.tags || '',
+      },
+    );
+    await refreshWorkspaceList();
+    renderWorkspaceListAndDetail();
+    await refreshPublishJobs();
+    showToast('Данные видео на YouTube обновлены.');
+  } catch (err) {
+    await refreshWorkspaceList().catch(() => {});
+    renderWorkspaceListAndDetail();
+    showToast(err.message || 'Не удалось обновить данные на YouTube', 'err');
   }
 }
 async function setCurrentWorkspaceStatus(status) {

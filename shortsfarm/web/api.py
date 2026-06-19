@@ -35,10 +35,12 @@ from ..publish_youtube import (
     parse_tags,
     run_publish_job_now,
     run_publish_queue_once,
+    update_youtube_video_metadata,
     upload_clip_to_youtube,
     validate_publish_job,
     validate_publish_options,
 )
+from ..prepare_video import prepare_workspace_video
 from ..render import render_queued, retry_failed_clips
 from ..services import (
     VIDEO_EXTENSIONS,
@@ -57,9 +59,12 @@ from .schemas import (
     RetryFailedRequest,
     SplitRequest,
     WorkspaceBulkDeleteRequest,
+    WorkspaceBulkPrepareRequest,
     WorkspaceBulkStatusRequest,
     WorkspaceItemUpdateRequest,
+    WorkspacePrepareRequest,
     WorkspaceYouTubeEnqueueRequest,
+    YouTubeMetadataUpdateRequest,
     YouTubeClientJsonImportRequest,
     YouTubeConnectStartRequest,
     YouTubeOAuthProfileCreateRequest,
@@ -370,7 +375,12 @@ def _youtube_oauth_profile_dict(row: Any) -> dict[str, Any]:
 
 def _publish_job_dict(row: Any) -> dict[str, Any]:
     source_segment_id = _row(row, "clip_source_segment_id")
-    workspace_item_key = f"segment:{source_segment_id}" if source_segment_id is not None else f"clip:{int(row['clip_id'])}"
+    source_clip_id = _row(row, "clip_source_clip_id")
+    workspace_item_key = (
+        f"segment:{source_segment_id}"
+        if source_segment_id is not None
+        else f"clip:{source_clip_id}" if source_clip_id is not None else f"clip:{int(row['clip_id'])}"
+    )
     return {
         "id": int(row["id"]),
         "platform": _row(row, "platform", "youtube"),
@@ -406,6 +416,8 @@ def _publish_job_dict(row: Any) -> dict[str, Any]:
         "clip_output_path": _row(row, "clip_output_path", "") or "",
         "clip_cut_mode": _row(row, "clip_cut_mode", "") or "",
         "clip_source_segment_id": source_segment_id,
+        "clip_source_clip_id": source_clip_id,
+        "clip_source_aspect": _row(row, "clip_source_aspect", "") or "",
         "workspace_item_key": workspace_item_key,
         "video_title": _row(row, "video_title", "") or "",
         "video_source_path": _row(row, "video_source_path", "") or "",
@@ -731,6 +743,20 @@ def _workspace_create_publish_job(
 
 def _workspace_youtube_skip(item_key: str, reason: str) -> dict[str, str]:
     return {"item_key": item_key, "reason": reason}
+
+
+def _workspace_prepared_publish_path(item: dict[str, Any]) -> str | None:
+    prepared_path = _normalize_setting_text(item.get("prepared_path"))
+    if item.get("prepare_status") == "done" and prepared_path:
+        candidate = Path(prepared_path).expanduser()
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _workspace_target_needs_prepare(item: dict[str, Any]) -> bool:
+    target_aspect = str(item.get("target_aspect") or "original")
+    return target_aspect != "original" and _workspace_prepared_publish_path(item) is None
 
 
 def _save_youtube_settings(
@@ -1364,6 +1390,52 @@ def publish_jobs(status: str | None = None, limit: int = 100) -> dict[str, Any]:
         raise _fail(exc)
 
 
+@router.post("/publish/jobs/{job_id}/youtube/update-metadata")
+def publish_job_update_youtube_metadata(
+    job_id: int,
+    req: YouTubeMetadataUpdateRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        job = db.get_publish_job(job_id)
+        if job is None:
+            raise FileNotFoundError(f"Publish job {job_id} не найден")
+
+        job_payload = _publish_job_dict(job)
+        item_type, item_id = _parse_workspace_key(job_payload["workspace_item_key"])
+        workspace_item = db.get_workspace_item(item_type, item_id)
+
+        title = req.title
+        description = req.description
+        tags = req.tags
+        if workspace_item is not None:
+            if title is None:
+                title = _workspace_publish_title(workspace_item)
+            if description is None:
+                description = workspace_item.get("description") or ""
+            if tags is None:
+                tags = workspace_item.get("tags") or ""
+
+        updated = update_youtube_video_metadata(
+            job_id,
+            title=title,
+            description=description,
+            tags=tags,
+            category_id=req.category_id,
+            privacy_status=req.privacy_status,
+            made_for_kids=req.made_for_kids,
+        )
+        return {
+            "status": "ok",
+            "message": "Данные видео на YouTube обновлены.",
+            "job": _publish_job_dict(updated),
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
 @router.post("/publish/jobs/{job_id}/retry")
 def publish_job_retry(job_id: int, req: PublishJobRetryRequest | None = None) -> dict[str, Any]:
     try:
@@ -1635,6 +1707,7 @@ def workspace_clip_update(item_key: str, req: WorkspaceItemUpdateRequest) -> dic
             title=req.title,
             description=req.description,
             tags=req.tags,
+            target_aspect=req.target_aspect,
         )
         if not ok:
             raise FileNotFoundError("Элемент рабочего пространства не найден.")
@@ -1642,6 +1715,64 @@ def workspace_clip_update(item_key: str, req: WorkspaceItemUpdateRequest) -> dic
         return {"item": item}
     except FileNotFoundError as exc:
         raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/workspace/clips/{item_key}/prepare")
+def workspace_clip_prepare(item_key: str, req: WorkspacePrepareRequest) -> dict[str, Any]:
+    try:
+        _init()
+        item_type, item_id = _parse_workspace_key(item_key)
+        path = prepare_workspace_video(item_type, item_id, req.target_aspect)
+        item = db.get_workspace_item(item_type, item_id)
+        return {
+            "status": "ok",
+            "item": item,
+            "prepared_path": str(path),
+            "prepare_status": item["prepare_status"] if item else "done",
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/workspace/clips/bulk-prepare")
+def workspace_clips_bulk_prepare(req: WorkspaceBulkPrepareRequest) -> dict[str, Any]:
+    try:
+        _init()
+        summary = {"prepared": 0, "skipped": 0, "errors": 0}
+        items: list[dict[str, Any]] = []
+        skipped_items: list[dict[str, str]] = []
+        for item_key in req.item_keys:
+            try:
+                item_type, item_id = _parse_workspace_key(item_key)
+                item = db.get_workspace_item(item_type, item_id)
+                if item is None:
+                    summary["skipped"] += 1
+                    skipped_items.append(_workspace_youtube_skip(item_key, "Элемент не найден"))
+                    continue
+                if item.get("missing") or not item.get("file_exists"):
+                    summary["skipped"] += 1
+                    skipped_items.append(_workspace_youtube_skip(item_key, "Файл отсутствует"))
+                    continue
+                prepare_workspace_video(item_type, item_id, req.target_aspect)
+                updated = db.get_workspace_item(item_type, item_id)
+                if updated:
+                    items.append(updated)
+                summary["prepared"] += 1
+            except Exception as exc:
+                summary["errors"] += 1
+                skipped_items.append(_workspace_youtube_skip(item_key, str(exc) or exc.__class__.__name__))
+        workspace_items = db.list_workspace_items(limit=1000)
+        return {
+            "status": "ok",
+            **summary,
+            "items": items,
+            "skipped_items": skipped_items,
+            "workspace": _workspace_items_response(workspace_items),
+        }
     except Exception as exc:
         raise _fail(exc)
 
@@ -1759,6 +1890,7 @@ def workspace_clips_youtube_enqueue(req: WorkspaceYouTubeEnqueueRequest) -> dict
         jobs: list[dict[str, Any]] = []
         created = 0
         updated = 0
+        prepared = 0
         errors = 0
         seen: set[str] = set()
 
@@ -1775,14 +1907,25 @@ def workspace_clips_youtube_enqueue(req: WorkspaceYouTubeEnqueueRequest) -> dict
                 if item.get("missing") or not item.get("file_exists"):
                     skipped_items.append(_workspace_youtube_skip(item_key, "Файл отсутствует"))
                     continue
-                if str(item.get("workspace_status") or "draft") != "ready":
+                workspace_status = str(item.get("workspace_status") or "draft")
+                publish_status = str(item.get("publish_job_status") or "")
+                can_refresh_existing_job = publish_status in {"queued", "failed", "cancelled"}
+                if workspace_status != "ready" and not can_refresh_existing_job:
                     skipped_items.append(_workspace_youtube_skip(item_key, "В очередь добавляются только элементы со статусом Готово"))
                     continue
 
-                if item_type == "segment":
-                    clip_id = db.get_or_create_publish_clip_from_segment(item_id)
-                else:
-                    clip_id = item_id
+                if _workspace_target_needs_prepare(item):
+                    prepare_workspace_video(item_type, item_id, str(item.get("target_aspect") or "original"))
+                    prepared += 1
+                    item = db.get_workspace_item(item_type, item_id) or item
+
+                publish_path = _workspace_prepared_publish_path(item)
+                clip_id = db.get_or_create_publish_clip_for_workspace_item(
+                    item_type,
+                    item_id,
+                    output_path=publish_path,
+                    target_aspect=str(item.get("target_aspect") or "original"),
+                )
 
                 existing_job = db.get_publish_job_for_clip(account_id=req.account_id, clip_id=clip_id)
                 job_id = _workspace_create_publish_job(item=item, clip_id=clip_id, req=req)
@@ -1813,6 +1956,7 @@ def workspace_clips_youtube_enqueue(req: WorkspaceYouTubeEnqueueRequest) -> dict
         workspace_items = db.list_workspace_items(limit=1000)
         return {
             "status": "ok",
+            "prepared": prepared,
             "created": created,
             "updated": updated,
             "skipped": len(skipped_items),

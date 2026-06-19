@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _make_segment(video_in_db: int, tmp_path, *, exists: bool = True, under_output: bool = False):
@@ -42,6 +43,26 @@ def _make_youtube_account() -> int:
     )
 
 
+def _make_clip(video_in_db: int, tmp_path, *, exists: bool = True):
+    from shortsfarm import db
+    mark_id = db.insert_mark(video_in_db, None, 3.0, 23.0)
+    clip_id = db.insert_clip(video_in_db, mark_id)
+    path = tmp_path / f"clip-{clip_id}.mp4"
+    if exists:
+        path.write_bytes(b"clip")
+    db.set_clip_done(clip_id, str(path))
+    return clip_id
+
+
+def _patch_prepare_ffmpeg(monkeypatch):
+    def fake_run(cmd, text, stdout, stderr):
+        Path(cmd[-1]).write_bytes(b"prepared")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("shortsfarm.prepare_video.require_binary", lambda name: "ffmpeg")
+    monkeypatch.setattr("shortsfarm.prepare_video.subprocess.run", fake_run)
+
+
 def test_workspace_api_lists_segments_even_without_clips(video_in_db, tmp_path):
     from shortsfarm.web import api
     segment_id = _make_segment(video_in_db, tmp_path)
@@ -75,6 +96,25 @@ def test_workspace_api_patch_updates_local_metadata(video_in_db, tmp_path):
     assert item["title"] == "Local title"
     assert item["description"] == "Local description"
     assert item["tags"] == "shorts, test"
+
+    reloaded = api.workspace_clips()
+    persisted = next(row for row in reloaded["items"] if row["id"] == f"segment:{segment_id}")
+    assert persisted["title"] == "Local title"
+    assert persisted["description"] == "Local description"
+    assert persisted["tags"] == "shorts, test"
+
+
+def test_workspace_api_patch_saves_target_aspect(video_in_db, tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspaceItemUpdateRequest
+    segment_id = _make_segment(video_in_db, tmp_path)
+
+    data = api.workspace_clip_update(
+        f"segment:{segment_id}",
+        WorkspaceItemUpdateRequest(target_aspect="9x16"),
+    )
+
+    assert data["item"]["target_aspect"] == "9x16"
 
 
 def test_workspace_api_status_is_reversible(video_in_db, tmp_path):
@@ -204,6 +244,90 @@ def test_workspace_delete_file_outside_output_is_forbidden(video_in_db, tmp_path
     assert exc.value.status_code == 403
 
 
+def test_workspace_prepare_segment_9x16_creates_prepared_path(monkeypatch, video_in_db, tmp_path):
+    from shortsfarm.config import output_dir
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspacePrepareRequest
+    _patch_prepare_ffmpeg(monkeypatch)
+    segment_id = _make_segment(video_in_db, tmp_path)
+
+    data = api.workspace_clip_prepare(
+        f"segment:{segment_id}",
+        WorkspacePrepareRequest(target_aspect="9x16"),
+    )
+
+    item = data["item"]
+    prepared_path = Path(item["prepared_path"])
+    assert item["target_aspect"] == "9x16"
+    assert item["prepare_status"] == "done"
+    assert prepared_path.exists()
+    assert output_dir() / "prepared" / "9x16" in prepared_path.parents
+
+
+def test_workspace_prepare_clip_16x9_creates_prepared_path(monkeypatch, video_in_db, tmp_path):
+    from shortsfarm.config import output_dir
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspacePrepareRequest
+    _patch_prepare_ffmpeg(monkeypatch)
+    clip_id = _make_clip(video_in_db, tmp_path)
+
+    data = api.workspace_clip_prepare(
+        f"clip:{clip_id}",
+        WorkspacePrepareRequest(target_aspect="16x9"),
+    )
+
+    item = data["item"]
+    prepared_path = Path(item["prepared_path"])
+    assert item["target_aspect"] == "16x9"
+    assert item["prepare_status"] == "done"
+    assert prepared_path.exists()
+    assert output_dir() / "prepared" / "16x9" in prepared_path.parents
+
+
+def test_workspace_prepare_repeated_uses_same_path(monkeypatch, video_in_db, tmp_path):
+    from shortsfarm.config import output_dir
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspacePrepareRequest
+    _patch_prepare_ffmpeg(monkeypatch)
+    segment_id = _make_segment(video_in_db, tmp_path)
+    key = f"segment:{segment_id}"
+
+    first = api.workspace_clip_prepare(key, WorkspacePrepareRequest(target_aspect="9x16"))["item"]
+    second = api.workspace_clip_prepare(key, WorkspacePrepareRequest(target_aspect="9x16"))["item"]
+
+    assert second["prepared_path"] == first["prepared_path"]
+    prepared_files = list((output_dir() / "prepared" / "9x16").glob("*.mp4"))
+    assert prepared_files == [Path(first["prepared_path"])]
+
+
+def test_workspace_prepare_missing_item_is_rejected(video_in_db, tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspacePrepareRequest
+    segment_id = _make_segment(video_in_db, tmp_path, exists=False)
+
+    with pytest.raises(HTTPException) as exc:
+        api.workspace_clip_prepare(
+            f"segment:{segment_id}",
+            WorkspacePrepareRequest(target_aspect="9x16"),
+        )
+
+    assert exc.value.status_code == 404
+
+
+def test_workspace_prepare_invalid_target_aspect(video_in_db, tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspacePrepareRequest
+    segment_id = _make_segment(video_in_db, tmp_path)
+
+    with pytest.raises(HTTPException) as exc:
+        api.workspace_clip_prepare(
+            f"segment:{segment_id}",
+            WorkspacePrepareRequest(target_aspect="1x1"),
+        )
+
+    assert exc.value.status_code == 400
+
+
 def test_workspace_youtube_enqueue_segment_creates_publish_clip(video_in_db, tmp_path):
     from shortsfarm import db
     from shortsfarm.web import api
@@ -247,6 +371,64 @@ def test_workspace_youtube_enqueue_segment_creates_publish_clip(video_in_db, tmp
     assert f"clip:{item['clip_id']}" not in {row["id"] for row in db.list_workspace_items()}
 
 
+def test_workspace_youtube_enqueue_uses_prepared_segment_path(monkeypatch, video_in_db, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspaceItemUpdateRequest, WorkspaceYouTubeEnqueueRequest
+    _patch_prepare_ffmpeg(monkeypatch)
+    account_id = _make_youtube_account()
+    segment_id = _make_segment(video_in_db, tmp_path)
+    key = f"segment:{segment_id}"
+    api.workspace_clip_update(
+        key,
+        WorkspaceItemUpdateRequest(workspace_status="ready", target_aspect="9x16"),
+    )
+
+    data = api.workspace_clips_youtube_enqueue(
+        WorkspaceYouTubeEnqueueRequest(item_keys=[key], account_id=account_id)
+    )
+
+    assert data["prepared"] == 1
+    item = data["items"][0]
+    clip = db.get_clip(item["clip_id"])
+    workspace_item = db.get_workspace_item("segment", segment_id)
+    assert workspace_item["prepare_status"] == "done"
+    assert Path(workspace_item["prepared_path"]).exists()
+    assert clip["output_path"] == workspace_item["prepared_path"]
+    assert "/prepared/9x16/" in clip["output_path"]
+    assert clip["source_aspect"] == "9x16"
+
+
+def test_workspace_youtube_enqueue_prepared_clip_uses_service_variant(monkeypatch, video_in_db, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspaceItemUpdateRequest, WorkspaceYouTubeEnqueueRequest
+    _patch_prepare_ffmpeg(monkeypatch)
+    account_id = _make_youtube_account()
+    clip_id = _make_clip(video_in_db, tmp_path)
+    key = f"clip:{clip_id}"
+    api.workspace_clip_update(
+        key,
+        WorkspaceItemUpdateRequest(workspace_status="ready", target_aspect="16x9"),
+    )
+
+    data = api.workspace_clips_youtube_enqueue(
+        WorkspaceYouTubeEnqueueRequest(item_keys=[key], account_id=account_id)
+    )
+
+    assert data["prepared"] == 1
+    item = data["items"][0]
+    service_clip = db.get_clip(item["clip_id"])
+    workspace_item = db.get_workspace_item("clip", clip_id)
+    assert int(item["clip_id"]) != clip_id
+    assert int(service_clip["source_clip_id"]) == clip_id
+    assert service_clip["source_aspect"] == "16x9"
+    assert service_clip["output_path"] == workspace_item["prepared_path"]
+    assert workspace_item["publish_job_id"] == item["job_id"]
+    assert workspace_item["publish_job_status"] == "queued"
+    assert f"clip:{item['clip_id']}" not in {row["id"] for row in db.list_workspace_items()}
+
+
 def test_workspace_youtube_enqueue_updates_existing_queued_job_metadata(video_in_db, tmp_path):
     from shortsfarm import db
     from shortsfarm.web import api
@@ -270,7 +452,6 @@ def test_workspace_youtube_enqueue_updates_existing_queued_job_metadata(video_in
     api.workspace_clip_update(
         key,
         WorkspaceItemUpdateRequest(
-            workspace_status="ready",
             title="New title",
             description="New description",
             tags="fresh, tags",

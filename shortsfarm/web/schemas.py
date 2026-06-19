@@ -29,6 +29,7 @@ class WorkspaceItemUpdateRequest(BaseModel):
     title: str | None = None
     description: str | None = None
     tags: str | None = None
+    target_aspect: str | None = None
 
 
 class WorkspaceBulkStatusRequest(BaseModel):
@@ -38,6 +39,15 @@ class WorkspaceBulkStatusRequest(BaseModel):
 
 class WorkspaceBulkDeleteRequest(BaseModel):
     items: list[str] = Field(default_factory=list)
+
+
+class WorkspacePrepareRequest(BaseModel):
+    target_aspect: str = "original"
+
+
+class WorkspaceBulkPrepareRequest(BaseModel):
+    item_keys: list[str] = Field(default_factory=list)
+    target_aspect: str = "original"
 
 
 class WorkspaceYouTubeEnqueueRequest(BaseModel):
@@ -138,6 +148,15 @@ class PublishJobResponse(BaseModel):
 
 class PublishJobRetryRequest(BaseModel):
     pass
+
+
+class YouTubeMetadataUpdateRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    tags: str | list[str] | None = None
+    category_id: str | None = None
+    privacy_status: str | None = None
+    made_for_kids: bool | None = None
 
 
 class PublishJobsBulkRequest(BaseModel):

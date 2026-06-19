@@ -55,7 +55,10 @@ def _make_account(*, status: str = "active", oauth_profile_id: int | None = None
         access_token="access",
         refresh_token="refresh",
         token_expires_at=None,
-        scopes="https://www.googleapis.com/auth/youtube.upload",
+        scopes=(
+            "https://www.googleapis.com/auth/youtube.upload "
+            "https://www.googleapis.com/auth/youtube.force-ssl"
+        ),
         oauth_profile_id=profile_id,
         status=status,
     )
@@ -443,6 +446,126 @@ def test_done_job_response_contains_youtube_url(tmp_path):
     result = api.publish_jobs(status="done")
 
     assert result["jobs"][0]["youtube_url"] == "https://www.youtube.com/watch?v=yt-done"
+
+
+def test_update_done_job_metadata_calls_youtube_videos_update(monkeypatch, tmp_path):
+    from shortsfarm import db, publish_youtube
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeMetadataUpdateRequest
+
+    account_id = _make_account()
+    clip_id, _output = _make_done_clip(tmp_path)
+    job_id = _make_job(account_id=account_id, clip_id=clip_id)
+    db.mark_publish_done(job_id, "yt-update", "https://www.youtube.com/watch?v=yt-update")
+    capture: dict = {}
+
+    class Request:
+        def execute(self):
+            capture["executed"] = True
+            return {"id": "yt-update"}
+
+    class ListRequest:
+        def execute(self):
+            return {
+                "items": [{
+                    "snippet": {"defaultLanguage": "ru"},
+                    "status": {"embeddable": True, "license": "youtube"},
+                }]
+            }
+
+    class Videos:
+        def list(self, *, part, id):
+            capture["list_part"] = part
+            capture["list_id"] = id
+            return ListRequest()
+
+        def update(self, *, part, body):
+            capture["part"] = part
+            capture["body"] = body
+            return Request()
+
+    class YouTube:
+        def videos(self):
+            return Videos()
+
+    monkeypatch.setattr(publish_youtube, "build_youtube_client", lambda account: YouTube())
+
+    result = api.publish_job_update_youtube_metadata(
+        job_id,
+        YouTubeMetadataUpdateRequest(
+            title="Updated title",
+            description="Updated description",
+            tags="new, tags",
+            category_id="24",
+            privacy_status="unlisted",
+            made_for_kids=True,
+        ),
+    )
+
+    assert capture["executed"] is True
+    assert capture["list_part"] == "snippet,status"
+    assert capture["list_id"] == "yt-update"
+    assert capture["part"] == "snippet,status"
+    assert capture["body"] == {
+        "id": "yt-update",
+        "snippet": {
+            "defaultLanguage": "ru",
+            "title": "Updated title",
+            "description": "Updated description",
+            "tags": ["new", "tags"],
+            "categoryId": "24",
+        },
+        "status": {
+            "embeddable": True,
+            "license": "youtube",
+            "privacyStatus": "unlisted",
+            "selfDeclaredMadeForKids": True,
+        },
+    }
+    assert result["message"] == "Данные видео на YouTube обновлены."
+    updated = db.get_publish_job(job_id)
+    assert updated["title"] == "Updated title"
+    assert updated["description"] == "Updated description"
+    assert updated["privacy_status"] == "unlisted"
+    assert updated["error"] is None
+
+
+def test_update_youtube_metadata_rejects_job_not_done(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeMetadataUpdateRequest
+
+    account_id = _make_account()
+    clip_id, _output = _make_done_clip(tmp_path)
+    job_id = _make_job(account_id=account_id, clip_id=clip_id)
+
+    with pytest.raises(Exception) as exc:
+        api.publish_job_update_youtube_metadata(
+            job_id,
+            YouTubeMetadataUpdateRequest(title="Updated"),
+        )
+
+    assert exc.value.status_code == 400
+    assert "только для загруженного видео" in exc.value.detail["message"]
+
+
+def test_update_youtube_metadata_rejects_missing_video_id(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeMetadataUpdateRequest
+
+    account_id = _make_account()
+    clip_id, _output = _make_done_clip(tmp_path)
+    job_id = _make_job(account_id=account_id, clip_id=clip_id)
+    db.mark_publish_done(job_id, "", "")
+
+    with pytest.raises(Exception) as exc:
+        api.publish_job_update_youtube_metadata(
+            job_id,
+            YouTubeMetadataUpdateRequest(title="Updated"),
+        )
+
+    assert exc.value.status_code == 400
+    assert "youtube_video_id" in exc.value.detail["message"]
 
 
 def test_publish_jobs_bulk_retry_and_cancel(tmp_path):

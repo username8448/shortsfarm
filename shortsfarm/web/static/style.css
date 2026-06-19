@@ -438,6 +438,17 @@ button:disabled { opacity: .4; cursor: not-allowed; }
   border-radius: 8px;
   background: rgba(15,23,42,.38);
 }
+.workspace-prepare-panel {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) auto minmax(220px, 1fr);
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(148,163,184,.08);
+}
 .mini-field {
   margin: 0;
 }
@@ -558,6 +569,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
   .settings-grid,
   .field-grid,
   .workspace-layout,
+  .workspace-prepare-panel,
   .workspace-youtube-panel {
     grid-template-columns: 1fr;
   }

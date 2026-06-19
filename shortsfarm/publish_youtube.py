@@ -15,6 +15,11 @@ CHUNK_MAX_RETRIES = 5
 AUTO_RETRY_LIMIT = 2
 UPLOAD_CHUNKSIZE = 50 * 1024 * 1024
 WORKER_PAUSE_SECONDS = 10.0
+YOUTUBE_METADATA_WRITE_SCOPES = {
+    "https://www.googleapis.com/auth/youtube",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/youtubepartner",
+}
 
 
 def parse_tags(value: str | list[str] | None) -> list[str]:
@@ -239,6 +244,121 @@ def build_youtube_video_body(job: Any) -> dict[str, Any]:
         },
         "status": status,
     }
+
+
+def update_youtube_video_metadata(
+    job_id: int,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    tags: str | list[str] | None = None,
+    category_id: str | None = None,
+    privacy_status: str | None = None,
+    made_for_kids: bool | None = None,
+) -> Any:
+    job = _require_row(db.get_publish_job(job_id), f"Publish job {job_id} не найден.")
+    if str(job["status"] or "") != "done":
+        raise ValueError("Обновить данные на YouTube можно только для загруженного видео.")
+
+    youtube_video_id = str(job["youtube_video_id"] or "").strip()
+    if not youtube_video_id:
+        raise ValueError("У publish job отсутствует youtube_video_id.")
+
+    clean_title = str(title if title is not None else job["title"] or "").strip()
+    clean_description = str(
+        description if description is not None else job["description"] or ""
+    )
+    clean_tags = parse_tags(tags if tags is not None else job["tags"])
+    clean_category_id = str(category_id if category_id is not None else job["category_id"] or "22").strip()
+    clean_privacy = str(
+        privacy_status if privacy_status is not None else job["privacy_status"] or "private"
+    ).strip()
+    clean_made_for_kids = (
+        bool(made_for_kids)
+        if made_for_kids is not None
+        else bool(job["made_for_kids"])
+    )
+
+    if not clean_title:
+        raise ValueError("Название видео не может быть пустым.")
+    if not clean_category_id:
+        raise ValueError("category_id обязателен.")
+    if clean_privacy not in {"private", "unlisted", "public"}:
+        raise ValueError("privacy_status должен быть private, unlisted или public.")
+
+    account = _require_row(
+        db.get_social_account(int(job["account_id"])),
+        "YouTube аккаунт не найден.",
+    )
+    if str(account["platform"] or "") != "youtube":
+        raise ValueError("Аккаунт publish job не является YouTube аккаунтом.")
+    if str(account["status"] or "") != "active":
+        raise ValueError("YouTube аккаунт не активен.")
+    account_scopes = set(str(account["scopes"] or "").split())
+    if not account_scopes.intersection(YOUTUBE_METADATA_WRITE_SCOPES):
+        raise RuntimeError(
+            "YouTube аккаунт подключён без права изменения metadata. "
+            "Переподключите канал через Google OAuth."
+        )
+
+    try:
+        youtube = build_youtube_client(account)
+        current_response = youtube.videos().list(
+            part="snippet,status",
+            id=youtube_video_id,
+        ).execute()
+        current_items = current_response.get("items") or []
+        if not current_items:
+            raise FileNotFoundError("Видео не найдено в YouTube.")
+        current = current_items[0]
+        current_snippet = current.get("snippet") or {}
+        current_status = current.get("status") or {}
+        snippet = {
+            key: current_snippet[key]
+            for key in ("defaultLanguage",)
+            if key in current_snippet
+        }
+        snippet.update({
+            "title": clean_title,
+            "description": clean_description,
+            "tags": clean_tags,
+            "categoryId": clean_category_id,
+        })
+        status = {
+            key: current_status[key]
+            for key in (
+                "embeddable",
+                "license",
+                "publicStatsViewable",
+                "publishAt",
+                "containsSyntheticMedia",
+            )
+            if key in current_status
+        }
+        status.update({
+            "privacyStatus": clean_privacy,
+            "selfDeclaredMadeForKids": clean_made_for_kids,
+        })
+        body = {
+            "id": youtube_video_id,
+            "snippet": snippet,
+            "status": status,
+        }
+        youtube.videos().update(part="snippet,status", body=body).execute()
+        db.update_publish_job_metadata(
+            job_id,
+            title=clean_title,
+            description=clean_description,
+            tags=json.dumps(clean_tags, ensure_ascii=False),
+            category_id=clean_category_id,
+            privacy_status=clean_privacy,
+            made_for_kids=clean_made_for_kids,
+            error=None,
+        )
+        return db.get_publish_job(job_id)
+    except Exception as exc:
+        db.set_publish_job_error(job_id, str(exc) or exc.__class__.__name__)
+        raise
 
 
 def _google_error_status(exc: Exception) -> int | None:

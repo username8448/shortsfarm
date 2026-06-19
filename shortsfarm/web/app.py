@@ -11,6 +11,10 @@ from .api import router as api_router
 
 WEB_DIR = Path(__file__).resolve().parent
 FAVICON_PATH = WEB_DIR / "static" / "favicon.svg"
+ASSET_VERSION = max(
+    (WEB_DIR / "static" / "app.js").stat().st_mtime_ns,
+    (WEB_DIR / "static" / "style.css").stat().st_mtime_ns,
+)
 
 
 def create_app() -> FastAPI:
@@ -20,7 +24,11 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
-        return templates.TemplateResponse("index.html", {"request": request})
+        return templates.TemplateResponse(
+            "index.html",
+            {"request": request, "asset_version": ASSET_VERSION},
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> FileResponse:

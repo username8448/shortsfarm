@@ -6,7 +6,7 @@
 <title>ShortsFarm Web</title>
 <link rel="icon" href="/favicon.ico" type="image/svg+xml">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
 </head>
 <body>
 <div id="app">
@@ -133,6 +133,18 @@
           <button class="btn-mini" onclick="cleanupSelectedMissingWorkspaceItems()">Очистить выбранные отсутствующие</button>
           <button class="btn-secondary stub-action" onclick="futureFeature('Субтитры')">Субтитры</button>
           <button class="btn-secondary stub-action" onclick="futureFeature('Уникализация')">Уникализация</button>
+        </div>
+        <div class="workspace-prepare-panel">
+          <div class="field mini-field">
+            <label class="field-lbl">Формат подготовки</label>
+            <select id="workspace-bulk-target-aspect">
+              <option value="original">Original</option>
+              <option value="16x9">16:9</option>
+              <option value="9x16">9:16</option>
+            </select>
+          </div>
+          <button class="btn-secondary" onclick="prepareSelectedWorkspaceItems()">Подготовить выбранные</button>
+          <div class="mono dim workspace-youtube-state">Подготовка создаёт отдельный файл в output/prepared.</div>
         </div>
         <div class="workspace-youtube-panel">
           <div class="field mini-field">
@@ -410,6 +422,6 @@
 
   </main>
 </div>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{ asset_version }}"></script>
 </body>
 </html>

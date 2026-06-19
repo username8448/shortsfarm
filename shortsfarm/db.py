@@ -521,9 +521,15 @@ def get_clip(clip_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
-def get_or_create_publish_clip_from_segment(segment_id: int) -> int:
+def get_or_create_publish_clip_from_segment(
+    segment_id: int,
+    *,
+    output_path: str | None = None,
+    target_aspect: str | None = None,
+) -> int:
     segment_id = int(segment_id)
     now = now_utc()
+    aspect = _normalize_workspace_target_aspect(target_aspect)
     with connect() as con:
         segment = con.execute(
             "SELECT * FROM segments WHERE id=?",
@@ -532,10 +538,10 @@ def get_or_create_publish_clip_from_segment(segment_id: int) -> int:
         if segment is None:
             raise FileNotFoundError("Сегмент не найден.")
 
-        output_path = str(segment["path"] or "")
-        if not output_path:
+        resolved_output_path = str(output_path or segment["path"] or "")
+        if not resolved_output_path:
             raise ValueError("У сегмента не задан путь к файлу.")
-        candidate = Path(output_path).expanduser()
+        candidate = Path(resolved_output_path).expanduser()
         if not candidate.exists() or not candidate.is_file():
             raise FileNotFoundError(f"Файл сегмента не найден: {candidate}")
 
@@ -550,10 +556,10 @@ def get_or_create_publish_clip_from_segment(segment_id: int) -> int:
                 UPDATE clips
                 SET video_id=?, mark_id=NULL, status='done', cut_mode='segment',
                     output_path=?, temp_path=NULL, error=NULL,
-                    rendered_at=COALESCE(rendered_at, ?)
+                    rendered_at=COALESCE(rendered_at, ?), source_aspect=?
                 WHERE id=?
                 """,
-                (int(segment["video_id"]), output_path, now, clip_id),
+                (int(segment["video_id"]), resolved_output_path, now, aspect, clip_id),
             )
             return clip_id
 
@@ -561,10 +567,76 @@ def get_or_create_publish_clip_from_segment(segment_id: int) -> int:
             """
             INSERT INTO clips
                 (video_id, mark_id, status, cut_mode, output_path, temp_path,
-                 error, created_at, started_at, rendered_at, source_segment_id)
-            VALUES (?, NULL, 'done', 'segment', ?, NULL, NULL, ?, NULL, ?, ?)
+                 error, created_at, started_at, rendered_at, source_segment_id, source_aspect)
+            VALUES (?, NULL, 'done', 'segment', ?, NULL, NULL, ?, NULL, ?, ?, ?)
             """,
-            (int(segment["video_id"]), output_path, now, now, segment_id),
+            (int(segment["video_id"]), resolved_output_path, now, now, segment_id, aspect),
+        )
+        return int(cur.lastrowid)
+
+
+def get_or_create_publish_clip_for_workspace_item(
+    item_type: str,
+    item_id: int,
+    *,
+    output_path: str | None = None,
+    target_aspect: str | None = None,
+) -> int:
+    item_type = _normalize_workspace_item_type(item_type)
+    item_id = int(item_id)
+    aspect = _normalize_workspace_target_aspect(target_aspect)
+    if item_type == "segment":
+        return get_or_create_publish_clip_from_segment(
+            item_id,
+            output_path=output_path,
+            target_aspect=aspect,
+        )
+
+    now = now_utc()
+    with connect() as con:
+        clip = con.execute("SELECT * FROM clips WHERE id=?", (item_id,)).fetchone()
+        if clip is None:
+            raise FileNotFoundError("Клип не найден.")
+        original_output_path = str(clip["output_path"] or "")
+        resolved_output_path = str(output_path or original_output_path)
+        if not resolved_output_path:
+            raise ValueError("У клипа нет output_path.")
+        candidate = Path(resolved_output_path).expanduser()
+        if not candidate.exists() or not candidate.is_file():
+            raise FileNotFoundError(f"Файл клипа не найден: {candidate}")
+
+        if not output_path or resolved_output_path == original_output_path:
+            return item_id
+
+        existing = con.execute(
+            """
+            SELECT id FROM clips
+            WHERE source_clip_id=? AND source_aspect=?
+            """,
+            (item_id, aspect),
+        ).fetchone()
+        if existing is not None:
+            service_clip_id = int(existing["id"])
+            con.execute(
+                """
+                UPDATE clips
+                SET video_id=?, mark_id=NULL, status='done', cut_mode='prepared',
+                    output_path=?, temp_path=NULL, error=NULL,
+                    rendered_at=COALESCE(rendered_at, ?)
+                WHERE id=?
+                """,
+                (int(clip["video_id"]), resolved_output_path, now, service_clip_id),
+            )
+            return service_clip_id
+
+        cur = con.execute(
+            """
+            INSERT INTO clips
+                (video_id, mark_id, status, cut_mode, output_path, temp_path,
+                 error, created_at, started_at, rendered_at, source_clip_id, source_aspect)
+            VALUES (?, NULL, 'done', 'prepared', ?, NULL, NULL, ?, NULL, ?, ?, ?)
+            """,
+            (int(clip["video_id"]), resolved_output_path, now, now, item_id, aspect),
         )
         return int(cur.lastrowid)
 
@@ -634,6 +706,8 @@ def count_clips_by_status(video_id: int | None = None) -> dict[str, int]:
 
 WORKSPACE_ITEM_TYPES = {"segment", "clip"}
 WORKSPACE_STATUSES = {"draft", "ready", "queued", "uploaded", "failed"}
+WORKSPACE_TARGET_ASPECTS = {"original", "16x9", "9x16"}
+WORKSPACE_PREPARE_STATUSES = {"none", "queued", "processing", "done", "failed"}
 
 
 def _normalize_workspace_item_type(value: str) -> str:
@@ -647,6 +721,20 @@ def _normalize_workspace_status(value: str) -> str:
     status = str(value or "").strip().lower()
     if status not in WORKSPACE_STATUSES:
         raise ValueError("Workspace status must be one of: draft, ready, queued, uploaded, failed.")
+    return status
+
+
+def _normalize_workspace_target_aspect(value: str | None) -> str:
+    aspect = str(value or "original").strip().lower().replace(":", "x")
+    if aspect not in WORKSPACE_TARGET_ASPECTS:
+        raise ValueError("Workspace target_aspect must be one of: original, 16x9, 9x16.")
+    return aspect
+
+
+def _normalize_workspace_prepare_status(value: str | None) -> str:
+    status = str(value or "none").strip().lower()
+    if status not in WORKSPACE_PREPARE_STATUSES:
+        raise ValueError("Workspace prepare_status must be one of: none, queued, processing, done, failed.")
     return status
 
 
@@ -749,14 +837,20 @@ def _workspace_item_dict(
     title: str | None,
     description: str | None,
     tags: str | None,
-    created_at: str | None,
-    updated_at: str | None,
+    target_aspect: str | None = None,
+    prepared_path: str | None = None,
+    prepared_at: str | None = None,
+    prepare_status: str | None = None,
+    prepare_error: str | None = None,
+    created_at: str | None = None,
+    updated_at: str | None = None,
     segment_id: int | None = None,
     clip_id: int | None = None,
     publish_clip_id: int | None = None,
     publish_job_id: int | None = None,
     publish_job_status: str | None = None,
     publish_youtube_url: str | None = None,
+    publish_youtube_video_id: str | None = None,
     publish_error: str | None = None,
     mark_id: int | None = None,
     cut_mode: str | None = None,
@@ -767,6 +861,13 @@ def _workspace_item_dict(
 ) -> dict[str, Any]:
     item_path = Path(path) if path else None
     path_state = _workspace_path_state(path)
+    prepared = str(prepared_path or "")
+    prepared_state = _workspace_path_state(prepared) if prepared else {
+        "file_exists": False,
+        "folder_exists": False,
+        "missing": True,
+        "path_error": None,
+    }
     return {
         "id": f"{item_type}:{item_id}",
         "item_type": item_type,
@@ -777,6 +878,7 @@ def _workspace_item_dict(
         "publish_job_id": publish_job_id,
         "publish_job_status": publish_job_status or "",
         "publish_youtube_url": publish_youtube_url or "",
+        "publish_youtube_video_id": publish_youtube_video_id or "",
         "publish_error": publish_error or "",
         "video_id": video_id,
         "video_title": video_title,
@@ -789,6 +891,13 @@ def _workspace_item_dict(
         "title": title or "",
         "description": description or "",
         "tags": tags or "",
+        "target_aspect": _normalize_workspace_target_aspect(target_aspect),
+        "prepared_path": prepared,
+        "prepared_file_exists": prepared_state["file_exists"],
+        "prepared_folder_exists": prepared_state["folder_exists"],
+        "prepared_at": prepared_at,
+        "prepare_status": _normalize_workspace_prepare_status(prepare_status),
+        "prepare_error": prepare_error or "",
         "mark_id": mark_id,
         "cut_mode": cut_mode or "",
         "render_status": render_status or "",
@@ -827,11 +936,17 @@ def list_workspace_items(
                 pj.id AS publish_job_id,
                 pj.status AS publish_job_status,
                 pj.youtube_url AS publish_youtube_url,
+                pj.youtube_video_id AS publish_youtube_video_id,
                 pj.error AS publish_error,
                 wm.workspace_status,
                 wm.title AS workspace_title,
                 wm.description AS workspace_description,
                 wm.tags AS workspace_tags,
+                wm.target_aspect AS workspace_target_aspect,
+                wm.prepared_path AS workspace_prepared_path,
+                wm.prepared_at AS workspace_prepared_at,
+                wm.prepare_status AS workspace_prepare_status,
+                wm.prepare_error AS workspace_prepare_error,
                 wm.created_at AS workspace_created_at,
                 wm.updated_at AS workspace_updated_at,
                 wm.hidden_at AS workspace_hidden_at,
@@ -865,6 +980,7 @@ def list_workspace_items(
                     publish_job_id=row["publish_job_id"],
                     publish_job_status=row["publish_job_status"],
                     publish_youtube_url=row["publish_youtube_url"],
+                    publish_youtube_video_id=row["publish_youtube_video_id"],
                     publish_error=row["publish_error"],
                     video_id=int(row["video_id"]),
                     video_title=str(row["video_title"] or ""),
@@ -875,6 +991,11 @@ def list_workspace_items(
                     title=row["workspace_title"],
                     description=row["workspace_description"],
                     tags=row["workspace_tags"],
+                    target_aspect=row["workspace_target_aspect"],
+                    prepared_path=row["workspace_prepared_path"],
+                    prepared_at=row["workspace_prepared_at"],
+                    prepare_status=row["workspace_prepare_status"],
+                    prepare_error=row["workspace_prepare_error"],
                     created_at=row["created_at"],
                     updated_at=row["workspace_updated_at"] or row["workspace_created_at"],
                     render_status=None,
@@ -895,6 +1016,11 @@ def list_workspace_items(
                 wm.title AS workspace_title,
                 wm.description AS workspace_description,
                 wm.tags AS workspace_tags,
+                wm.target_aspect AS workspace_target_aspect,
+                wm.prepared_path AS workspace_prepared_path,
+                wm.prepared_at AS workspace_prepared_at,
+                wm.prepare_status AS workspace_prepare_status,
+                wm.prepare_error AS workspace_prepare_error,
                 wm.created_at AS workspace_created_at,
                 wm.updated_at AS workspace_updated_at,
                 wm.hidden_at AS workspace_hidden_at,
@@ -902,6 +1028,7 @@ def list_workspace_items(
                 pj.id AS publish_job_id,
                 pj.status AS publish_job_status,
                 pj.youtube_url AS publish_youtube_url,
+                pj.youtube_video_id AS publish_youtube_video_id,
                 pj.error AS publish_error
             FROM clips c
             JOIN videos v ON v.id = c.video_id
@@ -909,14 +1036,17 @@ def list_workspace_items(
             LEFT JOIN publish_jobs pj ON pj.id = (
                 SELECT latest_pj.id
                 FROM publish_jobs latest_pj
+                LEFT JOIN clips latest_publish_clip
+                  ON latest_publish_clip.id=latest_pj.clip_id
                 WHERE latest_pj.clip_id=c.id
+                   OR latest_publish_clip.source_clip_id=c.id
                 ORDER BY latest_pj.id DESC
                 LIMIT 1
             )
             LEFT JOIN clip_workspace_metadata wm
               ON wm.item_type='clip' AND wm.item_id=c.id
             {hidden_clause}
-            {"AND" if hidden_clause else "WHERE"} c.source_segment_id IS NULL
+            {"AND" if hidden_clause else "WHERE"} c.source_segment_id IS NULL AND c.source_clip_id IS NULL
             ORDER BY c.id DESC
             """
         ).fetchall()
@@ -936,6 +1066,7 @@ def list_workspace_items(
                     publish_job_id=row["publish_job_id"],
                     publish_job_status=row["publish_job_status"],
                     publish_youtube_url=row["publish_youtube_url"],
+                    publish_youtube_video_id=row["publish_youtube_video_id"],
                     publish_error=row["publish_error"],
                     video_id=int(row["video_id"]),
                     video_title=str(row["video_title"] or ""),
@@ -946,6 +1077,11 @@ def list_workspace_items(
                     title=row["workspace_title"],
                     description=row["workspace_description"],
                     tags=row["workspace_tags"],
+                    target_aspect=row["workspace_target_aspect"],
+                    prepared_path=row["workspace_prepared_path"],
+                    prepared_at=row["workspace_prepared_at"],
+                    prepare_status=row["workspace_prepare_status"],
+                    prepare_error=row["workspace_prepare_error"],
                     created_at=row["created_at"],
                     updated_at=row["workspace_updated_at"] or row["workspace_created_at"],
                     mark_id=row["mark_id"],
@@ -982,6 +1118,11 @@ def update_workspace_item(
     title: str | None = None,
     description: str | None = None,
     tags: str | None = None,
+    target_aspect: str | None = None,
+    prepared_path: str | None = None,
+    prepared_at: str | None = None,
+    prepare_status: str | None = None,
+    prepare_error: str | None = None,
     hidden_at: str | None = None,
     missing_confirmed_at: str | None = None,
 ) -> bool:
@@ -1005,6 +1146,31 @@ def update_workspace_item(
             else (existing["description"] if existing is not None else None)
         )
         resolved_tags = tags if tags is not None else (existing["tags"] if existing is not None else None)
+        resolved_target_aspect = (
+            _normalize_workspace_target_aspect(target_aspect)
+            if target_aspect is not None
+            else str(existing["target_aspect"] or "original") if existing is not None else "original"
+        )
+        resolved_prepared_path = (
+            prepared_path
+            if prepared_path is not None
+            else (existing["prepared_path"] if existing is not None else None)
+        )
+        resolved_prepared_at = (
+            prepared_at
+            if prepared_at is not None
+            else (existing["prepared_at"] if existing is not None else None)
+        )
+        resolved_prepare_status = (
+            _normalize_workspace_prepare_status(prepare_status)
+            if prepare_status is not None
+            else str(existing["prepare_status"] or "none") if existing is not None else "none"
+        )
+        resolved_prepare_error = (
+            prepare_error
+            if prepare_error is not None
+            else (existing["prepare_error"] if existing is not None else None)
+        )
         resolved_hidden_at = (
             hidden_at
             if hidden_at is not None
@@ -1020,13 +1186,19 @@ def update_workspace_item(
             """
             INSERT INTO clip_workspace_metadata
                 (item_type, item_id, workspace_status, title, description, tags,
+                 target_aspect, prepared_path, prepared_at, prepare_status, prepare_error,
                  created_at, updated_at, hidden_at, missing_confirmed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(item_type, item_id) DO UPDATE SET
                 workspace_status=excluded.workspace_status,
                 title=excluded.title,
                 description=excluded.description,
                 tags=excluded.tags,
+                target_aspect=excluded.target_aspect,
+                prepared_path=excluded.prepared_path,
+                prepared_at=excluded.prepared_at,
+                prepare_status=excluded.prepare_status,
+                prepare_error=excluded.prepare_error,
                 updated_at=excluded.updated_at,
                 hidden_at=excluded.hidden_at,
                 missing_confirmed_at=excluded.missing_confirmed_at
@@ -1038,6 +1210,11 @@ def update_workspace_item(
                 resolved_title,
                 resolved_description,
                 resolved_tags,
+                resolved_target_aspect,
+                resolved_prepared_path,
+                resolved_prepared_at,
+                resolved_prepare_status,
+                resolved_prepare_error,
                 now,
                 now,
                 resolved_hidden_at,
@@ -1045,6 +1222,27 @@ def update_workspace_item(
             ),
         )
         return True
+
+
+def set_workspace_prepare_status(
+    item_type: str,
+    item_id: int,
+    *,
+    prepare_status: str,
+    target_aspect: str | None = None,
+    prepared_path: str | None = None,
+    prepare_error: str | None = None,
+    prepared_at: str | None = None,
+) -> bool:
+    return update_workspace_item(
+        item_type,
+        item_id,
+        target_aspect=target_aspect,
+        prepared_path=prepared_path,
+        prepared_at=prepared_at,
+        prepare_status=prepare_status,
+        prepare_error=prepare_error,
+    )
 
 
 def bulk_update_workspace_status(items: list[tuple[str, int]], workspace_status: str) -> int:
@@ -1082,7 +1280,7 @@ def cleanup_missing_workspace_items() -> int:
 
 def _workspace_identity_for_publish_clip(con: sqlite3.Connection, clip_id: int) -> tuple[str, int] | None:
     row = con.execute(
-        "SELECT id, source_segment_id FROM clips WHERE id=?",
+        "SELECT id, source_segment_id, source_clip_id FROM clips WHERE id=?",
         (clip_id,),
     ).fetchone()
     if row is None:
@@ -1090,6 +1288,9 @@ def _workspace_identity_for_publish_clip(con: sqlite3.Connection, clip_id: int) 
     source_segment_id = row["source_segment_id"]
     if source_segment_id is not None:
         return "segment", int(source_segment_id)
+    source_clip_id = row["source_clip_id"]
+    if source_clip_id is not None:
+        return "clip", int(source_clip_id)
     return "clip", int(row["id"])
 
 
@@ -1619,6 +1820,8 @@ _PUBLISH_JOB_SELECT = """
            c.cut_mode AS clip_cut_mode,
            c.error AS clip_error,
            c.source_segment_id AS clip_source_segment_id,
+           c.source_clip_id AS clip_source_clip_id,
+           c.source_aspect AS clip_source_aspect,
            v.title AS video_title,
            v.source_path AS video_source_path
     FROM publish_jobs pj
@@ -1744,6 +1947,49 @@ def get_publish_job_for_clip(
             """,
             (platform, account_id, clip_id),
         ).fetchone()
+
+
+def update_publish_job_metadata(
+    job_id: int,
+    *,
+    title: str,
+    description: str,
+    tags: str,
+    category_id: str,
+    privacy_status: str,
+    made_for_kids: bool,
+    error: str | None = None,
+) -> bool:
+    with connect() as con:
+        cur = con.execute(
+            """
+            UPDATE publish_jobs
+            SET title=?, description=?, tags=?, category_id=?,
+                privacy_status=?, made_for_kids=?, error=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                title,
+                description,
+                tags,
+                category_id,
+                privacy_status,
+                1 if made_for_kids else 0,
+                error,
+                now_utc(),
+                int(job_id),
+            ),
+        )
+        return cur.rowcount > 0
+
+
+def set_publish_job_error(job_id: int, error: str | None) -> bool:
+    with connect() as con:
+        cur = con.execute(
+            "UPDATE publish_jobs SET error=?, updated_at=? WHERE id=?",
+            (error, now_utc(), int(job_id)),
+        )
+        return cur.rowcount > 0
 
 
 def list_publish_jobs(
