@@ -3,9 +3,19 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+
+def _load_moscow_tz():
+    try:
+        return ZoneInfo("Europe/Moscow")
+    except ZoneInfoNotFoundError:
+        # Windows may not have the IANA tz database installed.
+        # Moscow is fixed UTC+3 for our scheduling use case.
+        return timezone(timedelta(hours=3))
+
+
+MOSCOW_TZ = _load_moscow_tz()
 SCHEDULE_MODES = {"none", "same", "interval", "individual"}
 OVERDUE_GRACE = timedelta(minutes=15)
 MIN_PUBLISH_LEAD = timedelta(minutes=30)

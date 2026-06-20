@@ -96,6 +96,18 @@ def test_schedule_modes_and_moscow_conversion():
     assert none == {10: None, 20: None}
 
 
+def test_moscow_tz_falls_back_without_zoneinfo(monkeypatch):
+    import shortsfarm.publish_schedule as publish_schedule
+
+    def raise_not_found(_name: str):
+        raise publish_schedule.ZoneInfoNotFoundError("missing")
+
+    monkeypatch.setattr(publish_schedule, "ZoneInfo", raise_not_found)
+    tz = publish_schedule._load_moscow_tz()
+
+    assert tz.utcoffset(None) == timedelta(hours=3)
+
+
 def test_schedule_requires_30_minute_publish_lead():
     from shortsfarm.publish_schedule import validate_schedule_pair
 
