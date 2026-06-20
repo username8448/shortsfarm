@@ -29,6 +29,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "018_create_clip_workspace_metadata" in versions
     assert "019_add_workspace_hidden_at" in versions
     assert "021_add_workspace_preparation" in versions
+    assert "022_add_publish_schedules" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -103,6 +104,23 @@ def test_publish_jobs_retry_columns_exist(tmp_data_dir):
     assert "attempt_count" in columns
     assert "last_attempt_at" in columns
     assert "next_attempt_at" in columns
+
+
+def test_publish_schedule_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+    with db.connect() as con:
+        con.execute("SELECT * FROM publish_schedule_groups LIMIT 0")
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(publish_jobs)").fetchall()
+        }
+        indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(publish_jobs)").fetchall()
+        }
+    assert {"schedule_group_id", "schedule_position", "upload_at", "overdue_approved_at"} <= columns
+    assert "idx_publish_jobs_upload_at" in indexes
+    assert "idx_publish_jobs_schedule_group" in indexes
 
 
 def test_clip_workspace_metadata_table(tmp_data_dir):

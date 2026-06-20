@@ -1822,12 +1822,14 @@ _PUBLISH_JOB_SELECT = """
            c.source_segment_id AS clip_source_segment_id,
            c.source_clip_id AS clip_source_clip_id,
            c.source_aspect AS clip_source_aspect,
+           psg.name AS schedule_group_name,
            v.title AS video_title,
            v.source_path AS video_source_path
     FROM publish_jobs pj
     LEFT JOIN social_accounts sa ON sa.id = pj.account_id
     LEFT JOIN youtube_oauth_profiles yp ON yp.id = sa.oauth_profile_id
     LEFT JOIN clips c ON c.id = pj.clip_id
+    LEFT JOIN publish_schedule_groups psg ON psg.id = pj.schedule_group_id
     LEFT JOIN videos v ON v.id = c.video_id
 """
 
@@ -1992,6 +1994,229 @@ def set_publish_job_error(job_id: int, error: str | None) -> bool:
         return cur.rowcount > 0
 
 
+def list_publish_schedule_groups() -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT psg.*,
+                   COUNT(pj.id) AS job_count,
+                   SUM(CASE WHEN pj.status='queued' THEN 1 ELSE 0 END) AS queued_count
+            FROM publish_schedule_groups psg
+            LEFT JOIN publish_jobs pj ON pj.schedule_group_id=psg.id
+            GROUP BY psg.id
+            ORDER BY psg.id DESC
+            """
+        ).fetchall()
+
+
+def get_publish_schedule_group(group_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM publish_schedule_groups WHERE id=?",
+            (int(group_id),),
+        ).fetchone()
+
+
+def list_publish_schedule_group_jobs(group_id: int) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            f"""
+            {_PUBLISH_JOB_SELECT}
+            WHERE pj.schedule_group_id=?
+            ORDER BY pj.schedule_position ASC, pj.id ASC
+            """,
+            (int(group_id),),
+        ).fetchall()
+
+
+def save_publish_schedule_group(
+    *,
+    name: str,
+    job_ids: list[int],
+    upload_spec: dict[str, Any],
+    publish_spec: dict[str, Any],
+    group_id: int | None = None,
+) -> int:
+    from .publish_schedule import (
+        expand_schedule,
+        normalize_schedule_spec,
+        schedule_spec_json,
+        validate_schedule_pair,
+    )
+
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        raise ValueError("Название группы расписания обязательно.")
+    ordered_job_ids = list(dict.fromkeys(int(job_id) for job_id in job_ids))
+    if not ordered_job_ids:
+        raise ValueError("Выберите хотя бы одну publish job.")
+
+    normalized_upload = normalize_schedule_spec(upload_spec)
+    normalized_publish = normalize_schedule_spec(publish_spec)
+    upload_times = expand_schedule(ordered_job_ids, normalized_upload)
+    publish_times = expand_schedule(ordered_job_ids, normalized_publish)
+    for job_id in ordered_job_ids:
+        validate_schedule_pair(upload_times[job_id], publish_times[job_id])
+
+    now = now_utc()
+    with connect() as con:
+        placeholders = ",".join("?" for _ in ordered_job_ids)
+        rows = con.execute(
+            f"SELECT id, status FROM publish_jobs WHERE id IN ({placeholders})",
+            ordered_job_ids,
+        ).fetchall()
+        found = {int(row["id"]): str(row["status"]) for row in rows}
+        missing = [job_id for job_id in ordered_job_ids if job_id not in found]
+        if missing:
+            raise FileNotFoundError(f"Publish jobs не найдены: {', '.join(map(str, missing))}")
+        invalid = [job_id for job_id, status in found.items() if status != "queued"]
+        if invalid:
+            raise ValueError(
+                "Расписание можно назначить только queued jobs: "
+                + ", ".join(map(str, invalid))
+            )
+
+        values = (
+            clean_name,
+            normalized_upload["mode"],
+            normalized_upload["start_at"],
+            normalized_upload["interval_minutes"],
+            schedule_spec_json(normalized_upload),
+            normalized_publish["mode"],
+            normalized_publish["start_at"],
+            normalized_publish["interval_minutes"],
+            schedule_spec_json(normalized_publish),
+            now,
+        )
+        if group_id is None:
+            cur = con.execute(
+                """
+                INSERT INTO publish_schedule_groups
+                    (name, upload_mode, upload_start_at, upload_interval_minutes,
+                     upload_item_times, publish_mode, publish_start_at,
+                     publish_interval_minutes, publish_item_times, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (*values[:-1], now, now),
+            )
+            resolved_group_id = int(cur.lastrowid)
+        else:
+            resolved_group_id = int(group_id)
+            if con.execute(
+                "SELECT id FROM publish_schedule_groups WHERE id=?",
+                (resolved_group_id,),
+            ).fetchone() is None:
+                raise FileNotFoundError("Группа расписания не найдена.")
+            con.execute(
+                """
+                UPDATE publish_schedule_groups
+                SET name=?, upload_mode=?, upload_start_at=?, upload_interval_minutes=?,
+                    upload_item_times=?, publish_mode=?, publish_start_at=?,
+                    publish_interval_minutes=?, publish_item_times=?, updated_at=?
+                WHERE id=?
+                """,
+                (*values, resolved_group_id),
+            )
+            con.execute(
+                f"""
+                UPDATE publish_jobs
+                SET schedule_group_id=NULL, schedule_position=NULL, upload_at=NULL,
+                    overdue_approved_at=NULL, updated_at=?
+                WHERE schedule_group_id=? AND status='queued'
+                  AND id NOT IN ({placeholders})
+                """,
+                (now, resolved_group_id, *ordered_job_ids),
+            )
+
+        for position, job_id in enumerate(ordered_job_ids, start=1):
+            publish_at = publish_times[job_id]
+            if normalized_publish["mode"] == "none":
+                publish_sql = """
+                    publish_at=CASE WHEN publish_mode='schedule' THEN NULL ELSE publish_at END,
+                    publish_mode=CASE WHEN publish_mode='schedule' THEN 'private' ELSE publish_mode END,
+                    privacy_status=CASE WHEN publish_mode='schedule' THEN 'private' ELSE privacy_status END,
+                """
+            else:
+                publish_sql = """
+                    publish_at=?,
+                    publish_mode='schedule',
+                    privacy_status='private',
+                """
+            params: list[Any] = []
+            if normalized_publish["mode"] != "none":
+                params.append(publish_at)
+            params.extend([
+                resolved_group_id,
+                position,
+                upload_times[job_id],
+                now,
+                job_id,
+            ])
+            con.execute(
+                f"""
+                UPDATE publish_jobs
+                SET {publish_sql}
+                    schedule_group_id=?, schedule_position=?, upload_at=?,
+                    overdue_approved_at=NULL, updated_at=?
+                WHERE id=? AND status='queued'
+                """,
+                params,
+            )
+        return resolved_group_id
+
+
+def remove_publish_schedule_group(group_id: int) -> bool:
+    now = now_utc()
+    with connect() as con:
+        group = con.execute(
+            "SELECT id FROM publish_schedule_groups WHERE id=?",
+            (int(group_id),),
+        ).fetchone()
+        if group is None:
+            return False
+        con.execute(
+            """
+            UPDATE publish_jobs
+            SET schedule_group_id=NULL, schedule_position=NULL, upload_at=NULL,
+                overdue_approved_at=NULL,
+                publish_at=CASE
+                    WHEN status IN ('queued','failed','cancelled') AND publish_mode='schedule'
+                    THEN NULL ELSE publish_at END,
+                publish_mode=CASE
+                    WHEN status IN ('queued','failed','cancelled') AND publish_mode='schedule'
+                    THEN 'private' ELSE publish_mode END,
+                privacy_status=CASE
+                    WHEN status IN ('queued','failed','cancelled') AND publish_mode='schedule'
+                    THEN 'private' ELSE privacy_status END,
+                updated_at=?
+            WHERE schedule_group_id=?
+            """,
+            (now, int(group_id)),
+        )
+        con.execute("DELETE FROM publish_schedule_groups WHERE id=?", (int(group_id),))
+        return True
+
+
+def approve_overdue_publish_schedule_group(group_id: int) -> int:
+    from .publish_schedule import OVERDUE_GRACE, utc_iso
+    from datetime import datetime, timezone
+
+    now_dt = datetime.now(timezone.utc)
+    cutoff = utc_iso(now_dt - OVERDUE_GRACE)
+    now = utc_iso(now_dt)
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE publish_jobs
+            SET overdue_approved_at=?, updated_at=?
+            WHERE schedule_group_id=? AND status='queued'
+              AND upload_at IS NOT NULL AND upload_at < ?
+            """,
+            (now, now, int(group_id), cutoff),
+        )
+        return int(result.rowcount)
+
+
 def list_publish_jobs(
     status: str | None = None,
     platform: str | None = "youtube",
@@ -2089,7 +2314,17 @@ def _claim_publish_job_where(
         con.close()
 
 
-def claim_publish_job(job_id: int) -> sqlite3.Row | None:
+def claim_publish_job(job_id: int, *, force: bool = False) -> sqlite3.Row | None:
+    from .publish_schedule import schedule_state
+
+    job = get_publish_job(int(job_id))
+    if job is None:
+        return None
+    state = schedule_state(job["upload_at"], job["overdue_approved_at"])
+    if not force and state in {"waiting", "overdue"}:
+        if state == "waiting":
+            raise ValueError("Время загрузки этой задачи ещё не наступило.")
+        raise ValueError("Задача просрочена. Сначала разрешите её запуск.")
     return _claim_publish_job_where(
         "id=? AND status IN ('queued', 'failed')",
         (job_id,),
@@ -2099,11 +2334,47 @@ def claim_publish_job(job_id: int) -> sqlite3.Row | None:
 def claim_next_publish_job() -> sqlite3.Row | None:
     now = now_utc()
     return _claim_publish_job_where(
-        "status='queued' OR (status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?)",
+        """
+        upload_at IS NULL AND (
+            status='queued'
+            OR (status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?)
+        )
+        """,
         (now,),
         order_by=(
             "ORDER BY CASE WHEN status='queued' THEN 0 ELSE 1 END, "
             "COALESCE(next_attempt_at, created_at) ASC, id ASC"
+        ),
+    )
+
+
+def claim_next_scheduled_publish_job() -> sqlite3.Row | None:
+    from .publish_schedule import OVERDUE_GRACE, utc_iso
+    from datetime import datetime, timezone
+
+    now_dt = datetime.now(timezone.utc)
+    now = utc_iso(now_dt)
+    cutoff = utc_iso(now_dt - OVERDUE_GRACE)
+    return _claim_publish_job_where(
+        """
+        upload_at IS NOT NULL AND (
+            (
+                status='queued'
+                AND upload_at <= ?
+                AND (upload_at >= ? OR overdue_approved_at IS NOT NULL)
+            )
+            OR (
+                status='failed'
+                AND next_attempt_at IS NOT NULL
+                AND next_attempt_at <= ?
+                AND (upload_at >= ? OR overdue_approved_at IS NOT NULL)
+            )
+        )
+        """,
+        (now, cutoff, now, cutoff),
+        order_by=(
+            "ORDER BY CASE WHEN status='queued' THEN 0 ELSE 1 END, "
+            "COALESCE(next_attempt_at, upload_at) ASC, id ASC"
         ),
     )
 

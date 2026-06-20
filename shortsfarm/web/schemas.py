@@ -150,6 +150,10 @@ class PublishJobRetryRequest(BaseModel):
     pass
 
 
+class PublishJobRunRequest(BaseModel):
+    force: bool = False
+
+
 class YouTubeMetadataUpdateRequest(BaseModel):
     title: str | None = None
     description: str | None = None
@@ -161,6 +165,21 @@ class YouTubeMetadataUpdateRequest(BaseModel):
 
 class PublishJobsBulkRequest(BaseModel):
     job_ids: list[int] = Field(default_factory=list)
+    force: bool = False
+
+
+class PublishScheduleSpecRequest(BaseModel):
+    mode: str = "none"
+    start_at: str | None = None
+    interval_minutes: int | None = Field(default=None, gt=0)
+    item_times: dict[int, str] = Field(default_factory=dict)
+
+
+class PublishScheduleGroupRequest(BaseModel):
+    name: str
+    job_ids: list[int] = Field(default_factory=list)
+    upload: PublishScheduleSpecRequest = Field(default_factory=PublishScheduleSpecRequest)
+    publish: PublishScheduleSpecRequest = Field(default_factory=PublishScheduleSpecRequest)
 
 
 class PublishWorkerRunOnceRequest(BaseModel):

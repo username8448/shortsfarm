@@ -435,25 +435,34 @@ def _upload_claimed_job(job: Any) -> Any:
         raise
 
 
-def upload_clip_to_youtube(job_id: int) -> Any:
+def upload_clip_to_youtube(job_id: int, *, force: bool = False) -> Any:
     job = _require_row(db.get_publish_job(job_id), f"Publish job {job_id} not found")
     if job["status"] == "done":
         return job
 
-    claimed = db.claim_publish_job(job_id)
+    claimed = db.claim_publish_job(job_id, force=force)
     if claimed is None:
         raise RuntimeError(f"Publish job {job_id} нельзя запустить из статуса {job['status']}")
     return _upload_claimed_job(claimed)
 
 
-def run_publish_job_now(job_id: int) -> Any:
-    return upload_clip_to_youtube(job_id)
+def run_publish_job_now(job_id: int, *, force: bool = False) -> Any:
+    return upload_clip_to_youtube(job_id, force=force)
 
 
-def run_publish_queue_once(limit: int = 3, pause_seconds: float = WORKER_PAUSE_SECONDS) -> list[Any]:
+def run_publish_queue_once(
+    limit: int = 3,
+    pause_seconds: float = WORKER_PAUSE_SECONDS,
+    *,
+    scheduled_only: bool = False,
+) -> list[Any]:
     processed: list[Any] = []
     for index in range(limit):
-        claimed = db.claim_next_publish_job()
+        claimed = (
+            db.claim_next_scheduled_publish_job()
+            if scheduled_only
+            else db.claim_next_publish_job()
+        )
         if claimed is None:
             break
         try:
@@ -474,7 +483,11 @@ def run_publish_worker(
 ) -> int:
     handled = 0
     while True:
-        jobs = run_publish_queue_once(limit=limit, pause_seconds=pause_seconds)
+        jobs = run_publish_queue_once(
+            limit=limit,
+            pause_seconds=pause_seconds,
+            scheduled_only=True,
+        )
         handled += len(jobs)
         if once:
             return handled

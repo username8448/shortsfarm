@@ -227,13 +227,18 @@ let lastOutputs = [];
 let lastYoutubeAccounts = [];
 let lastYoutubeProfiles = [];
 let lastPublishJobs = [];
+let lastPublishScheduleGroups = [];
 let lastReadyPublishClips = [];
 let editingOAuthProfileId = null;
 let oauthManualMode = 'json';
 let publishJobFilter = 'all';
+let publishScheduleFilter = 'untimed';
 let selectedPublishJobIds = new Set();
 let hiddenDonePublishJobIds = new Set();
 let publishBatchSize = 3;
+let editingPublishScheduleGroupId = null;
+let editingPublishScheduleJobIds = [];
+let editingPublishScheduleInitial = null;
 const workspaceYoutubeState = {
   selectedAccountId: null,
   busy: false,
@@ -1619,13 +1624,34 @@ function renderPublishJobCounts() {
     const el = document.getElementById('pubjob-cnt-' + key);
     if (el) el.textContent = key === 'all' ? counts.all : (counts[key] || '');
   }
+  const scheduleCounts = {all: 0, untimed: 0, scheduled: 0, overdue: 0};
+  lastPublishJobs.forEach(job => {
+    if (hiddenDonePublishJobIds.has(Number(job.id))) return;
+    scheduleCounts.all += 1;
+    if (job.schedule_state === 'untimed') scheduleCounts.untimed += 1;
+    else scheduleCounts.scheduled += 1;
+    if (job.schedule_state === 'overdue') scheduleCounts.overdue += 1;
+  });
+  Object.entries(scheduleCounts).forEach(([key, value]) => {
+    const el = document.getElementById('schedule-cnt-' + key);
+    if (el) el.textContent = value || '';
+  });
 }
 function getVisiblePublishJobs() {
   return lastPublishJobs.filter(job => {
     if (hiddenDonePublishJobIds.has(Number(job.id))) return false;
+    if (publishScheduleFilter === 'untimed' && job.schedule_state !== 'untimed') return false;
+    if (publishScheduleFilter === 'scheduled' && job.schedule_state === 'untimed') return false;
+    if (publishScheduleFilter === 'overdue' && job.schedule_state !== 'overdue') return false;
     if (publishJobFilter === 'all') return true;
     return job.status === publishJobFilter;
   });
+}
+function filterPublishSchedule(tab, status) {
+  publishScheduleFilter = status || 'untimed';
+  document.querySelectorAll('[data-schedule-filter]').forEach(item => item.classList.remove('on'));
+  if (tab) tab.classList.add('on');
+  renderPublishJobsTable();
 }
 function filterPublishJobs(tab, status) {
   publishJobFilter = status || 'all';
@@ -1663,6 +1689,33 @@ async function copyPublishJobError(jobId) {
     alert(job.error);
   }
 }
+function formatScheduleCountdown(seconds) {
+  if (seconds === null || seconds === undefined) return '';
+  const value = Number(seconds);
+  const minutes = Math.floor(Math.abs(value) / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  const text = days ? `${days}д ${hours % 24}ч` : hours ? `${hours}ч ${minutes % 60}м` : `${minutes}м`;
+  return value >= 0 ? `через ${text}` : `${text} назад`;
+}
+function formatMoscowDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+function renderPublishScheduleCell(job) {
+  if (job.schedule_state === 'untimed') return '<span class="mono dim">Без таймера</span>';
+  const group = job.schedule_group_name
+    ? `<button class="link-video mono" onclick="openPublishScheduleEditor(${Number(job.schedule_group_id)})">${esc(job.schedule_group_name)}</button>`
+    : '';
+  const publish = job.publish_at ? `<div class="mono dim">publish: ${esc(formatMoscowDate(job.publish_at))}</div>` : '';
+  return `<div>${group}<div><span class="schedule-state ${esc(job.schedule_state)}">${esc(job.schedule_state)}</span></div><div class="mono txt">upload: ${esc(formatMoscowDate(job.upload_at))}</div>${publish}<div class="mono dim">${esc(formatScheduleCountdown(job.seconds_until_upload))}</div></div>`;
+}
 function renderPublishJobsTable() {
   const el = document.getElementById('publish-jobs');
   if (!el) return;
@@ -1673,7 +1726,7 @@ function renderPublishJobsTable() {
     el.innerHTML = '<div class="empty">Публикаций пока нет. Выберите канал и добавьте клип в очередь.</div>';
     return;
   }
-  el.innerHTML = `<div class="workspace-selected-line mono dim" data-publish-selected-count></div><table class="tbl publish-jobs-table"><thead><tr><th></th><th>Job</th><th>Status</th><th>Title</th><th>Channel</th><th>Privacy</th><th>Mode</th><th>File</th><th>Created</th><th>Started</th><th>Finished</th><th>Attempts</th><th>Error</th><th>YouTube</th><th>Action</th></tr></thead><tbody>${rows.map(job => {
+  el.innerHTML = `<div class="workspace-selected-line mono dim" data-publish-selected-count></div><table class="tbl publish-jobs-table"><thead><tr><th></th><th>Job</th><th>Status</th><th>Title</th><th>Channel</th><th>Schedule</th><th>Privacy</th><th>File</th><th>Created</th><th>Attempts</th><th>Error</th><th>YouTube</th><th>Action</th></tr></thead><tbody>${rows.map(job => {
     const selected = selectedPublishJobIds.has(Number(job.id));
     const youtubeLink = job.youtube_url ? `<a class="btn-mini" href="${esc(job.youtube_url)}" target="_blank" rel="noopener noreferrer">Открыть YouTube</a>` : '—';
     const clipPath = job.clip_output_path || job.video_source_path || '';
@@ -1682,9 +1735,11 @@ function renderPublishJobsTable() {
     const actions = [];
     if (job.can_retry) actions.push(`<button class="btn-mini" onclick="retryPublishJob(${Number(job.id)})">Retry</button>`);
     if (job.can_run) actions.push(`<button class="btn-mini" onclick="runPublishJob(${Number(job.id)})">Run now</button>`);
+    else if (job.can_force_run) actions.push(`<button class="btn-mini" onclick="runPublishJob(${Number(job.id)}, true)">Force run</button>`);
+    if (job.schedule_state === 'overdue' && job.schedule_group_id) actions.push(`<button class="btn-secondary" onclick="approvePublishScheduleGroup(${Number(job.schedule_group_id)})">Разрешить</button>`);
     if (job.can_cancel) actions.push(`<button class="btn-danger" onclick="cancelPublishJob(${Number(job.id)})">Cancel</button>`);
     actions.push(mpvButton(clipPath, 'MPV'));
-    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="togglePublishJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td>${badge(job.status)}</td><td class="mono mid ov" title="${esc(job.title || '')}">${esc(job.title || '—')}</td><td><div class="mono txt">${esc(job.channel_title || job.account_display_name || '—')}</div>${profile}</td><td class="mono dim">${esc(job.privacy_status || 'private')}</td><td class="mono dim">${esc(job.publish_mode || 'private')}</td><td class="mono dim ov" title="${esc(clipPath)}">${esc(shortPath(clipPath || '—'))}</td><td class="mono dim">${esc(formatMtime(job.created_at))}</td><td class="mono dim">${esc(formatMtime(job.started_at))}</td><td class="mono dim">${esc(formatMtime(job.finished_at))}</td><td class="mono txt">${esc(job.attempt_count || 0)}</td><td><div class="row-actions">${err}</div></td><td>${youtubeLink}</td><td><div class="row-actions">${actions.join('')}</div></td></tr>`;
+    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="togglePublishJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td>${badge(job.status)}</td><td class="mono mid ov" title="${esc(job.title || '')}">${esc(job.title || '—')}</td><td><div class="mono txt">${esc(job.channel_title || job.account_display_name || '—')}</div>${profile}</td><td>${renderPublishScheduleCell(job)}</td><td class="mono dim">${esc(job.privacy_status || 'private')}<div>${esc(job.publish_mode || 'private')}</div></td><td class="mono dim ov" title="${esc(clipPath)}">${esc(shortPath(clipPath || '—'))}</td><td class="mono dim">${esc(formatMtime(job.created_at))}</td><td class="mono txt">${esc(job.attempt_count || 0)}</td><td><div class="row-actions">${err}</div></td><td>${youtubeLink}</td><td><div class="row-actions">${actions.join('')}</div></td></tr>`;
   }).join('')}</tbody></table>`;
   renderPublishJobSelectionState();
 }
@@ -1706,16 +1761,18 @@ async function loadPublishView(options = {}) {
   const {silent = false} = options;
   renderPublishError('');
   try {
-    const [profilesData, accountsData, clipsData, jobsData] = await Promise.all([
+    const [profilesData, accountsData, clipsData, jobsData, groupsData] = await Promise.all([
       api.get('/api/publish/youtube/oauth-profiles'),
       api.get('/api/publish/youtube/accounts'),
       api.get('/api/clips?status=done&limit=200'),
       api.get('/api/publish/jobs?limit=200'),
+      api.get('/api/publish/schedule-groups'),
     ]);
     lastYoutubeProfiles = profilesData.profiles || [];
     lastYoutubeAccounts = accountsData.accounts || [];
     lastReadyPublishClips = clipsData.clips || [];
     lastPublishJobs = jobsData.jobs || [];
+    lastPublishScheduleGroups = groupsData.groups || [];
     syncPublishSelections();
     renderPublishView();
   } catch (err) {
@@ -1725,8 +1782,12 @@ async function loadPublishView(options = {}) {
 
 async function refreshPublishJobs() {
   try {
-    const data = await api.get('/api/publish/jobs?limit=200');
+    const [data, groupsData] = await Promise.all([
+      api.get('/api/publish/jobs?limit=200'),
+      api.get('/api/publish/schedule-groups'),
+    ]);
     lastPublishJobs = data.jobs || [];
+    lastPublishScheduleGroups = groupsData.groups || [];
     renderPublishJobsTable();
     if (currentView === 'clips') {
       await refreshWorkspaceList();
@@ -1742,9 +1803,168 @@ function selectedPublishJobList() {
     .map(id => lastPublishJobs.find(job => Number(job.id) === Number(id)))
     .filter(Boolean);
 }
+function moscowInputValue(value) {
+  if (!value) return '';
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return value;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(date).reduce((result, part) => {
+    result[part.type] = part.value;
+    return result;
+  }, {});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+function moscowInputToIso(value) {
+  return value ? `${value}:00+03:00` : null;
+}
+function defaultMoscowInput(minutes = 60) {
+  return moscowInputValue(new Date(Date.now() + minutes * 60000).toISOString());
+}
+function scheduleEditorJobs() {
+  return editingPublishScheduleJobIds
+    .map(id => lastPublishJobs.find(job => Number(job.id) === Number(id)))
+    .filter(Boolean);
+}
+function closePublishScheduleEditor(event = null) {
+  if (event && event.target?.id !== 'publish-schedule-modal') return;
+  const modal = document.getElementById('publish-schedule-modal');
+  if (modal) modal.style.display = 'none';
+}
+function openPublishScheduleEditor(groupId = null) {
+  const group = groupId
+    ? lastPublishScheduleGroups.find(item => Number(item.id) === Number(groupId))
+    : null;
+  const jobs = group
+    ? (group.jobs || []).filter(job => job.status === 'queued')
+    : selectedPublishJobList().filter(job => job.status === 'queued');
+  if (!jobs.length) {
+    showToast('Выберите queued jobs для расписания', 'err');
+    return;
+  }
+  editingPublishScheduleGroupId = group ? Number(group.id) : null;
+  editingPublishScheduleJobIds = jobs.map(job => Number(job.id));
+  editingPublishScheduleInitial = group;
+  document.getElementById('schedule-modal-title').textContent = group ? `Расписание #${group.id}` : 'Новое расписание';
+  document.getElementById('schedule-group-name').value = group?.name || `Группа ${new Date().toLocaleDateString('ru-RU')}`;
+  document.getElementById('schedule-upload-mode').value = group?.upload?.mode || 'same';
+  document.getElementById('schedule-publish-mode').value = group?.publish?.mode || 'none';
+  document.getElementById('schedule-remove-btn').style.display = group ? '' : 'none';
+  document.getElementById('schedule-approve-btn').style.display = group?.jobs?.some(job => job.schedule_state === 'overdue') ? '' : 'none';
+  hideInlineError('schedule-form-error');
+  renderScheduleEditorFields();
+  document.getElementById('publish-schedule-modal').style.display = 'grid';
+}
+function scheduleSpecFields(kind) {
+  const mode = document.getElementById(`schedule-${kind}-mode`)?.value || 'none';
+  const spec = editingPublishScheduleInitial?.[kind] || {};
+  const el = document.getElementById(`schedule-${kind}-fields`);
+  if (!el) return;
+  if (mode === 'none') {
+    el.innerHTML = '<div class="mono dim">Таймер не применяется.</div>';
+    return;
+  }
+  if (mode === 'same' || mode === 'interval') {
+    const start = moscowInputValue(spec.start_at) || defaultMoscowInput(kind === 'publish' ? 120 : 60);
+    const interval = Number(spec.interval_minutes || 30);
+    el.innerHTML = `<div class="field"><label class="field-lbl">Дата и время · Europe/Moscow</label><input id="schedule-${kind}-start" type="datetime-local" value="${esc(start)}" oninput="renderSchedulePreview()"></div>${mode === 'interval' ? `<div class="field"><label class="field-lbl">Интервал, минут</label><input id="schedule-${kind}-interval" type="number" min="1" value="${interval}" oninput="renderSchedulePreview()"></div>` : ''}`;
+    return;
+  }
+  const itemTimes = spec.item_times || {};
+  el.innerHTML = `<div class="schedule-individual-list">${scheduleEditorJobs().map(job => {
+    const value = moscowInputValue(itemTimes[String(job.id)] || itemTimes[job.id]) || defaultMoscowInput(kind === 'publish' ? 120 : 60);
+    return `<label class="schedule-individual-row"><span class="mono ov">#${job.id} ${esc(job.title || '')}</span><input data-schedule-kind="${kind}" data-job-id="${job.id}" type="datetime-local" value="${esc(value)}" oninput="renderSchedulePreview()"></label>`;
+  }).join('')}</div>`;
+}
+function renderScheduleEditorFields() {
+  scheduleSpecFields('upload');
+  scheduleSpecFields('publish');
+  renderSchedulePreview();
+}
+function scheduleSpecBody(kind) {
+  const mode = document.getElementById(`schedule-${kind}-mode`)?.value || 'none';
+  const result = {mode, start_at: null, interval_minutes: null, item_times: {}};
+  if (mode === 'same' || mode === 'interval') {
+    result.start_at = moscowInputToIso(document.getElementById(`schedule-${kind}-start`)?.value || '');
+    if (mode === 'interval') result.interval_minutes = Number(document.getElementById(`schedule-${kind}-interval`)?.value || 0);
+  }
+  if (mode === 'individual') {
+    document.querySelectorAll(`[data-schedule-kind="${kind}"]`).forEach(input => {
+      result.item_times[Number(input.dataset.jobId)] = moscowInputToIso(input.value);
+    });
+  }
+  return result;
+}
+function expandSchedulePreview(spec, jobs) {
+  if (spec.mode === 'none') return jobs.map(() => null);
+  if (spec.mode === 'individual') return jobs.map(job => spec.item_times[Number(job.id)] || null);
+  const start = spec.start_at ? new Date(spec.start_at) : null;
+  if (!start || Number.isNaN(start.getTime())) return jobs.map(() => null);
+  const interval = spec.mode === 'interval' ? Number(spec.interval_minutes || 0) : 0;
+  return jobs.map((job, index) => new Date(start.getTime() + index * interval * 60000).toISOString());
+}
+function renderSchedulePreview() {
+  const el = document.getElementById('schedule-preview');
+  if (!el) return;
+  const jobs = scheduleEditorJobs();
+  const uploads = expandSchedulePreview(scheduleSpecBody('upload'), jobs);
+  const publishes = expandSchedulePreview(scheduleSpecBody('publish'), jobs);
+  el.innerHTML = `<div class="schedule-preview-table"><table class="tbl compact"><thead><tr><th>Job</th><th>Видео</th><th>Начало upload</th><th>Публикация</th></tr></thead><tbody>${jobs.map((job, index) => `<tr><td class="mono">#${job.id}</td><td class="mono ov">${esc(job.title || '—')}</td><td class="mono">${esc(formatMoscowDate(uploads[index]))}</td><td class="mono">${esc(formatMoscowDate(publishes[index]))}</td></tr>`).join('')}</tbody></table></div>`;
+}
+async function savePublishScheduleGroup() {
+  const body = {
+    name: document.getElementById('schedule-group-name')?.value || '',
+    job_ids: editingPublishScheduleJobIds,
+    upload: scheduleSpecBody('upload'),
+    publish: scheduleSpecBody('publish'),
+  };
+  hideInlineError('schedule-form-error');
+  try {
+    if (editingPublishScheduleGroupId) {
+      await api.patch(`/api/publish/schedule-groups/${editingPublishScheduleGroupId}`, body);
+    } else {
+      await api.post('/api/publish/schedule-groups', body);
+    }
+    closePublishScheduleEditor();
+    selectedPublishJobIds.clear();
+    await refreshPublishJobs();
+    showToast('Расписание сохранено');
+  } catch (err) {
+    showInlineError('schedule-form-error', err.message || 'Не удалось сохранить расписание');
+  }
+}
+async function removeEditingScheduleGroup() {
+  if (!editingPublishScheduleGroupId || !confirm('Снять расписание со всех задач группы?')) return;
+  try {
+    await api.del(`/api/publish/schedule-groups/${editingPublishScheduleGroupId}`);
+    closePublishScheduleEditor();
+    await refreshPublishJobs();
+    showToast('Расписание снято');
+  } catch (err) {
+    showInlineError('schedule-form-error', err.message || 'Не удалось снять расписание');
+  }
+}
+async function approvePublishScheduleGroup(groupId) {
+  if (!confirm('Разрешить запуск всех просроченных queued jobs этой группы?')) return;
+  try {
+    const data = await api.post(`/api/publish/schedule-groups/${groupId}/approve-overdue`, {});
+    await refreshPublishJobs();
+    showToast(`Разрешено просроченных jobs: ${data.approved || 0}`);
+  } catch (err) {
+    renderPublishError(err.message || 'Не удалось разрешить просроченные задачи');
+  }
+}
+async function approveEditingScheduleGroup() {
+  if (!editingPublishScheduleGroupId) return;
+  await approvePublishScheduleGroup(editingPublishScheduleGroupId);
+  closePublishScheduleEditor();
+}
 function nextRunnablePublishJobs(limit) {
   return lastPublishJobs
-    .filter(job => job.status === 'queued')
+    .filter(job => job.status === 'queued' && job.schedule_state === 'untimed')
     .sort((a, b) => Number(a.id) - Number(b.id))
     .slice(0, Number(limit || 0));
 }
@@ -1764,15 +1984,20 @@ async function runPublishWorkerBatch(limit = null) {
 }
 
 async function runSelectedPublishJobs() {
-  const jobs = selectedPublishJobList().filter(job => job.can_run);
+  const jobs = selectedPublishJobList().filter(job => job.can_force_run);
   if (!jobs.length) {
     showToast('Среди выбранных нет jobs для запуска', 'err');
     return;
   }
+  const force = jobs.some(job => job.schedule_state === 'waiting' || job.schedule_state === 'overdue');
+  if (force && !confirm('Среди выбранных есть будущие или просроченные задачи. Принудительно запустить их сейчас?')) return;
   if (!confirmPublishJobsBatch(jobs, jobs.length, 'запустить загрузку для')) return;
   renderPublishError('');
   try {
-    const data = await api.post('/api/publish/jobs/bulk-run', {job_ids: jobs.map(job => Number(job.id))});
+    const data = await api.post('/api/publish/jobs/bulk-run', {
+      job_ids: jobs.map(job => Number(job.id)),
+      force,
+    });
     showToast(`Запущено: ${data.summary?.processed || 0} · ошибок: ${data.summary?.errors || 0}`);
     await refreshPublishJobs();
   } catch (err) {
@@ -2212,10 +2437,11 @@ async function cancelPublishJob(jobId) {
   }
 }
 
-async function runPublishJob(jobId) {
+async function runPublishJob(jobId, force = false) {
+  if (force && !confirm('Запустить эту задачу сейчас, игнорируя таймер или блокировку просрочки?')) return;
   renderPublishError('');
   try {
-    await api.post(`/api/publish/jobs/${jobId}/run`, {});
+    await api.post(`/api/publish/jobs/${jobId}/run`, {force});
     showToast(`Publish job #${jobId} выполнен`);
     await refreshPublishJobs();
   } catch (err) {

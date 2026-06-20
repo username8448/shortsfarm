@@ -288,12 +288,20 @@
               <button class="btn-mini" onclick="runPublishWorkerBatch(1)">Запустить 1</button>
               <button class="btn-mini" onclick="runPublishWorkerBatch(3)">Запустить 3</button>
               <button class="btn-secondary" onclick="runSelectedPublishJobs()">Запустить выбранные</button>
+              <button class="btn-secondary" onclick="openPublishScheduleEditor()">Настроить расписание</button>
               <button class="btn-mini" onclick="retryFailedPublishJobs()">Повторить failed</button>
               <button class="btn-danger" onclick="cancelSelectedPublishJobs()">Отменить выбранные queued</button>
               <button class="btn-mini" onclick="hideDonePublishJobs()">Очистить done из вида</button>
             </div>
           </div>
           <div class="publish-queue-toolbar">
+            <div class="mono dim" style="width:100%">Автоматические таймеры обрабатывает команда: shortsfarm publish-worker</div>
+            <div class="tabs compact-tabs schedule-tabs" style="margin:0">
+              <button class="tab on" data-schedule-filter="untimed" onclick="filterPublishSchedule(this,'untimed')">Без таймера<span class="cnt" id="schedule-cnt-untimed"></span></button>
+              <button class="tab" data-schedule-filter="scheduled" onclick="filterPublishSchedule(this,'scheduled')">Запланировано<span class="cnt" id="schedule-cnt-scheduled"></span></button>
+              <button class="tab" data-schedule-filter="overdue" onclick="filterPublishSchedule(this,'overdue')">Просрочено<span class="cnt" id="schedule-cnt-overdue"></span></button>
+              <button class="tab" data-schedule-filter="all" onclick="filterPublishSchedule(this,'all')">Все<span class="cnt" id="schedule-cnt-all"></span></button>
+            </div>
             <div class="tabs compact-tabs" style="margin:0">
               <button class="tab on" data-publish-filter="all" onclick="filterPublishJobs(this,'all')">Все<span class="cnt" id="pubjob-cnt-all"></span></button>
               <button class="tab" data-publish-filter="queued" onclick="filterPublishJobs(this,'queued')">В очереди<span class="cnt" id="pubjob-cnt-queued"></span></button>
@@ -421,6 +429,57 @@
     </div>
 
   </main>
+</div>
+
+<div id="publish-schedule-modal" class="modal-backdrop" style="display:none" onclick="closePublishScheduleEditor(event)">
+  <section class="schedule-modal" onclick="event.stopPropagation()">
+    <div class="box-head">
+      <span id="schedule-modal-title">Расписание загрузки</span>
+      <button class="btn-mini" onclick="closePublishScheduleEditor()">Закрыть</button>
+    </div>
+    <div class="schedule-modal-body">
+      <div id="schedule-form-error" class="err-line" style="display:none"></div>
+      <div class="field">
+        <label class="field-lbl">Название группы</label>
+        <input id="schedule-group-name" type="text" placeholder="Публикации на неделю">
+      </div>
+      <div class="schedule-editor-grid">
+        <div class="schedule-spec" data-kind="upload">
+          <h3>Начало загрузки</h3>
+          <div class="field"><label class="field-lbl">Режим</label>
+            <select id="schedule-upload-mode" onchange="renderScheduleEditorFields()">
+              <option value="none">Без таймера</option>
+              <option value="same">Одно время всем</option>
+              <option value="interval">Старт + интервал</option>
+              <option value="individual">Индивидуально</option>
+            </select>
+          </div>
+          <div id="schedule-upload-fields"></div>
+        </div>
+        <div class="schedule-spec" data-kind="publish">
+          <h3>Публикация на YouTube</h3>
+          <div class="field"><label class="field-lbl">Режим</label>
+            <select id="schedule-publish-mode" onchange="renderScheduleEditorFields()">
+              <option value="none">Без таймера</option>
+              <option value="same">Одно время всем</option>
+              <option value="interval">Старт + интервал</option>
+              <option value="individual">Индивидуально</option>
+            </select>
+          </div>
+          <div id="schedule-publish-fields"></div>
+        </div>
+      </div>
+      <div class="schedule-preview-wrap">
+        <div class="field-lbl">Предпросмотр · Europe/Moscow</div>
+        <div id="schedule-preview"></div>
+      </div>
+      <div class="action-row">
+        <button class="btn-primary" onclick="savePublishScheduleGroup()">Сохранить расписание</button>
+        <button class="btn-danger" id="schedule-remove-btn" style="display:none" onclick="removeEditingScheduleGroup()">Снять расписание</button>
+        <button class="btn-secondary" id="schedule-approve-btn" style="display:none" onclick="approveEditingScheduleGroup()">Разрешить просроченные</button>
+      </div>
+    </div>
+  </section>
 </div>
 <script src="/static/app.js?v={{ asset_version }}"></script>
 </body>

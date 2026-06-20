@@ -41,6 +41,7 @@ from ..publish_youtube import (
     validate_publish_options,
 )
 from ..prepare_video import prepare_workspace_video
+from ..publish_schedule import schedule_state, seconds_until
 from ..render import render_queued, retry_failed_clips
 from ..services import (
     VIDEO_EXTENSIONS,
@@ -53,7 +54,9 @@ from ..youtube_oauth import YOUTUBE_SCOPES
 from .schemas import (
     OpenMpvRequest,
     PublishJobRetryRequest,
+    PublishJobRunRequest,
     PublishJobsBulkRequest,
+    PublishScheduleGroupRequest,
     PublishWorkerRunOnceRequest,
     RenderRequest,
     RetryFailedRequest,
@@ -381,6 +384,10 @@ def _publish_job_dict(row: Any) -> dict[str, Any]:
         if source_segment_id is not None
         else f"clip:{source_clip_id}" if source_clip_id is not None else f"clip:{int(row['clip_id'])}"
     )
+    current_schedule_state = schedule_state(
+        _row(row, "upload_at"),
+        _row(row, "overdue_approved_at"),
+    )
     return {
         "id": int(row["id"]),
         "platform": _row(row, "platform", "youtube"),
@@ -394,6 +401,15 @@ def _publish_job_dict(row: Any) -> dict[str, Any]:
         "privacy_status": _row(row, "privacy_status", "private"),
         "publish_mode": _row(row, "publish_mode", "private"),
         "publish_at": _row(row, "publish_at"),
+        "upload_at": _row(row, "upload_at"),
+        "schedule_group_id": _row(row, "schedule_group_id"),
+        "schedule_group_name": _row(row, "schedule_group_name", "") or "",
+        "schedule_position": _row(row, "schedule_position"),
+        "overdue_approved_at": _row(row, "overdue_approved_at"),
+        "schedule_state": current_schedule_state,
+        "is_overdue": current_schedule_state == "overdue",
+        "seconds_until_upload": seconds_until(_row(row, "upload_at")),
+        "seconds_until_publish": seconds_until(_row(row, "publish_at")),
         "made_for_kids": bool(_row(row, "made_for_kids", 0)),
         "youtube_video_id": _row(row, "youtube_video_id"),
         "youtube_url": _row(row, "youtube_url"),
@@ -422,7 +438,11 @@ def _publish_job_dict(row: Any) -> dict[str, Any]:
         "video_title": _row(row, "video_title", "") or "",
         "video_source_path": _row(row, "video_source_path", "") or "",
         "can_retry": _row(row, "status") in {"failed", "cancelled"},
-        "can_run": _row(row, "status") in {"queued", "failed"},
+        "can_run": (
+            _row(row, "status") in {"queued", "failed"}
+            and current_schedule_state not in {"waiting", "overdue"}
+        ),
+        "can_force_run": _row(row, "status") in {"queued", "failed"},
         "can_cancel": _row(row, "status") in {"queued", "failed"},
     }
 
@@ -1390,6 +1410,129 @@ def publish_jobs(status: str | None = None, limit: int = 100) -> dict[str, Any]:
         raise _fail(exc)
 
 
+def _schedule_group_dict(row: Any, *, include_jobs: bool = True) -> dict[str, Any]:
+    def _json_times(value: Any) -> dict[str, str]:
+        try:
+            parsed = json.loads(str(value or "{}"))
+        except json.JSONDecodeError:
+            return {}
+        return {str(key): str(item) for key, item in parsed.items()}
+
+    group_id = int(row["id"])
+    payload = {
+        "id": group_id,
+        "name": _row(row, "name", "") or "",
+        "upload": {
+            "mode": _row(row, "upload_mode", "none") or "none",
+            "start_at": _row(row, "upload_start_at"),
+            "interval_minutes": _row(row, "upload_interval_minutes"),
+            "item_times": _json_times(_row(row, "upload_item_times")),
+        },
+        "publish": {
+            "mode": _row(row, "publish_mode", "none") or "none",
+            "start_at": _row(row, "publish_start_at"),
+            "interval_minutes": _row(row, "publish_interval_minutes"),
+            "item_times": _json_times(_row(row, "publish_item_times")),
+        },
+        "job_count": int(_row(row, "job_count", 0) or 0),
+        "queued_count": int(_row(row, "queued_count", 0) or 0),
+        "created_at": _row(row, "created_at"),
+        "updated_at": _row(row, "updated_at"),
+    }
+    if include_jobs:
+        payload["jobs"] = [
+            _publish_job_dict(job)
+            for job in db.list_publish_schedule_group_jobs(group_id)
+        ]
+    return payload
+
+
+@router.get("/publish/schedule-groups")
+def publish_schedule_groups() -> dict[str, Any]:
+    try:
+        _init()
+        return {
+            "groups": [
+                _schedule_group_dict(row)
+                for row in db.list_publish_schedule_groups()
+            ]
+        }
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/publish/schedule-groups")
+def publish_schedule_group_create(req: PublishScheduleGroupRequest) -> dict[str, Any]:
+    try:
+        _init()
+        group_id = db.save_publish_schedule_group(
+            name=req.name,
+            job_ids=req.job_ids,
+            upload_spec=req.upload.model_dump(),
+            publish_spec=req.publish.model_dump(),
+        )
+        group = db.get_publish_schedule_group(group_id)
+        return {"status": "ok", "group": _schedule_group_dict(group)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.patch("/publish/schedule-groups/{group_id}")
+def publish_schedule_group_update(
+    group_id: int,
+    req: PublishScheduleGroupRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        resolved_id = db.save_publish_schedule_group(
+            group_id=group_id,
+            name=req.name,
+            job_ids=req.job_ids,
+            upload_spec=req.upload.model_dump(),
+            publish_spec=req.publish.model_dump(),
+        )
+        group = db.get_publish_schedule_group(resolved_id)
+        return {"status": "ok", "group": _schedule_group_dict(group)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.delete("/publish/schedule-groups/{group_id}")
+def publish_schedule_group_delete(group_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if not db.remove_publish_schedule_group(group_id):
+            raise FileNotFoundError("Группа расписания не найдена.")
+        return {"status": "ok", "group_id": group_id}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/publish/schedule-groups/{group_id}/approve-overdue")
+def publish_schedule_group_approve_overdue(group_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_publish_schedule_group(group_id) is None:
+            raise FileNotFoundError("Группа расписания не найдена.")
+        approved = db.approve_overdue_publish_schedule_group(group_id)
+        group = db.get_publish_schedule_group(group_id)
+        return {
+            "status": "ok",
+            "approved": approved,
+            "group": _schedule_group_dict(group),
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
 @router.post("/publish/jobs/{job_id}/youtube/update-metadata")
 def publish_job_update_youtube_metadata(
     job_id: int,
@@ -1480,7 +1623,11 @@ def publish_jobs_bulk_run(req: PublishJobsBulkRequest) -> dict[str, Any]:
         summary = {"processed": 0, "errors": 0}
         for job_id in req.job_ids:
             try:
-                job = run_publish_job_now(int(job_id))
+                job = (
+                    run_publish_job_now(int(job_id), force=True)
+                    if req.force
+                    else run_publish_job_now(int(job_id))
+                )
                 results.append({"job_id": int(job_id), "status": "done", "job": _publish_job_dict(job)})
                 summary["processed"] += 1
             except Exception as exc:
@@ -1546,10 +1693,18 @@ def publish_jobs_bulk_cancel(req: PublishJobsBulkRequest) -> dict[str, Any]:
 
 
 @router.post("/publish/jobs/{job_id}/run")
-def publish_job_run(job_id: int) -> dict[str, Any]:
+def publish_job_run(
+    job_id: int,
+    req: PublishJobRunRequest | None = None,
+) -> dict[str, Any]:
     try:
         _init()
-        job = run_publish_job_now(job_id)
+        force = bool(req.force) if req else False
+        job = (
+            run_publish_job_now(job_id, force=True)
+            if force
+            else run_publish_job_now(job_id)
+        )
         return {
             "job": _publish_job_dict(job),
             "youtube_url": _row(job, "youtube_url"),
