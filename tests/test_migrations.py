@@ -30,6 +30,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "019_add_workspace_hidden_at" in versions
     assert "021_add_workspace_preparation" in versions
     assert "022_add_publish_schedules" in versions
+    assert "023_create_editing_models" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -163,6 +164,28 @@ def test_clips_source_segment_id_column_exists(tmp_data_dir):
     assert "source_aspect" in columns
     assert "idx_clips_source_segment_id" in indexes
     assert "idx_clips_source_clip_aspect" in indexes
+
+
+def test_editing_model_tables_exist(tmp_data_dir):
+    from shortsfarm import db
+    table_names = {
+        "reaction_assets",
+        "reaction_pools",
+        "reaction_pool_items",
+        "edit_templates",
+        "channel_profiles",
+        "edit_jobs",
+    }
+    with db.connect() as con:
+        rows = con.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+            """
+        ).fetchall()
+        existing = {str(row["name"]) for row in rows}
+    assert table_names <= existing
 
 
 def test_idempotent(tmp_data_dir):

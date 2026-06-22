@@ -6,6 +6,7 @@ which uses an explicit BEGIN IMMEDIATE to guarantee atomic claim-and-update.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -2553,3 +2554,616 @@ def reset_clip_to_queued(clip_id: int) -> None:
             """,
             (clip_id,),
         )
+
+
+# ---------------------------------------------------------------------------
+# template-driven editing models
+# ---------------------------------------------------------------------------
+
+_UNSET = object()
+EDIT_JOB_STATUSES = {"queued", "rendering", "done", "failed", "cancelled"}
+
+
+def _normalize_recipe_json(value: Any, *, required: bool) -> str | None:
+    if value is None:
+        if required:
+            raise ValueError("recipe_json is required.")
+        return None
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str):
+        try:
+            json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"recipe_json must contain valid JSON: {exc.msg}") from exc
+        return value
+    raise ValueError("recipe_json must be a dict, JSON string, or None.")
+
+
+def _updated_value(row: sqlite3.Row, field: str, value: Any) -> Any:
+    return row[field] if value is _UNSET else value
+
+
+def create_reaction_asset(
+    *,
+    name: str,
+    file_path: str,
+    duration_sec: float | None = None,
+    tags: str | None = None,
+    mood: str | None = None,
+    language: str | None = None,
+    enabled: bool = True,
+) -> int:
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO reaction_assets
+                (name, file_path, duration_sec, tags, mood, language,
+                 enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                file_path,
+                duration_sec,
+                tags,
+                mood,
+                language,
+                1 if enabled else 0,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def get_reaction_asset(asset_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM reaction_assets WHERE id=?",
+            (int(asset_id),),
+        ).fetchone()
+
+
+def list_reaction_assets(enabled: bool | None = None) -> list[sqlite3.Row]:
+    with connect() as con:
+        if enabled is None:
+            return con.execute(
+                "SELECT * FROM reaction_assets ORDER BY id ASC"
+            ).fetchall()
+        return con.execute(
+            "SELECT * FROM reaction_assets WHERE enabled=? ORDER BY id ASC",
+            (1 if enabled else 0,),
+        ).fetchall()
+
+
+def update_reaction_asset(
+    asset_id: int,
+    *,
+    name: Any = _UNSET,
+    file_path: Any = _UNSET,
+    duration_sec: Any = _UNSET,
+    tags: Any = _UNSET,
+    mood: Any = _UNSET,
+    language: Any = _UNSET,
+    enabled: Any = _UNSET,
+) -> bool:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM reaction_assets WHERE id=?",
+            (int(asset_id),),
+        ).fetchone()
+        if row is None:
+            return False
+        enabled_value = row["enabled"] if enabled is _UNSET else (1 if enabled else 0)
+        con.execute(
+            """
+            UPDATE reaction_assets
+            SET name=?, file_path=?, duration_sec=?, tags=?, mood=?, language=?,
+                enabled=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                _updated_value(row, "name", name),
+                _updated_value(row, "file_path", file_path),
+                _updated_value(row, "duration_sec", duration_sec),
+                _updated_value(row, "tags", tags),
+                _updated_value(row, "mood", mood),
+                _updated_value(row, "language", language),
+                enabled_value,
+                now_utc(),
+                int(asset_id),
+            ),
+        )
+        return True
+
+
+def disable_reaction_asset(asset_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            "UPDATE reaction_assets SET enabled=0, updated_at=? WHERE id=?",
+            (now_utc(), int(asset_id)),
+        )
+        return result.rowcount > 0
+
+
+def create_reaction_pool(
+    *,
+    name: str,
+    description: str | None = None,
+    enabled: bool = True,
+) -> int:
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO reaction_pools
+                (name, description, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (name, description, 1 if enabled else 0, now, now),
+        )
+        return int(cur.lastrowid)
+
+
+def get_reaction_pool(pool_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM reaction_pools WHERE id=?",
+            (int(pool_id),),
+        ).fetchone()
+
+
+def list_reaction_pools(enabled: bool | None = None) -> list[sqlite3.Row]:
+    with connect() as con:
+        if enabled is None:
+            return con.execute(
+                "SELECT * FROM reaction_pools ORDER BY id ASC"
+            ).fetchall()
+        return con.execute(
+            "SELECT * FROM reaction_pools WHERE enabled=? ORDER BY id ASC",
+            (1 if enabled else 0,),
+        ).fetchall()
+
+
+def add_reaction_to_pool(
+    pool_id: int,
+    reaction_asset_id: int,
+    weight: int = 1,
+) -> int:
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO reaction_pool_items
+                (pool_id, reaction_asset_id, weight, enabled, created_at)
+            VALUES (?, ?, ?, 1, ?)
+            """,
+            (int(pool_id), int(reaction_asset_id), int(weight), now_utc()),
+        )
+        return int(cur.lastrowid)
+
+
+def list_reaction_pool_items(pool_id: int) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM reaction_pool_items
+            WHERE pool_id=?
+            ORDER BY id ASC
+            """,
+            (int(pool_id),),
+        ).fetchall()
+
+
+def remove_reaction_from_pool(pool_id: int, reaction_asset_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            DELETE FROM reaction_pool_items
+            WHERE pool_id=? AND reaction_asset_id=?
+            """,
+            (int(pool_id), int(reaction_asset_id)),
+        )
+        return result.rowcount > 0
+
+
+def create_edit_template(
+    *,
+    key: str,
+    name: str,
+    recipe_json: dict[str, Any] | str,
+    description: str | None = None,
+    renderer: str = "ffmpeg",
+    enabled: bool = True,
+) -> int:
+    normalized_recipe = _normalize_recipe_json(recipe_json, required=True)
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO edit_templates
+                (key, name, description, renderer, recipe_json,
+                 enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                key,
+                name,
+                description,
+                renderer,
+                normalized_recipe,
+                1 if enabled else 0,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def get_edit_template(template_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM edit_templates WHERE id=?",
+            (int(template_id),),
+        ).fetchone()
+
+
+def get_edit_template_by_key(key: str) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM edit_templates WHERE key=?",
+            (key,),
+        ).fetchone()
+
+
+def list_edit_templates(enabled: bool | None = None) -> list[sqlite3.Row]:
+    with connect() as con:
+        if enabled is None:
+            return con.execute(
+                "SELECT * FROM edit_templates ORDER BY id ASC"
+            ).fetchall()
+        return con.execute(
+            "SELECT * FROM edit_templates WHERE enabled=? ORDER BY id ASC",
+            (1 if enabled else 0,),
+        ).fetchall()
+
+
+def update_edit_template(
+    template_id: int,
+    *,
+    key: Any = _UNSET,
+    name: Any = _UNSET,
+    description: Any = _UNSET,
+    renderer: Any = _UNSET,
+    recipe_json: Any = _UNSET,
+    enabled: Any = _UNSET,
+) -> bool:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM edit_templates WHERE id=?",
+            (int(template_id),),
+        ).fetchone()
+        if row is None:
+            return False
+        normalized_recipe = (
+            row["recipe_json"]
+            if recipe_json is _UNSET
+            else _normalize_recipe_json(recipe_json, required=True)
+        )
+        enabled_value = row["enabled"] if enabled is _UNSET else (1 if enabled else 0)
+        con.execute(
+            """
+            UPDATE edit_templates
+            SET key=?, name=?, description=?, renderer=?, recipe_json=?,
+                enabled=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                _updated_value(row, "key", key),
+                _updated_value(row, "name", name),
+                _updated_value(row, "description", description),
+                _updated_value(row, "renderer", renderer),
+                normalized_recipe,
+                enabled_value,
+                now_utc(),
+                int(template_id),
+            ),
+        )
+        return True
+
+
+def disable_edit_template(template_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            "UPDATE edit_templates SET enabled=0, updated_at=? WHERE id=?",
+            (now_utc(), int(template_id)),
+        )
+        return result.rowcount > 0
+
+
+def create_channel_profile(
+    *,
+    name: str,
+    youtube_account_id: int | None = None,
+    default_template_id: int | None = None,
+    reaction_pool_id: int | None = None,
+    title_template: str | None = None,
+    description_template: str | None = None,
+    tags_template: str | None = None,
+    default_privacy: str | None = None,
+    default_category_id: str | None = None,
+    enabled: bool = True,
+) -> int:
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO channel_profiles
+                (name, youtube_account_id, default_template_id, reaction_pool_id,
+                 title_template, description_template, tags_template,
+                 default_privacy, default_category_id, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                youtube_account_id,
+                default_template_id,
+                reaction_pool_id,
+                title_template,
+                description_template,
+                tags_template,
+                default_privacy,
+                default_category_id,
+                1 if enabled else 0,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def get_channel_profile(profile_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM channel_profiles WHERE id=?",
+            (int(profile_id),),
+        ).fetchone()
+
+
+def get_channel_profile_by_youtube_account(account_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM channel_profiles
+            WHERE youtube_account_id=?
+            ORDER BY enabled DESC, id ASC
+            LIMIT 1
+            """,
+            (int(account_id),),
+        ).fetchone()
+
+
+def list_channel_profiles(enabled: bool | None = None) -> list[sqlite3.Row]:
+    with connect() as con:
+        if enabled is None:
+            return con.execute(
+                "SELECT * FROM channel_profiles ORDER BY id ASC"
+            ).fetchall()
+        return con.execute(
+            "SELECT * FROM channel_profiles WHERE enabled=? ORDER BY id ASC",
+            (1 if enabled else 0,),
+        ).fetchall()
+
+
+def update_channel_profile(
+    profile_id: int,
+    *,
+    name: Any = _UNSET,
+    youtube_account_id: Any = _UNSET,
+    default_template_id: Any = _UNSET,
+    reaction_pool_id: Any = _UNSET,
+    title_template: Any = _UNSET,
+    description_template: Any = _UNSET,
+    tags_template: Any = _UNSET,
+    default_privacy: Any = _UNSET,
+    default_category_id: Any = _UNSET,
+    enabled: Any = _UNSET,
+) -> bool:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM channel_profiles WHERE id=?",
+            (int(profile_id),),
+        ).fetchone()
+        if row is None:
+            return False
+        enabled_value = row["enabled"] if enabled is _UNSET else (1 if enabled else 0)
+        con.execute(
+            """
+            UPDATE channel_profiles
+            SET name=?, youtube_account_id=?, default_template_id=?, reaction_pool_id=?,
+                title_template=?, description_template=?, tags_template=?,
+                default_privacy=?, default_category_id=?, enabled=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                _updated_value(row, "name", name),
+                _updated_value(row, "youtube_account_id", youtube_account_id),
+                _updated_value(row, "default_template_id", default_template_id),
+                _updated_value(row, "reaction_pool_id", reaction_pool_id),
+                _updated_value(row, "title_template", title_template),
+                _updated_value(row, "description_template", description_template),
+                _updated_value(row, "tags_template", tags_template),
+                _updated_value(row, "default_privacy", default_privacy),
+                _updated_value(row, "default_category_id", default_category_id),
+                enabled_value,
+                now_utc(),
+                int(profile_id),
+            ),
+        )
+        return True
+
+
+def disable_channel_profile(profile_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            "UPDATE channel_profiles SET enabled=0, updated_at=? WHERE id=?",
+            (now_utc(), int(profile_id)),
+        )
+        return result.rowcount > 0
+
+
+def create_edit_job(
+    *,
+    workspace_item_key: str,
+    channel_profile_id: int | None = None,
+    template_id: int | None = None,
+    reaction_asset_id: int | None = None,
+    input_path: str | None = None,
+    output_path: str | None = None,
+    edited_path: str | None = None,
+    renderer: str = "ffmpeg",
+    recipe_json: dict[str, Any] | str | None = None,
+) -> int:
+    normalized_recipe = _normalize_recipe_json(recipe_json, required=False)
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO edit_jobs
+                (workspace_item_key, channel_profile_id, template_id,
+                 reaction_asset_id, input_path, output_path, edited_path,
+                 status, renderer, recipe_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+            """,
+            (
+                workspace_item_key,
+                channel_profile_id,
+                template_id,
+                reaction_asset_id,
+                input_path,
+                output_path,
+                edited_path,
+                renderer,
+                normalized_recipe,
+                now_utc(),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def get_edit_job(job_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM edit_jobs WHERE id=?",
+            (int(job_id),),
+        ).fetchone()
+
+
+def list_edit_jobs(
+    status: str | None = None,
+    limit: int = 100,
+) -> list[sqlite3.Row]:
+    if status is not None and status not in EDIT_JOB_STATUSES:
+        raise ValueError(
+            "edit job status must be one of: queued, rendering, done, failed, cancelled."
+        )
+    with connect() as con:
+        if status is None:
+            return con.execute(
+                "SELECT * FROM edit_jobs ORDER BY id DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        return con.execute(
+            "SELECT * FROM edit_jobs WHERE status=? ORDER BY id DESC LIMIT ?",
+            (status, int(limit)),
+        ).fetchall()
+
+
+def mark_edit_job_rendering(job_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE edit_jobs
+            SET status='rendering', started_at=?, finished_at=NULL, error=NULL
+            WHERE id=?
+            """,
+            (now_utc(), int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def mark_edit_job_done(job_id: int, edited_path: str) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE edit_jobs
+            SET status='done', edited_path=?, error=NULL, finished_at=?
+            WHERE id=?
+            """,
+            (edited_path, now_utc(), int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def mark_edit_job_failed(job_id: int, error: str) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE edit_jobs
+            SET status='failed', error=?, finished_at=?
+            WHERE id=?
+            """,
+            (error, now_utc(), int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def cancel_edit_job(job_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE edit_jobs
+            SET status='cancelled', finished_at=?
+            WHERE id=?
+            """,
+            (now_utc(), int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def ensure_default_edit_templates() -> sqlite3.Row:
+    key = "reaction_top_25"
+    existing = get_edit_template_by_key(key)
+    if existing is not None:
+        return existing
+
+    recipe = {
+        "version": 1,
+        "template_key": key,
+        "canvas": {"width": 1080, "height": 1920},
+        "slots": {
+            "reaction": {"x": 0, "y": 0, "w": 1080, "h": 480},
+            "main": {"x": 0, "y": 480, "w": 1080, "h": 1440},
+        },
+        "audio": {"mode": "main_only"},
+        "overlays": [],
+    }
+    try:
+        template_id = create_edit_template(
+            key=key,
+            name="Reaction Top 25%",
+            renderer="ffmpeg",
+            recipe_json=recipe,
+            enabled=True,
+        )
+    except sqlite3.IntegrityError:
+        created = get_edit_template_by_key(key)
+        if created is None:
+            raise
+        return created
+    created = get_edit_template(template_id)
+    if created is None:
+        raise RuntimeError("Default edit template was created but cannot be loaded.")
+    return created
