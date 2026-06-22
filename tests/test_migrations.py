@@ -31,6 +31,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "021_add_workspace_preparation" in versions
     assert "022_add_publish_schedules" in versions
     assert "023_create_editing_models" in versions
+    assert "024_add_edit_job_review_status" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -186,6 +187,23 @@ def test_editing_model_tables_exist(tmp_data_dir):
         ).fetchall()
         existing = {str(row["name"]) for row in rows}
     assert table_names <= existing
+
+
+def test_edit_job_review_columns_exist(tmp_data_dir):
+    from shortsfarm import db
+
+    with db.connect() as con:
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(edit_jobs)").fetchall()
+        }
+        indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(edit_jobs)").fetchall()
+        }
+
+    assert {"review_status", "reviewed_at", "review_note"} <= columns
+    assert "idx_edit_jobs_review_status" in indexes
 
 
 def test_idempotent(tmp_data_dir):

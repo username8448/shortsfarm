@@ -48,6 +48,27 @@ def _path_inside(path: Path, root: Path) -> bool:
         return False
 
 
+def resolve_edit_job_media_path(job_id: int) -> Path:
+    job = db.get_edit_job(int(job_id))
+    if job is None:
+        raise FileNotFoundError("Edit job не найден.")
+    if str(job["status"]) != "done":
+        raise ValueError("Edit job ещё не готов.")
+
+    raw_path = job["edited_path"] or job["output_path"]
+    if not raw_path:
+        raise FileNotFoundError("У edit job отсутствует rendered media path.")
+    media_path = Path(str(raw_path)).expanduser().resolve()
+    edited_root = (output_dir() / "edited").resolve()
+    if not _path_inside(media_path, edited_root):
+        raise PermissionError(
+            f"Rendered media должен находиться внутри {edited_root}."
+        )
+    if not media_path.exists() or not media_path.is_file():
+        raise FileNotFoundError(f"Rendered media file не найден: {media_path}")
+    return media_path
+
+
 def _validated_render_paths(
     job: sqlite3.Row,
     recipe: dict[str, Any],

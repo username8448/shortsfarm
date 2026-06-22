@@ -2562,6 +2562,7 @@ def reset_clip_to_queued(clip_id: int) -> None:
 
 _UNSET = object()
 EDIT_JOB_STATUSES = {"queued", "rendering", "done", "failed", "cancelled"}
+EDIT_JOB_REVIEW_STATUSES = {"pending", "approved", "rejected"}
 
 
 def _normalize_recipe_json(value: Any, *, required: bool) -> str | None:
@@ -3223,17 +3224,28 @@ def list_edit_jobs(
 
 def list_edit_jobs_with_details(
     status: str | None = None,
+    review_status: str | None = None,
     limit: int = 100,
 ) -> list[sqlite3.Row]:
     if status is not None and status not in EDIT_JOB_STATUSES:
         raise ValueError(
             "edit job status must be one of: queued, rendering, done, failed, cancelled."
         )
+    if (
+        review_status is not None
+        and review_status not in EDIT_JOB_REVIEW_STATUSES
+    ):
+        raise ValueError(
+            "edit job review status must be one of: pending, approved, rejected."
+        )
     clauses: list[str] = []
     params: list[Any] = []
     if status is not None:
         clauses.append("ej.status=?")
         params.append(status)
+    if review_status is not None:
+        clauses.append("ej.review_status=?")
+        params.append(review_status)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     params.append(int(limit))
     with connect() as con:
@@ -3349,7 +3361,10 @@ def _claim_edit_job_where(
                 edited_path=NULL,
                 error=NULL,
                 started_at=?,
-                finished_at=NULL
+                finished_at=NULL,
+                review_status='pending',
+                reviewed_at=NULL,
+                review_note=NULL
             WHERE id=? AND status=?
             """,
             (now, int(row["id"]), str(row["status"])),
@@ -3404,7 +3419,13 @@ def mark_edit_job_rendering(job_id: int) -> bool:
         result = con.execute(
             """
             UPDATE edit_jobs
-            SET status='rendering', started_at=?, finished_at=NULL, error=NULL
+            SET status='rendering',
+                started_at=?,
+                finished_at=NULL,
+                error=NULL,
+                review_status='pending',
+                reviewed_at=NULL,
+                review_note=NULL
             WHERE id=?
             """,
             (now_utc(), int(job_id)),
@@ -3434,6 +3455,53 @@ def mark_edit_job_failed(job_id: int, error: str) -> bool:
             WHERE id=?
             """,
             (error, now_utc(), int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def set_edit_job_review_status(
+    job_id: int,
+    review_status: str,
+    review_note: str | None = None,
+) -> bool:
+    normalized_status = str(review_status or "").strip().lower()
+    if normalized_status not in EDIT_JOB_REVIEW_STATUSES:
+        raise ValueError(
+            "review_status must be one of: pending, approved, rejected."
+        )
+
+    with connect() as con:
+        job = con.execute(
+            "SELECT status FROM edit_jobs WHERE id=?",
+            (int(job_id),),
+        ).fetchone()
+        if job is None:
+            return False
+        if (
+            normalized_status in {"approved", "rejected"}
+            and str(job["status"]) != "done"
+        ):
+            raise ValueError(
+                "Approve/reject разрешены только для edit job со status=done."
+            )
+
+        reviewed_at = (
+            now_utc()
+            if normalized_status in {"approved", "rejected"}
+            else None
+        )
+        result = con.execute(
+            """
+            UPDATE edit_jobs
+            SET review_status=?, reviewed_at=?, review_note=?
+            WHERE id=?
+            """,
+            (
+                normalized_status,
+                reviewed_at,
+                review_note,
+                int(job_id),
+            ),
         )
         return result.rowcount > 0
 

@@ -284,3 +284,7 @@ class EditWorkerRunOnceRequest(BaseModel):
 class EditJobsBulkRenderRequest(BaseModel):
     job_ids: list[int] = Field(default_factory=list)
     force: bool = False
+
+
+class EditJobReviewRequest(BaseModel):
+    note: str | None = None

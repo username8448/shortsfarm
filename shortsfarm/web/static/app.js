@@ -148,15 +148,18 @@ function ruStatus(value) {
     active:'активен',
     disabled:'отключён',
     cancelled:'отменено',
+    pending:'ожидает проверки',
+    approved:'одобрено',
+    rejected:'отклонено',
     disconnected:'отключён',
     expired:'истёк',
     error:'ошибка'
   }[value] || value || '—');
 }
 function badgeClass(status) {
-  return status === 'done' || status === 'reviewed' || status === 'ok' || status === 'active' || status === 'ready' || status === 'uploaded'
+  return status === 'done' || status === 'reviewed' || status === 'ok' || status === 'active' || status === 'ready' || status === 'uploaded' || status === 'approved'
     ? 'b-ok'
-    : status === 'failed' || status === 'error'
+    : status === 'failed' || status === 'error' || status === 'rejected'
       ? 'b-err'
     : status === 'running' || status === 'queued' || status === 'reviewing'
         ? 'b-info'
@@ -250,7 +253,9 @@ let editingPoolItems = [];
 let editingAccounts = [];
 let editingJobs = [];
 let editingJobFilter = 'all';
+let editingJobReviewFilter = 'all';
 let selectedEditingJobIds = new Set();
+let editingPreviewJobId = null;
 let editingReactionId = null;
 let editingPoolId = null;
 let editingTemplateId = null;
@@ -3025,15 +3030,29 @@ async function disableEditingProfile() {
 }
 
 function getVisibleEditingJobs() {
-  return editingJobFilter === 'all'
+  const byRender = editingJobFilter === 'all'
     ? editingJobs
     : editingJobs.filter(job => job.status === editingJobFilter);
+  return editingJobReviewFilter === 'all'
+    ? byRender
+    : byRender.filter(job => (job.review_status || 'pending') === editingJobReviewFilter);
 }
 
 function filterEditingJobs(tab, status) {
   editingJobFilter = status || 'all';
   document.querySelectorAll('[data-edit-job-filter]').forEach(item => item.classList.remove('on'));
   if (tab) tab.classList.add('on');
+  renderEditingJobs();
+}
+
+function filterEditingJobsByReview(status) {
+  editingJobReviewFilter = status || 'all';
+  renderEditingJobs();
+}
+
+function toggleEditingJobPreview(jobId) {
+  const id = Number(jobId);
+  editingPreviewJobId = editingPreviewJobId === id ? null : id;
   renderEditingJobs();
 }
 
@@ -3080,16 +3099,28 @@ function renderEditingJobs() {
     return;
   }
   const allVisibleSelected = rows.every(job => selectedEditingJobIds.has(Number(job.id)));
-  el.innerHTML = `<div class="workspace-selected-line mono dim" data-editing-selected-count></div><div style="overflow:auto"><table class="tbl editing-jobs-table"><thead><tr><th><input type="checkbox" ${allVisibleSelected ? 'checked' : ''} onchange="toggleAllVisibleEditingJobs(this.checked)"></th><th>#</th><th>Workspace</th><th>Profile</th><th>Template</th><th>Reaction</th><th>Статус</th><th>Output</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>${rows.map(job => {
+  el.innerHTML = `<div class="workspace-selected-line mono dim" data-editing-selected-count></div><div style="overflow:auto"><table class="tbl editing-jobs-table"><thead><tr><th><input type="checkbox" ${allVisibleSelected ? 'checked' : ''} onchange="toggleAllVisibleEditingJobs(this.checked)"></th><th>#</th><th>Workspace</th><th>Profile</th><th>Template</th><th>Reaction</th><th>Статус</th><th>Review</th><th>Output</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>${rows.map(job => {
     const selected = selectedEditingJobIds.has(Number(job.id));
     const canCancel = ['queued','failed'].includes(job.status);
     const canRetry = ['failed','cancelled'].includes(job.status);
     const canRender = job.status === 'queued';
     const canForceRender = ['failed','cancelled'].includes(job.status);
+    const isDone = job.status === 'done';
+    const previewOpen = isDone && editingPreviewJobId === Number(job.id);
     const finalPath = job.edited_path
       ? `<div>${badge('done')} <span class="mono txt ov" title="${esc(job.edited_path)}">${esc(shortPath(job.edited_path))}</span></div>`
       : '';
-    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="toggleEditingJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td class="mono txt">${esc(job.workspace_item_key)}</td><td class="mono mid">${esc(job.channel_profile_name || `#${job.channel_profile_id || '—'}`)}</td><td><div class="mono txt">${esc(job.template_name || `#${job.template_id || '—'}`)}</div><div class="mono dim">${esc(job.template_key || '')}</div></td><td class="mono mid">${esc(job.reaction_asset_name || 'без реакции')}</td><td>${badge(job.status)}</td><td><span class="mono dim ov" title="${esc(job.output_path || '')}">${esc(shortPath(job.output_path || '—'))}</span>${finalPath}</td><td><span class="mono err ov" title="${esc(job.error || '')}">${esc(shortErrorText(job.error || ''))}</span></td><td><div class="row-actions">${canRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)})">Render</button>` : ''}${canForceRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)}, true)">Force render</button>` : ''}${canCancel ? `<button class="btn-danger" onclick="cancelEditingJob(${Number(job.id)})">Cancel</button>` : ''}${canRetry ? `<button class="btn-secondary" onclick="retryEditingJob(${Number(job.id)})">Retry</button>` : ''}</div></td></tr>`;
+    const review = job.review_status || 'pending';
+    const doneActions = isDone
+      ? `<button class="btn-mini${previewOpen ? ' on' : ''}" onclick="toggleEditingJobPreview(${Number(job.id)})">${previewOpen ? 'Скрыть preview' : 'Показать preview'}</button><button class="btn-mini" onclick="openEditingJobResult(${Number(job.id)})">Открыть результат</button><button class="btn-mini" onclick="openEditingJobMpv(${Number(job.id)})">Открыть в mpv</button><button class="btn-mini" onclick="openEditingJobFolder(${Number(job.id)})">Открыть папку</button><button class="btn-primary" onclick="setEditingJobReview(${Number(job.id)}, 'approved')">Одобрить</button><button class="btn-danger" onclick="setEditingJobReview(${Number(job.id)}, 'rejected')">Отклонить</button>`
+      : '';
+    const reviewNote = job.review_note
+      ? `<div class="mono dim ov" title="${esc(job.review_note)}">${esc(shortErrorText(job.review_note))}</div>`
+      : '';
+    const previewRow = previewOpen
+      ? `<tr class="editing-preview-row"><td colspan="11"><div class="editing-review-panel"><div class="editing-video-wrap"><video controls preload="metadata" src="/api/editing/jobs/${Number(job.id)}/media"></video></div><div class="editing-review-controls"><div class="selection-title">Ручная проверка результата</div><div class="mono dim">Render: ${badge(job.status)} · Review: ${badge(review)}</div><label class="field"><span class="field-lbl">Комментарий</span><textarea id="editing-review-note-${Number(job.id)}" rows="5" placeholder="Почему одобрено или что нужно переделать">${esc(job.review_note || '')}</textarea></label><div class="row-actions"><button class="btn-primary" onclick="setEditingJobReview(${Number(job.id)}, 'approved')">Одобрить</button><button class="btn-danger" onclick="setEditingJobReview(${Number(job.id)}, 'rejected')">Отклонить</button>${review !== 'pending' ? `<button class="btn-secondary" onclick="resetEditingJobReview(${Number(job.id)})">Сбросить review</button>` : ''}</div>${review === 'approved' ? '<div class="ok-line">Готов к публикации. Подключение к YouTube будет в следующем этапе.</div>' : ''}</div></div></td></tr>`
+      : '';
+    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="toggleEditingJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td class="mono txt">${esc(job.workspace_item_key)}</td><td class="mono mid">${esc(job.channel_profile_name || `#${job.channel_profile_id || '—'}`)}</td><td><div class="mono txt">${esc(job.template_name || `#${job.template_id || '—'}`)}</div><div class="mono dim">${esc(job.template_key || '')}</div></td><td class="mono mid">${esc(job.reaction_asset_name || 'без реакции')}</td><td>${badge(job.status)}</td><td>${badge(review)}${reviewNote}</td><td><span class="mono dim ov" title="${esc(job.output_path || '')}">${esc(shortPath(job.output_path || '—'))}</span>${finalPath}</td><td><span class="mono err ov" title="${esc(job.error || '')}">${esc(shortErrorText(job.error || ''))}</span></td><td><div class="row-actions">${doneActions}${canRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)})">Render</button>` : ''}${canForceRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)}, true)">Force render</button>` : ''}${canCancel ? `<button class="btn-danger" onclick="cancelEditingJob(${Number(job.id)})">Cancel</button>` : ''}${canRetry ? `<button class="btn-secondary" onclick="retryEditingJob(${Number(job.id)})">Retry</button>` : ''}</div></td></tr>${previewRow}`;
   }).join('')}</tbody></table></div>`;
   renderEditingJobSelectionState();
 }
@@ -3098,6 +3129,14 @@ async function loadEditingJobs(silent = false) {
   try {
     const data = await api.get('/api/editing/jobs?limit=200');
     editingJobs = data.items || [];
+    if (
+      editingPreviewJobId !== null
+      && !editingJobs.some(
+        job => Number(job.id) === editingPreviewJobId && job.status === 'done'
+      )
+    ) {
+      editingPreviewJobId = null;
+    }
     renderEditingJobs();
   } catch (err) {
     if (!silent) editingError(err.message || 'Не удалось загрузить очередь монтажа');
@@ -3132,6 +3171,62 @@ async function renderEditingJob(jobId, force = false) {
   } catch (err) {
     editingError(err.message || `Не удалось отрендерить edit job #${jobId}`);
     await loadEditingJobs(true);
+  }
+}
+
+function editingJobReviewNote(jobId) {
+  const field = document.getElementById(`editing-review-note-${Number(jobId)}`);
+  if (field) return field.value;
+  const job = editingJobs.find(item => Number(item.id) === Number(jobId));
+  return job?.review_note || '';
+}
+
+function openEditingJobResult(jobId) {
+  window.open(`/api/editing/jobs/${Number(jobId)}/media`, '_blank', 'noopener');
+}
+
+async function openEditingJobMpv(jobId) {
+  try {
+    await api.post(`/api/editing/jobs/${Number(jobId)}/open`, {});
+    showToast(`Edit job #${jobId} открыт в mpv`);
+  } catch (err) {
+    editingError(err.message || `Не удалось открыть edit job #${jobId} в mpv`);
+  }
+}
+
+async function openEditingJobFolder(jobId) {
+  try {
+    const data = await api.get(`/api/editing/jobs/${Number(jobId)}/folder`);
+    await goToOutputFolder(data.path);
+  } catch (err) {
+    editingError(err.message || `Не удалось открыть папку edit job #${jobId}`);
+  }
+}
+
+async function setEditingJobReview(jobId, reviewStatus) {
+  try {
+    const action = reviewStatus === 'approved' ? 'approve' : 'reject';
+    await api.post(`/api/editing/jobs/${Number(jobId)}/${action}`, {
+      note: editingJobReviewNote(jobId),
+    });
+    showToast(
+      reviewStatus === 'approved'
+        ? `Edit job #${jobId} одобрен`
+        : `Edit job #${jobId} отклонён`
+    );
+    await loadEditingJobs(true);
+  } catch (err) {
+    editingError(err.message || `Не удалось изменить review edit job #${jobId}`);
+  }
+}
+
+async function resetEditingJobReview(jobId) {
+  try {
+    await api.post(`/api/editing/jobs/${Number(jobId)}/reset-review`, {});
+    showToast(`Review edit job #${jobId} сброшен`);
+    await loadEditingJobs(true);
+  } catch (err) {
+    editingError(err.message || `Не удалось сбросить review edit job #${jobId}`);
   }
 }
 

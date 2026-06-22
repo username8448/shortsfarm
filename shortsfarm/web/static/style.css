@@ -528,9 +528,53 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .editing-jobs-tabs {
   padding: 10px 12px 0;
   margin-bottom: 10px;
+  align-items: center;
 }
 .editing-jobs-table {
-  min-width: 1080px;
+  min-width: 1320px;
+}
+.editing-review-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  color: var(--mid);
+  font: 600 10px var(--mono);
+  text-transform: uppercase;
+}
+.editing-review-filter select {
+  min-width: 132px;
+  padding: 6px 8px;
+}
+.editing-preview-row td {
+  padding: 0 12px 14px;
+  background: rgba(15,23,42,.22);
+}
+.editing-review-panel {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.35fr) minmax(260px, .65fr);
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid var(--acc-br);
+  border-radius: 9px;
+  background: rgba(59,130,246,.07);
+}
+.editing-video-wrap video {
+  display: block;
+  width: 100%;
+  max-height: 68vh;
+  border-radius: 8px;
+  background: #000;
+}
+.editing-review-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+@media (max-width: 920px) {
+  .editing-review-panel {
+    grid-template-columns: 1fr;
+  }
 }
 .mini-field {
   margin: 0;

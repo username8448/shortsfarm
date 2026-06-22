@@ -31,7 +31,11 @@ from ..config import (
     youtube_redirect_uri,
 )
 from ..edit_planner import parse_workspace_item_key, plan_edit_jobs_for_workspace_items
-from ..edit_renderer import render_edit_job, run_edit_queue_once
+from ..edit_renderer import (
+    render_edit_job,
+    resolve_edit_job_media_path,
+    run_edit_queue_once,
+)
 from ..ffmpeg_tools import probe_duration, require_binary
 from ..mpv_session import require_mpv
 from ..publish_youtube import (
@@ -58,6 +62,7 @@ from .schemas import (
     ChannelProfileCreateRequest,
     ChannelProfileUpdateRequest,
     EditJobRenderRequest,
+    EditJobReviewRequest,
     EditJobsBulkRenderRequest,
     EditJobsPlanRequest,
     EditTemplateUpdateRequest,
@@ -359,6 +364,9 @@ def _edit_job_dict(row: Any) -> dict[str, Any]:
         "renderer": _row(row, "renderer", "ffmpeg") or "ffmpeg",
         "recipe_json": _row(row, "recipe_json"),
         "error": _row(row, "error"),
+        "review_status": _row(row, "review_status", "pending") or "pending",
+        "reviewed_at": _row(row, "reviewed_at"),
+        "review_note": _row(row, "review_note"),
         "created_at": _row(row, "created_at"),
         "started_at": _row(row, "started_at"),
         "finished_at": _row(row, "finished_at"),
@@ -2263,14 +2271,141 @@ def editing_jobs_plan(req: EditJobsPlanRequest) -> dict[str, Any]:
 
 
 @router.get("/editing/jobs")
-def editing_jobs(status: str | None = None, limit: int = 100) -> dict[str, Any]:
+def editing_jobs(
+    status: str | None = None,
+    review_status: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
     try:
         _init()
         rows = db.list_edit_jobs_with_details(
             status=status if status and status != "all" else None,
+            review_status=(
+                review_status
+                if review_status and review_status != "all"
+                else None
+            ),
             limit=limit,
         )
         return {"items": [_edit_job_dict(row) for row in rows], "count": len(rows)}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/editing/jobs/{job_id}/media")
+def editing_job_media(job_id: int) -> FileResponse:
+    try:
+        _init()
+        media_path = resolve_edit_job_media_path(job_id)
+        return FileResponse(media_path, media_type="video/mp4")
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/editing/jobs/{job_id}/folder")
+def editing_job_folder(job_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        media_path = resolve_edit_job_media_path(job_id)
+        return {"status": "ok", "path": str(media_path.parent)}
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/jobs/{job_id}/open")
+def editing_job_open(job_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        media_path = resolve_edit_job_media_path(job_id)
+        mpv = require_mpv()
+        subprocess.Popen(
+            [mpv, str(media_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return {
+            "status": "opened",
+            "job_id": int(job_id),
+            "player": "mpv",
+        }
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+def _set_edit_job_review(
+    job_id: int,
+    review_status: str,
+    req: EditJobReviewRequest | None,
+) -> dict[str, Any]:
+    if review_status in {"approved", "rejected"}:
+        resolve_edit_job_media_path(job_id)
+    elif db.get_edit_job(job_id) is None:
+        raise FileNotFoundError("Edit job не найден.")
+
+    note = req.note if req else None
+    if not db.set_edit_job_review_status(job_id, review_status, note):
+        raise FileNotFoundError("Edit job не найден.")
+    updated = db.get_edit_job(job_id)
+    if updated is None:
+        raise FileNotFoundError("Edit job не найден.")
+    return {"status": "ok", "job": _edit_job_dict(updated)}
+
+
+@router.post("/editing/jobs/{job_id}/approve")
+def editing_job_approve(
+    job_id: int,
+    req: EditJobReviewRequest | None = None,
+) -> dict[str, Any]:
+    try:
+        _init()
+        return _set_edit_job_review(job_id, "approved", req)
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/jobs/{job_id}/reject")
+def editing_job_reject(
+    job_id: int,
+    req: EditJobReviewRequest | None = None,
+) -> dict[str, Any]:
+    try:
+        _init()
+        return _set_edit_job_review(job_id, "rejected", req)
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/jobs/{job_id}/reset-review")
+def editing_job_reset_review(
+    job_id: int,
+    req: EditJobReviewRequest | None = None,
+) -> dict[str, Any]:
+    try:
+        _init()
+        return _set_edit_job_review(job_id, "pending", req)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
     except Exception as exc:
         raise _fail(exc)
 
