@@ -147,6 +147,23 @@
           <button class="btn-secondary" onclick="prepareSelectedWorkspaceItems()">Подготовить выбранные</button>
           <div class="mono dim workspace-youtube-state">Подготовка создаёт отдельный файл в output/prepared.</div>
         </div>
+        <div class="workspace-editing-panel">
+          <div class="field mini-field">
+            <label class="field-lbl">Channel profile</label>
+            <select id="workspace-editing-profile" onchange="onWorkspaceEditingProfileChange(this.value)"></select>
+          </div>
+          <div class="field mini-field">
+            <label class="field-lbl">Template override</label>
+            <select id="workspace-editing-template"></select>
+          </div>
+          <div class="field mini-field">
+            <label class="field-lbl">Reaction override</label>
+            <select id="workspace-editing-reaction"></select>
+          </div>
+          <label class="toggle-label workspace-youtube-toggle"><input id="workspace-editing-force-new" type="checkbox"> Force new</label>
+          <button class="btn-secondary" id="workspace-editing-plan-btn" onclick="planSelectedWorkspaceEditing()">Добавить в очередь монтажа</button>
+          <div id="workspace-editing-state" class="mono dim workspace-youtube-state"></div>
+        </div>
         <div class="workspace-youtube-panel">
           <div class="field mini-field">
             <label class="field-lbl">YouTube аккаунт</label>
@@ -356,6 +373,7 @@
         <button class="tab" data-editing-tab="pools" onclick="setEditingTab('pools', this)">Пулы реакций</button>
         <button class="tab" data-editing-tab="templates" onclick="setEditingTab('templates', this)">Шаблоны</button>
         <button class="tab" data-editing-tab="profiles" onclick="setEditingTab('profiles', this)">Профили каналов</button>
+        <button class="tab" data-editing-tab="jobs" onclick="setEditingTab('jobs', this)">Очередь монтажа</button>
       </div>
       <div id="editing-error" class="err-line" style="display:none;margin-bottom:10px"></div>
 
@@ -475,6 +493,27 @@
               <div class="action-row"><button class="btn-primary" onclick="saveEditingProfile()">Сохранить profile</button><button class="btn-danger" id="editing-profile-disable" style="display:none" onclick="disableEditingProfile()">Отключить</button></div>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div id="editing-jobs" class="editing-tab">
+        <div class="box">
+          <div class="box-head">
+            <span>Очередь монтажа</span>
+            <div class="row-actions">
+              <button class="btn-mini" onclick="loadEditingJobs()">Обновить</button>
+              <button class="btn-secondary" disabled>Рендер будет добавлен следующим этапом</button>
+            </div>
+          </div>
+          <div class="tabs compact-tabs editing-jobs-tabs">
+            <button class="tab on" data-edit-job-filter="all" onclick="filterEditingJobs(this,'all')">Все</button>
+            <button class="tab" data-edit-job-filter="queued" onclick="filterEditingJobs(this,'queued')">queued</button>
+            <button class="tab" data-edit-job-filter="rendering" onclick="filterEditingJobs(this,'rendering')">rendering</button>
+            <button class="tab" data-edit-job-filter="done" onclick="filterEditingJobs(this,'done')">done</button>
+            <button class="tab" data-edit-job-filter="failed" onclick="filterEditingJobs(this,'failed')">failed</button>
+            <button class="tab" data-edit-job-filter="cancelled" onclick="filterEditingJobs(this,'cancelled')">cancelled</button>
+          </div>
+          <div id="editing-jobs-list"></div>
         </div>
       </div>
     </div>

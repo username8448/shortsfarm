@@ -263,3 +263,11 @@ class ChannelProfileUpdateRequest(BaseModel):
     default_privacy: str | None = None
     default_category_id: str | None = None
     enabled: bool | None = None
+
+
+class EditJobsPlanRequest(BaseModel):
+    item_keys: list[str] = Field(default_factory=list)
+    channel_profile_id: int
+    template_id: int | None = None
+    reaction_asset_id: int | None = None
+    force_new: bool = False

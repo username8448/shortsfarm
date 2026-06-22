@@ -514,6 +514,24 @@ button:disabled { opacity: .4; cursor: not-allowed; }
   border-radius: 8px;
   background: rgba(148,163,184,.08);
 }
+.workspace-editing-panel {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) minmax(170px, .8fr) minmax(170px, .8fr) auto auto minmax(180px, 1fr);
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--acc-br);
+  border-radius: 8px;
+  background: rgba(59,130,246,.08);
+}
+.editing-jobs-tabs {
+  padding: 10px 12px 0;
+  margin-bottom: 10px;
+}
+.editing-jobs-table {
+  min-width: 1080px;
+}
 .mini-field {
   margin: 0;
 }
@@ -636,6 +654,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
   .field-grid,
   .workspace-layout,
   .workspace-prepare-panel,
+  .workspace-editing-panel,
   .workspace-youtube-panel {
     grid-template-columns: 1fr;
   }

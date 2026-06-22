@@ -147,6 +147,7 @@ function ruStatus(value) {
     preview:'план',
     active:'активен',
     disabled:'отключён',
+    cancelled:'отменено',
     disconnected:'отключён',
     expired:'истёк',
     error:'ошибка'
@@ -247,12 +248,19 @@ let editingTemplates = [];
 let editingProfiles = [];
 let editingPoolItems = [];
 let editingAccounts = [];
+let editingJobs = [];
+let editingJobFilter = 'all';
 let editingReactionId = null;
 let editingPoolId = null;
 let editingTemplateId = null;
 let editingProfileId = null;
 const workspaceYoutubeState = {
   selectedAccountId: null,
+  busy: false,
+};
+
+const workspaceEditingState = {
+  selectedProfileId: null,
   busy: false,
 };
 
@@ -785,17 +793,25 @@ function renderVideosTable(rows) {
 
 async function loadClips() {
   try {
-    const [data, accountsData] = await Promise.all([
+    const [data, accountsData, profilesData, templatesData, reactionsData] = await Promise.all([
       api.get('/api/workspace/clips'),
       api.get('/api/publish/youtube/accounts'),
+      api.get('/api/editing/channel-profiles?enabled=true'),
+      api.get('/api/editing/templates?enabled=true'),
+      api.get('/api/editing/reactions?enabled=true'),
     ]);
     lastClips = data.items || [];
     lastYoutubeAccounts = accountsData.accounts || lastYoutubeAccounts || [];
+    editingProfiles = profilesData.items || editingProfiles || [];
+    editingTemplates = templatesData.items || editingTemplates || [];
+    editingReactions = reactionsData.items || editingReactions || [];
     syncWorkspaceYoutubeSelection();
+    syncWorkspaceEditingSelection();
     if (currentWorkspaceItemKey && !workspaceItemByKey(currentWorkspaceItemKey)) {
       currentWorkspaceItemKey = null;
     }
     renderClipCounts(data.counts || {});
+    renderWorkspaceEditingControls();
     renderWorkspaceYoutubeControls();
     renderClipsTable(getVisibleWorkspaceItems());
     if (!workspaceDetailDirty) renderWorkspaceDetail();
@@ -902,6 +918,97 @@ function renderWorkspaceYoutubeControls() {
   }
   updateWorkspaceDetailActionState();
 }
+
+function getActiveEditingProfiles() {
+  return (editingProfiles || []).filter(profile => profile.enabled);
+}
+
+function syncWorkspaceEditingSelection() {
+  const profiles = getActiveEditingProfiles();
+  if (!profiles.some(profile => Number(profile.id) === Number(workspaceEditingState.selectedProfileId))) {
+    workspaceEditingState.selectedProfileId = profiles[0] ? Number(profiles[0].id) : null;
+  }
+}
+
+function onWorkspaceEditingProfileChange(value) {
+  workspaceEditingState.selectedProfileId = value ? Number(value) : null;
+  renderWorkspaceEditingControls();
+}
+
+function renderWorkspaceEditingControls() {
+  const profileSelect = document.getElementById('workspace-editing-profile');
+  const templateSelect = document.getElementById('workspace-editing-template');
+  const reactionSelect = document.getElementById('workspace-editing-reaction');
+  const planBtn = document.getElementById('workspace-editing-plan-btn');
+  const stateEl = document.getElementById('workspace-editing-state');
+  if (!profileSelect || !templateSelect || !reactionSelect || !planBtn || !stateEl) return;
+
+  const profiles = getActiveEditingProfiles();
+  syncWorkspaceEditingSelection();
+  if (!profiles.length) {
+    profileSelect.innerHTML = '<option value="">Нет channel profiles</option>';
+    profileSelect.disabled = true;
+  } else {
+    profileSelect.disabled = workspaceEditingState.busy;
+    profileSelect.innerHTML = profiles.map(profile =>
+      `<option value="${profile.id}"${Number(profile.id) === Number(workspaceEditingState.selectedProfileId) ? ' selected' : ''}>${esc(profile.name)}</option>`
+    ).join('');
+  }
+
+  const currentTemplate = templateSelect.value;
+  templateSelect.innerHTML = `<option value="">Из channel profile</option>${(editingTemplates || []).filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
+  if (currentTemplate && Array.from(templateSelect.options).some(option => option.value === currentTemplate)) templateSelect.value = currentTemplate;
+
+  const currentReaction = reactionSelect.value;
+  reactionSelect.innerHTML = `<option value="">Из reaction pool / без реакции</option>${(editingReactions || []).filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}${item.file_exists ? '' : ' · missing'}</option>`).join('')}`;
+  if (currentReaction && Array.from(reactionSelect.options).some(option => option.value === currentReaction)) reactionSelect.value = currentReaction;
+
+  const selectedCount = selectedWorkspaceKeys.size;
+  planBtn.disabled = workspaceEditingState.busy || !workspaceEditingState.selectedProfileId || selectedCount === 0;
+  stateEl.textContent = profiles.length
+    ? `Выбрано workspace items: ${selectedCount}. Job создаётся без запуска рендера.`
+    : 'Создайте профиль канала в разделе «Монтаж».';
+}
+
+function workspaceEditingSummary(data) {
+  const summary = data?.summary || {};
+  return `Создано: ${summary.created || 0} · существующих: ${summary.existing || 0} · пропущено: ${summary.skipped || 0} · ошибок: ${summary.errors || 0}`;
+}
+
+async function planSelectedWorkspaceEditing() {
+  const itemKeys = Array.from(selectedWorkspaceKeys);
+  if (!itemKeys.length) {
+    showToast('Сначала выберите workspace items', 'err');
+    return;
+  }
+  if (!workspaceEditingState.selectedProfileId) {
+    showToast('Сначала выберите channel profile', 'err');
+    return;
+  }
+  workspaceEditingState.busy = true;
+  renderWorkspaceEditingControls();
+  try {
+    const data = await api.post('/api/editing/jobs/plan', {
+      item_keys: itemKeys,
+      channel_profile_id: Number(workspaceEditingState.selectedProfileId),
+      template_id: editingOptionalId(document.getElementById('workspace-editing-template')?.value),
+      reaction_asset_id: editingOptionalId(document.getElementById('workspace-editing-reaction')?.value),
+      force_new: Boolean(document.getElementById('workspace-editing-force-new')?.checked),
+    });
+    showToast(workspaceEditingSummary(data));
+    const skipped = (data.results || []).filter(item => item.status === 'skipped' || item.status === 'error');
+    if (skipped.length) {
+      alert(skipped.slice(0, 20).map(item => `${item.item_key}: ${item.reason}`).join('\n'));
+    }
+    await loadEditingJobs(true);
+  } catch (err) {
+    showToast(err.message || 'Не удалось добавить в очередь монтажа', 'err');
+  } finally {
+    workspaceEditingState.busy = false;
+    renderWorkspaceEditingControls();
+  }
+}
+
 function renderWorkspaceType(item) {
   const cls = item.item_type === 'clip' ? 'workspace-type clip' : 'workspace-type segment';
   return `<span class="${cls}">${esc(workspaceTypeLabel(item))}</span>`;
@@ -933,6 +1040,7 @@ function toggleWorkspaceSelection(key, checked) {
   if (checked) selectedWorkspaceKeys.add(key);
   else selectedWorkspaceKeys.delete(key);
   renderWorkspaceBulkState();
+  renderWorkspaceEditingControls();
 }
 function selectWorkspaceItem(key) {
   workspaceDetailDirty = false;
@@ -946,6 +1054,7 @@ function renderWorkspaceBulkState() {
   document.querySelectorAll('[data-workspace-selected-count]').forEach(el => {
     el.textContent = total ? `Выбрано: ${total}` : '';
   });
+  renderWorkspaceEditingControls();
 }
 function renderWorkspaceListAndDetail() {
   renderClipsTable(getVisibleWorkspaceItems());
@@ -982,6 +1091,7 @@ function selectAllWorkspaceItems() {
 function clearWorkspaceSelection() {
   selectedWorkspaceKeys.clear();
   renderClipsTable(getVisibleWorkspaceItems());
+  renderWorkspaceEditingControls();
 }
 async function refreshWorkspaceList() {
   const data = await api.get('/api/workspace/clips');
@@ -2504,24 +2614,27 @@ function setEditingTab(id, btn) {
   if (btn) btn.classList.add('on');
   document.querySelectorAll('.editing-tab').forEach(item => item.classList.remove('on'));
   document.getElementById('editing-' + id)?.classList.add('on');
+  if (id === 'jobs') loadEditingJobs(true);
 }
 
 async function loadEditingView(options = {}) {
   const {silent = false} = options;
   if (!silent) editingError('');
   try {
-    const [reactionsData, poolsData, templatesData, profilesData, accountsData] = await Promise.all([
+    const [reactionsData, poolsData, templatesData, profilesData, accountsData, jobsData] = await Promise.all([
       api.get('/api/editing/reactions'),
       api.get('/api/editing/reaction-pools'),
       api.get('/api/editing/templates'),
       api.get('/api/editing/channel-profiles'),
       api.get('/api/publish/youtube/accounts'),
+      api.get('/api/editing/jobs?limit=200'),
     ]);
     editingReactions = reactionsData.items || [];
     editingPools = poolsData.items || [];
     editingTemplates = templatesData.items || [];
     editingProfiles = profilesData.items || [];
     editingAccounts = accountsData.accounts || [];
+    editingJobs = jobsData.items || [];
     if (editingReactionId && !editingReactions.some(item => Number(item.id) === Number(editingReactionId))) editingReactionId = null;
     if (editingPoolId && !editingPools.some(item => Number(item.id) === Number(editingPoolId))) editingPoolId = null;
     if (editingTemplateId && !editingTemplates.some(item => Number(item.id) === Number(editingTemplateId))) editingTemplateId = null;
@@ -2541,6 +2654,7 @@ function renderEditingView() {
   renderEditingPoolItems();
   renderEditingTemplates();
   renderEditingProfiles();
+  renderEditingJobs();
   renderEditingSelects();
 }
 
@@ -2906,6 +3020,64 @@ async function disableEditingProfile() {
     selectEditingProfile(editingProfileId);
   } catch (err) {
     editingError(err.message || 'Не удалось отключить profile');
+  }
+}
+
+function getVisibleEditingJobs() {
+  return editingJobFilter === 'all'
+    ? editingJobs
+    : editingJobs.filter(job => job.status === editingJobFilter);
+}
+
+function filterEditingJobs(tab, status) {
+  editingJobFilter = status || 'all';
+  document.querySelectorAll('[data-edit-job-filter]').forEach(item => item.classList.remove('on'));
+  if (tab) tab.classList.add('on');
+  renderEditingJobs();
+}
+
+function renderEditingJobs() {
+  const el = document.getElementById('editing-jobs-list');
+  if (!el) return;
+  const rows = getVisibleEditingJobs();
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">Edit jobs в этом фильтре пока нет.</div>';
+    return;
+  }
+  el.innerHTML = `<div style="overflow:auto"><table class="tbl editing-jobs-table"><thead><tr><th>#</th><th>Workspace</th><th>Profile</th><th>Template</th><th>Reaction</th><th>Статус</th><th>Output</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>${rows.map(job => {
+    const canCancel = ['queued','failed'].includes(job.status);
+    const canRetry = ['failed','cancelled'].includes(job.status);
+    return `<tr><td class="mono dim">#${job.id}</td><td class="mono txt">${esc(job.workspace_item_key)}</td><td class="mono mid">${esc(job.channel_profile_name || `#${job.channel_profile_id || '—'}`)}</td><td><div class="mono txt">${esc(job.template_name || `#${job.template_id || '—'}`)}</div><div class="mono dim">${esc(job.template_key || '')}</div></td><td class="mono mid">${esc(job.reaction_asset_name || 'без реакции')}</td><td>${badge(job.status)}</td><td><span class="mono dim ov" title="${esc(job.output_path || '')}">${esc(shortPath(job.output_path || '—'))}</span></td><td><span class="mono err ov" title="${esc(job.error || '')}">${esc(shortErrorText(job.error || ''))}</span></td><td><div class="row-actions">${canCancel ? `<button class="btn-danger" onclick="cancelEditingJob(${Number(job.id)})">Cancel</button>` : ''}${canRetry ? `<button class="btn-secondary" onclick="retryEditingJob(${Number(job.id)})">Retry</button>` : ''}</div></td></tr>`;
+  }).join('')}</tbody></table></div>`;
+}
+
+async function loadEditingJobs(silent = false) {
+  try {
+    const data = await api.get('/api/editing/jobs?limit=200');
+    editingJobs = data.items || [];
+    renderEditingJobs();
+  } catch (err) {
+    if (!silent) editingError(err.message || 'Не удалось загрузить очередь монтажа');
+  }
+}
+
+async function cancelEditingJob(jobId) {
+  try {
+    await api.post(`/api/editing/jobs/${Number(jobId)}/cancel`, {});
+    showToast(`Edit job #${jobId} отменён`);
+    await loadEditingJobs();
+  } catch (err) {
+    editingError(err.message || `Не удалось отменить edit job #${jobId}`);
+  }
+}
+
+async function retryEditingJob(jobId) {
+  try {
+    await api.post(`/api/editing/jobs/${Number(jobId)}/retry`, {});
+    showToast(`Edit job #${jobId} возвращён в очередь`);
+    await loadEditingJobs();
+  } catch (err) {
+    editingError(err.message || `Не удалось повторить edit job #${jobId}`);
   }
 }
 

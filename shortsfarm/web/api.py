@@ -30,6 +30,7 @@ from ..config import (
     youtube_client_secret,
     youtube_redirect_uri,
 )
+from ..edit_planner import parse_workspace_item_key, plan_edit_jobs_for_workspace_items
 from ..ffmpeg_tools import probe_duration, require_binary
 from ..mpv_session import require_mpv
 from ..publish_youtube import (
@@ -55,6 +56,7 @@ from ..youtube_oauth import YOUTUBE_SCOPES
 from .schemas import (
     ChannelProfileCreateRequest,
     ChannelProfileUpdateRequest,
+    EditJobsPlanRequest,
     EditTemplateUpdateRequest,
     OpenMpvRequest,
     PublishJobRetryRequest,
@@ -335,21 +337,32 @@ def _channel_profile_dict(row: Any) -> dict[str, Any]:
     }
 
 
+def _edit_job_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "status": _row(row, "status", "queued") or "queued",
+        "workspace_item_key": _row(row, "workspace_item_key", "") or "",
+        "channel_profile_id": _row(row, "channel_profile_id"),
+        "channel_profile_name": _row(row, "channel_profile_name", "") or "",
+        "template_id": _row(row, "template_id"),
+        "template_name": _row(row, "template_name", "") or "",
+        "template_key": _row(row, "template_key", "") or "",
+        "reaction_asset_id": _row(row, "reaction_asset_id"),
+        "reaction_asset_name": _row(row, "reaction_asset_name", "") or "",
+        "input_path": _row(row, "input_path"),
+        "output_path": _row(row, "output_path"),
+        "edited_path": _row(row, "edited_path"),
+        "renderer": _row(row, "renderer", "ffmpeg") or "ffmpeg",
+        "recipe_json": _row(row, "recipe_json"),
+        "error": _row(row, "error"),
+        "created_at": _row(row, "created_at"),
+        "started_at": _row(row, "started_at"),
+        "finished_at": _row(row, "finished_at"),
+    }
+
+
 def _parse_workspace_key(value: str) -> tuple[str, int]:
-    text = str(value or "").strip()
-    if ":" not in text:
-        raise ValueError("Workspace item id должен быть в формате segment:1 или clip:1.")
-    item_type, raw_id = text.split(":", 1)
-    item_type = item_type.strip().lower()
-    if item_type not in {"segment", "clip"}:
-        raise ValueError("Workspace item type должен быть segment или clip.")
-    try:
-        item_id = int(raw_id)
-    except ValueError as exc:
-        raise ValueError("Workspace item id должен содержать числовой id.") from exc
-    if item_id <= 0:
-        raise ValueError("Workspace item id должен быть положительным.")
-    return item_type, item_id
+    return parse_workspace_item_key(value)
 
 
 def _workspace_counts(items: list[dict[str, Any]]) -> dict[str, int]:
@@ -2222,6 +2235,77 @@ def editing_channel_profile_disable(profile_id: int) -> dict[str, Any]:
             if int(row["id"]) == profile_id
         )
         return {"item": _channel_profile_dict(row)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/jobs/plan")
+def editing_jobs_plan(req: EditJobsPlanRequest) -> dict[str, Any]:
+    try:
+        _init()
+        if not req.item_keys:
+            raise ValueError("Выберите хотя бы один workspace item.")
+        return plan_edit_jobs_for_workspace_items(
+            req.item_keys,
+            req.channel_profile_id,
+            reaction_asset_id=req.reaction_asset_id,
+            template_id=req.template_id,
+            force_new=req.force_new,
+        )
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/editing/jobs")
+def editing_jobs(status: str | None = None, limit: int = 100) -> dict[str, Any]:
+    try:
+        _init()
+        rows = db.list_edit_jobs_with_details(
+            status=status if status and status != "all" else None,
+            limit=limit,
+        )
+        return {"items": [_edit_job_dict(row) for row in rows], "count": len(rows)}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/jobs/{job_id}/cancel")
+def editing_job_cancel(job_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        job = db.get_edit_job(job_id)
+        if job is None:
+            raise FileNotFoundError("Edit job не найден.")
+        if str(job["status"]) == "rendering":
+            raise ValueError("Нельзя отменить rendering job в этом этапе.")
+        if not db.cancel_edit_job(job_id):
+            raise ValueError("Отменить можно только queued или failed edit job.")
+        row = next(
+            row for row in db.list_edit_jobs_with_details(limit=10000)
+            if int(row["id"]) == job_id
+        )
+        return {"item": _edit_job_dict(row)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/jobs/{job_id}/retry")
+def editing_job_retry(job_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_edit_job(job_id) is None:
+            raise FileNotFoundError("Edit job не найден.")
+        if not db.retry_edit_job(job_id):
+            raise ValueError("Повторить можно только failed или cancelled edit job.")
+        row = next(
+            row for row in db.list_edit_jobs_with_details(limit=10000)
+            if int(row["id"]) == job_id
+        )
+        return {"item": _edit_job_dict(row)}
     except FileNotFoundError as exc:
         raise _fail(exc, status_code=404)
     except Exception as exc:

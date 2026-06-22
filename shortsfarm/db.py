@@ -2859,7 +2859,8 @@ def list_reaction_pool_items_with_assets(pool_id: int) -> list[sqlite3.Row]:
                 ra.file_path,
                 ra.tags,
                 ra.mood,
-                ra.language
+                ra.language,
+                ra.enabled AS asset_enabled
             FROM reaction_pool_items rpi
             JOIN reaction_assets ra ON ra.id=rpi.reaction_asset_id
             WHERE rpi.pool_id=?
@@ -3220,6 +3221,99 @@ def list_edit_jobs(
         ).fetchall()
 
 
+def list_edit_jobs_with_details(
+    status: str | None = None,
+    limit: int = 100,
+) -> list[sqlite3.Row]:
+    if status is not None and status not in EDIT_JOB_STATUSES:
+        raise ValueError(
+            "edit job status must be one of: queued, rendering, done, failed, cancelled."
+        )
+    clauses: list[str] = []
+    params: list[Any] = []
+    if status is not None:
+        clauses.append("ej.status=?")
+        params.append(status)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(int(limit))
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT
+                ej.*,
+                cp.name AS channel_profile_name,
+                et.name AS template_name,
+                et.key AS template_key,
+                ra.name AS reaction_asset_name
+            FROM edit_jobs ej
+            LEFT JOIN channel_profiles cp ON cp.id=ej.channel_profile_id
+            LEFT JOIN edit_templates et ON et.id=ej.template_id
+            LEFT JOIN reaction_assets ra ON ra.id=ej.reaction_asset_id
+            {where}
+            ORDER BY ej.id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+
+def find_existing_edit_job(
+    workspace_item_key: str,
+    channel_profile_id: int,
+    template_id: int,
+    *,
+    include_done: bool = True,
+) -> sqlite3.Row | None:
+    statuses = ("queued", "rendering", "done") if include_done else ("queued", "rendering")
+    placeholders = ",".join("?" for _ in statuses)
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT *
+            FROM edit_jobs
+            WHERE workspace_item_key=?
+              AND channel_profile_id=?
+              AND template_id=?
+              AND status IN ({placeholders})
+            ORDER BY
+                CASE status
+                    WHEN 'rendering' THEN 0
+                    WHEN 'queued' THEN 1
+                    WHEN 'done' THEN 2
+                    ELSE 3
+                END,
+                id DESC
+            LIMIT 1
+            """,
+            (
+                workspace_item_key,
+                int(channel_profile_id),
+                int(template_id),
+                *statuses,
+            ),
+        ).fetchone()
+
+
+def update_edit_job_plan(
+    job_id: int,
+    *,
+    input_path: str | None,
+    output_path: str | None,
+    recipe_json: dict[str, Any] | str | None,
+) -> bool:
+    normalized_recipe = _normalize_recipe_json(recipe_json, required=False)
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE edit_jobs
+            SET input_path=?, output_path=?, recipe_json=?
+            WHERE id=?
+            """,
+            (input_path, output_path, normalized_recipe, int(job_id)),
+        )
+        return result.rowcount > 0
+
+
 def mark_edit_job_rendering(job_id: int) -> bool:
     with connect() as con:
         result = con.execute(
@@ -3265,9 +3359,22 @@ def cancel_edit_job(job_id: int) -> bool:
             """
             UPDATE edit_jobs
             SET status='cancelled', finished_at=?
-            WHERE id=?
+            WHERE id=? AND status IN ('queued', 'failed')
             """,
             (now_utc(), int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def retry_edit_job(job_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE edit_jobs
+            SET status='queued', error=NULL, started_at=NULL, finished_at=NULL
+            WHERE id=? AND status IN ('failed', 'cancelled')
+            """,
+            (int(job_id),),
         )
         return result.rowcount > 0
 
