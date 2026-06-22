@@ -31,6 +31,7 @@ from ..config import (
     youtube_redirect_uri,
 )
 from ..edit_planner import parse_workspace_item_key, plan_edit_jobs_for_workspace_items
+from ..edit_renderer import render_edit_job, run_edit_queue_once
 from ..ffmpeg_tools import probe_duration, require_binary
 from ..mpv_session import require_mpv
 from ..publish_youtube import (
@@ -56,8 +57,11 @@ from ..youtube_oauth import YOUTUBE_SCOPES
 from .schemas import (
     ChannelProfileCreateRequest,
     ChannelProfileUpdateRequest,
+    EditJobRenderRequest,
+    EditJobsBulkRenderRequest,
     EditJobsPlanRequest,
     EditTemplateUpdateRequest,
+    EditWorkerRunOnceRequest,
     OpenMpvRequest,
     PublishJobRetryRequest,
     PublishJobRunRequest,
@@ -2267,6 +2271,98 @@ def editing_jobs(status: str | None = None, limit: int = 100) -> dict[str, Any]:
             limit=limit,
         )
         return {"items": [_edit_job_dict(row) for row in rows], "count": len(rows)}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/jobs/bulk-render")
+def editing_jobs_bulk_render(req: EditJobsBulkRenderRequest) -> dict[str, Any]:
+    try:
+        _init()
+        if not req.job_ids:
+            raise ValueError("Выберите хотя бы один edit job.")
+
+        results: list[dict[str, Any]] = []
+        summary = {"processed": 0, "skipped": 0, "errors": 0}
+        seen: set[int] = set()
+        for raw_job_id in req.job_ids:
+            job_id = int(raw_job_id)
+            if job_id in seen:
+                continue
+            seen.add(job_id)
+            try:
+                current = db.get_edit_job(job_id)
+                if current is None:
+                    raise FileNotFoundError(f"Edit job {job_id} не найден.")
+                current_status = str(current["status"])
+                runnable = (
+                    current_status == "queued"
+                    or (
+                        req.force
+                        and current_status in {"done", "failed", "cancelled"}
+                    )
+                )
+                if not runnable:
+                    summary["skipped"] += 1
+                    results.append({
+                        "job_id": job_id,
+                        "status": "skipped",
+                        "reason": (
+                            "Job уже rendering."
+                            if current_status == "rendering"
+                            else f"Для status={current_status} требуется force=true."
+                        ),
+                    })
+                    continue
+
+                rendered = render_edit_job(job_id, force=req.force)
+                summary["processed"] += 1
+                results.append({
+                    "job_id": job_id,
+                    "status": str(rendered["status"]),
+                    "job": _edit_job_dict(rendered),
+                })
+            except Exception as exc:
+                summary["errors"] += 1
+                failed = db.get_edit_job(job_id)
+                results.append({
+                    "job_id": job_id,
+                    "status": "error",
+                    "error": str(exc) or exc.__class__.__name__,
+                    "job": _edit_job_dict(failed) if failed is not None else None,
+                })
+        return {"status": "ok", "summary": summary, "results": results}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/worker/run-once")
+def editing_worker_run_once(
+    req: EditWorkerRunOnceRequest | None = None,
+) -> dict[str, Any]:
+    try:
+        _init()
+        rows = run_edit_queue_once(limit=req.limit if req else 1)
+        return {
+            "status": "ok",
+            "jobs": [_edit_job_dict(row) for row in rows],
+            "processed": len(rows),
+        }
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/jobs/{job_id}/render")
+def editing_job_render(
+    job_id: int,
+    req: EditJobRenderRequest | None = None,
+) -> dict[str, Any]:
+    try:
+        _init()
+        rendered = render_edit_job(job_id, force=bool(req.force) if req else False)
+        return {"status": "ok", "job": _edit_job_dict(rendered)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
     except Exception as exc:
         raise _fail(exc)
 

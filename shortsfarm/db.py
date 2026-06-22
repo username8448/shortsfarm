@@ -3314,6 +3314,91 @@ def update_edit_job_plan(
         return result.rowcount > 0
 
 
+def _claim_edit_job_where(
+    where_sql: str,
+    params: tuple[Any, ...],
+    *,
+    order_by: str = "",
+) -> sqlite3.Row | None:
+    ensure_dirs()
+    con = sqlite3.connect(str(db_path()), isolation_level=None)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode = WAL")
+    now = now_utc()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            f"""
+            SELECT *
+            FROM edit_jobs
+            WHERE {where_sql}
+            {order_by}
+            LIMIT 1
+            """,
+            params,
+        ).fetchone()
+        if row is None:
+            con.execute("COMMIT")
+            return None
+
+        result = con.execute(
+            """
+            UPDATE edit_jobs
+            SET status='rendering',
+                edited_path=NULL,
+                error=NULL,
+                started_at=?,
+                finished_at=NULL
+            WHERE id=? AND status=?
+            """,
+            (now, int(row["id"]), str(row["status"])),
+        )
+        if result.rowcount == 0:
+            con.execute("COMMIT")
+            return None
+
+        updated = con.execute(
+            "SELECT * FROM edit_jobs WHERE id=?",
+            (int(row["id"]),),
+        ).fetchone()
+        con.execute("COMMIT")
+        return updated
+    except Exception:
+        try:
+            con.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        con.close()
+
+
+def claim_edit_job(
+    job_id: int,
+    *,
+    allowed_statuses: tuple[str, ...] = ("queued",),
+) -> sqlite3.Row | None:
+    if not allowed_statuses:
+        return None
+    invalid = set(allowed_statuses) - EDIT_JOB_STATUSES
+    if invalid:
+        raise ValueError(f"Unknown edit job statuses: {', '.join(sorted(invalid))}")
+    placeholders = ",".join("?" for _ in allowed_statuses)
+    return _claim_edit_job_where(
+        f"id=? AND status IN ({placeholders})",
+        (int(job_id), *allowed_statuses),
+    )
+
+
+def claim_next_edit_job() -> sqlite3.Row | None:
+    return _claim_edit_job_where(
+        "status='queued'",
+        (),
+        order_by="ORDER BY created_at ASC, id ASC",
+    )
+
+
 def mark_edit_job_rendering(job_id: int) -> bool:
     with connect() as con:
         result = con.execute(

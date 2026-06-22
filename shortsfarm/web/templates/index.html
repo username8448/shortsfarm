@@ -502,7 +502,11 @@
             <span>Очередь монтажа</span>
             <div class="row-actions">
               <button class="btn-mini" onclick="loadEditingJobs()">Обновить</button>
-              <button class="btn-secondary" disabled>Рендер будет добавлен следующим этапом</button>
+              <button class="btn-mini" onclick="runEditingWorker(1)">Рендер 1</button>
+              <button class="btn-mini" onclick="runEditingWorker(3)">Рендер 3</button>
+              <button class="btn-primary" onclick="renderSelectedEditingJobs()">Рендер выбранных</button>
+              <button class="btn-secondary" onclick="retryFailedEditingJobs()">Повторить failed</button>
+              <button class="btn-danger" onclick="cancelSelectedEditingJobs()">Отменить selected</button>
             </div>
           </div>
           <div class="tabs compact-tabs editing-jobs-tabs">

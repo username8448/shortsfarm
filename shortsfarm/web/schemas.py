@@ -271,3 +271,16 @@ class EditJobsPlanRequest(BaseModel):
     template_id: int | None = None
     reaction_asset_id: int | None = None
     force_new: bool = False
+
+
+class EditJobRenderRequest(BaseModel):
+    force: bool = False
+
+
+class EditWorkerRunOnceRequest(BaseModel):
+    limit: int = Field(default=1, gt=0)
+
+
+class EditJobsBulkRenderRequest(BaseModel):
+    job_ids: list[int] = Field(default_factory=list)
+    force: bool = False

@@ -250,6 +250,7 @@ let editingPoolItems = [];
 let editingAccounts = [];
 let editingJobs = [];
 let editingJobFilter = 'all';
+let selectedEditingJobIds = new Set();
 let editingReactionId = null;
 let editingPoolId = null;
 let editingTemplateId = null;
@@ -3036,19 +3037,61 @@ function filterEditingJobs(tab, status) {
   renderEditingJobs();
 }
 
+function toggleEditingJobSelection(jobId, checked) {
+  const id = Number(jobId);
+  if (checked) selectedEditingJobIds.add(id);
+  else selectedEditingJobIds.delete(id);
+  renderEditingJobSelectionState();
+}
+
+function toggleAllVisibleEditingJobs(checked) {
+  getVisibleEditingJobs().forEach(job => {
+    const id = Number(job.id);
+    if (checked) selectedEditingJobIds.add(id);
+    else selectedEditingJobIds.delete(id);
+  });
+  renderEditingJobs();
+}
+
+function renderEditingJobSelectionState() {
+  document.querySelectorAll('[data-editing-selected-count]').forEach(el => {
+    el.textContent = selectedEditingJobIds.size
+      ? `Выбрано edit jobs: ${selectedEditingJobIds.size}`
+      : '';
+  });
+}
+
+function selectedEditingJobs() {
+  return Array.from(selectedEditingJobIds)
+    .map(id => editingJobs.find(job => Number(job.id) === Number(id)))
+    .filter(Boolean);
+}
+
 function renderEditingJobs() {
   const el = document.getElementById('editing-jobs-list');
   if (!el) return;
   const rows = getVisibleEditingJobs();
+  selectedEditingJobIds = new Set(
+    Array.from(selectedEditingJobIds)
+      .filter(id => editingJobs.some(job => Number(job.id) === Number(id)))
+  );
   if (!rows.length) {
     el.innerHTML = '<div class="empty">Edit jobs в этом фильтре пока нет.</div>';
     return;
   }
-  el.innerHTML = `<div style="overflow:auto"><table class="tbl editing-jobs-table"><thead><tr><th>#</th><th>Workspace</th><th>Profile</th><th>Template</th><th>Reaction</th><th>Статус</th><th>Output</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>${rows.map(job => {
+  const allVisibleSelected = rows.every(job => selectedEditingJobIds.has(Number(job.id)));
+  el.innerHTML = `<div class="workspace-selected-line mono dim" data-editing-selected-count></div><div style="overflow:auto"><table class="tbl editing-jobs-table"><thead><tr><th><input type="checkbox" ${allVisibleSelected ? 'checked' : ''} onchange="toggleAllVisibleEditingJobs(this.checked)"></th><th>#</th><th>Workspace</th><th>Profile</th><th>Template</th><th>Reaction</th><th>Статус</th><th>Output</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>${rows.map(job => {
+    const selected = selectedEditingJobIds.has(Number(job.id));
     const canCancel = ['queued','failed'].includes(job.status);
     const canRetry = ['failed','cancelled'].includes(job.status);
-    return `<tr><td class="mono dim">#${job.id}</td><td class="mono txt">${esc(job.workspace_item_key)}</td><td class="mono mid">${esc(job.channel_profile_name || `#${job.channel_profile_id || '—'}`)}</td><td><div class="mono txt">${esc(job.template_name || `#${job.template_id || '—'}`)}</div><div class="mono dim">${esc(job.template_key || '')}</div></td><td class="mono mid">${esc(job.reaction_asset_name || 'без реакции')}</td><td>${badge(job.status)}</td><td><span class="mono dim ov" title="${esc(job.output_path || '')}">${esc(shortPath(job.output_path || '—'))}</span></td><td><span class="mono err ov" title="${esc(job.error || '')}">${esc(shortErrorText(job.error || ''))}</span></td><td><div class="row-actions">${canCancel ? `<button class="btn-danger" onclick="cancelEditingJob(${Number(job.id)})">Cancel</button>` : ''}${canRetry ? `<button class="btn-secondary" onclick="retryEditingJob(${Number(job.id)})">Retry</button>` : ''}</div></td></tr>`;
+    const canRender = job.status === 'queued';
+    const canForceRender = ['failed','cancelled'].includes(job.status);
+    const finalPath = job.edited_path
+      ? `<div>${badge('done')} <span class="mono txt ov" title="${esc(job.edited_path)}">${esc(shortPath(job.edited_path))}</span></div>`
+      : '';
+    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="toggleEditingJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td class="mono txt">${esc(job.workspace_item_key)}</td><td class="mono mid">${esc(job.channel_profile_name || `#${job.channel_profile_id || '—'}`)}</td><td><div class="mono txt">${esc(job.template_name || `#${job.template_id || '—'}`)}</div><div class="mono dim">${esc(job.template_key || '')}</div></td><td class="mono mid">${esc(job.reaction_asset_name || 'без реакции')}</td><td>${badge(job.status)}</td><td><span class="mono dim ov" title="${esc(job.output_path || '')}">${esc(shortPath(job.output_path || '—'))}</span>${finalPath}</td><td><span class="mono err ov" title="${esc(job.error || '')}">${esc(shortErrorText(job.error || ''))}</span></td><td><div class="row-actions">${canRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)})">Render</button>` : ''}${canForceRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)}, true)">Force render</button>` : ''}${canCancel ? `<button class="btn-danger" onclick="cancelEditingJob(${Number(job.id)})">Cancel</button>` : ''}${canRetry ? `<button class="btn-secondary" onclick="retryEditingJob(${Number(job.id)})">Retry</button>` : ''}</div></td></tr>`;
   }).join('')}</tbody></table></div>`;
+  renderEditingJobSelectionState();
 }
 
 async function loadEditingJobs(silent = false) {
@@ -3079,6 +3122,84 @@ async function retryEditingJob(jobId) {
   } catch (err) {
     editingError(err.message || `Не удалось повторить edit job #${jobId}`);
   }
+}
+
+async function renderEditingJob(jobId, force = false) {
+  try {
+    await api.post(`/api/editing/jobs/${Number(jobId)}/render`, {force: Boolean(force)});
+    showToast(`Edit job #${jobId} отрендерен`);
+    await loadEditingJobs(true);
+  } catch (err) {
+    editingError(err.message || `Не удалось отрендерить edit job #${jobId}`);
+    await loadEditingJobs(true);
+  }
+}
+
+async function runEditingWorker(limit) {
+  try {
+    const data = await api.post('/api/editing/worker/run-once', {limit: Number(limit)});
+    const failed = (data.jobs || []).filter(job => job.status === 'failed').length;
+    showToast(
+      `Обработано edit jobs: ${data.processed || 0}${failed ? `, ошибок: ${failed}` : ''}`,
+      failed ? 'err' : 'ok'
+    );
+    await loadEditingJobs(true);
+  } catch (err) {
+    editingError(err.message || 'Не удалось запустить edit worker');
+  }
+}
+
+async function renderSelectedEditingJobs() {
+  const jobs = selectedEditingJobs();
+  if (!jobs.length) {
+    editingError('Выберите edit jobs для рендера.');
+    return;
+  }
+  try {
+    const data = await api.post('/api/editing/jobs/bulk-render', {
+      job_ids: jobs.map(job => Number(job.id)),
+      force: false,
+    });
+    const summary = data.summary || {};
+    showToast(
+      `Рендер: ${summary.processed || 0}, пропущено: ${summary.skipped || 0}, ошибок: ${summary.errors || 0}`,
+      summary.errors ? 'err' : 'ok'
+    );
+    await loadEditingJobs(true);
+  } catch (err) {
+    editingError(err.message || 'Не удалось отрендерить выбранные edit jobs');
+  }
+}
+
+async function retryFailedEditingJobs() {
+  const selected = selectedEditingJobs().filter(job => ['failed','cancelled'].includes(job.status));
+  const jobs = selected.length
+    ? selected
+    : getVisibleEditingJobs().filter(job => ['failed','cancelled'].includes(job.status));
+  if (!jobs.length) {
+    editingError('Нет failed или cancelled edit jobs для повтора.');
+    return;
+  }
+  const results = await Promise.allSettled(
+    jobs.map(job => api.post(`/api/editing/jobs/${Number(job.id)}/retry`, {}))
+  );
+  const errors = results.filter(result => result.status === 'rejected').length;
+  showToast(`Возвращено в очередь: ${results.length - errors}, ошибок: ${errors}`, errors ? 'err' : 'ok');
+  await loadEditingJobs(true);
+}
+
+async function cancelSelectedEditingJobs() {
+  const jobs = selectedEditingJobs().filter(job => ['queued','failed'].includes(job.status));
+  if (!jobs.length) {
+    editingError('Выберите queued или failed edit jobs для отмены.');
+    return;
+  }
+  const results = await Promise.allSettled(
+    jobs.map(job => api.post(`/api/editing/jobs/${Number(job.id)}/cancel`, {}))
+  );
+  const errors = results.filter(result => result.status === 'rejected').length;
+  showToast(`Отменено: ${results.length - errors}, ошибок: ${errors}`, errors ? 'err' : 'ok');
+  await loadEditingJobs(true);
 }
 
 async function loadOutputs() {
