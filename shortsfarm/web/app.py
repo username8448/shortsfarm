@@ -24,21 +24,21 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
-    context = {"request": request, "asset_version": ASSET_VERSION}
-    headers = {"Cache-Control": "no-store"}
-    try:
-        return templates.TemplateResponse(
-            request=request,
-            name="index.html",
-            context=context,
-            headers=headers,
-        )
-    except TypeError:
-        return templates.TemplateResponse(
-            "index.html",
-            context,
-            headers=headers,
-        )
+        context = {"request": request, "asset_version": ASSET_VERSION}
+        headers = {"Cache-Control": "no-store"}
+        try:
+            return templates.TemplateResponse(
+                request=request,
+                name="index.html",
+                context=context,
+                headers=headers,
+            )
+        except TypeError:
+            return templates.TemplateResponse(
+                "index.html",
+                context,
+                headers=headers,
+            )
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> FileResponse:
