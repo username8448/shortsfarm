@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import secrets
+import sqlite3
 import subprocess
 from collections import Counter, OrderedDict
 from datetime import datetime, timezone
@@ -52,12 +53,21 @@ from ..services import (
 )
 from ..youtube_oauth import YOUTUBE_SCOPES
 from .schemas import (
+    ChannelProfileCreateRequest,
+    ChannelProfileUpdateRequest,
+    EditTemplateUpdateRequest,
     OpenMpvRequest,
     PublishJobRetryRequest,
     PublishJobRunRequest,
     PublishJobsBulkRequest,
     PublishScheduleGroupRequest,
     PublishWorkerRunOnceRequest,
+    ReactionAssetCreateRequest,
+    ReactionAssetUpdateRequest,
+    ReactionFolderImportRequest,
+    ReactionPoolCreateRequest,
+    ReactionPoolItemRequest,
+    ReactionPoolUpdateRequest,
     RenderRequest,
     RetryFailedRequest,
     SplitRequest,
@@ -233,6 +243,95 @@ def _clip_dict(row: Any) -> dict[str, Any]:
         "output_path": _row(row, "output_path", "") or "",
         "temp_path": _row(row, "temp_path", "") or "",
         "error": _row(row, "error", "") or "",
+    }
+
+
+def _request_updates(req: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    supplied = getattr(req, "model_fields_set", None)
+    if supplied is None:
+        supplied = getattr(req, "__fields_set__", set())
+    return {field: getattr(req, field) for field in fields if field in supplied}
+
+
+def _reaction_asset_dict(row: Any) -> dict[str, Any]:
+    file_path = str(_row(row, "file_path", "") or "")
+    return {
+        "id": int(row["id"]),
+        "name": _row(row, "name", "") or "",
+        "file_path": file_path,
+        "duration_sec": _row(row, "duration_sec"),
+        "tags": _row(row, "tags"),
+        "mood": _row(row, "mood"),
+        "language": _row(row, "language"),
+        "enabled": bool(_row(row, "enabled", 1)),
+        "file_exists": bool(file_path and Path(file_path).expanduser().exists()),
+        "created_at": _row(row, "created_at"),
+        "updated_at": _row(row, "updated_at"),
+    }
+
+
+def _reaction_pool_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "name": _row(row, "name", "") or "",
+        "description": _row(row, "description"),
+        "enabled": bool(_row(row, "enabled", 1)),
+        "item_count": int(_row(row, "item_count", 0) or 0),
+        "created_at": _row(row, "created_at"),
+        "updated_at": _row(row, "updated_at"),
+    }
+
+
+def _reaction_pool_item_dict(row: Any) -> dict[str, Any]:
+    file_path = str(_row(row, "file_path", "") or "")
+    return {
+        "item_id": int(row["item_id"]),
+        "pool_id": int(row["pool_id"]),
+        "reaction_asset_id": int(row["reaction_asset_id"]),
+        "weight": int(_row(row, "weight", 1)),
+        "enabled": bool(_row(row, "enabled", 1)),
+        "asset_name": _row(row, "asset_name", "") or "",
+        "file_path": file_path,
+        "tags": _row(row, "tags"),
+        "mood": _row(row, "mood"),
+        "language": _row(row, "language"),
+        "file_exists": bool(file_path and Path(file_path).expanduser().exists()),
+    }
+
+
+def _edit_template_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "key": _row(row, "key", "") or "",
+        "name": _row(row, "name", "") or "",
+        "description": _row(row, "description"),
+        "renderer": _row(row, "renderer", "ffmpeg") or "ffmpeg",
+        "recipe_json": _row(row, "recipe_json", "") or "",
+        "enabled": bool(_row(row, "enabled", 1)),
+        "created_at": _row(row, "created_at"),
+        "updated_at": _row(row, "updated_at"),
+    }
+
+
+def _channel_profile_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "name": _row(row, "name", "") or "",
+        "youtube_account_id": _row(row, "youtube_account_id"),
+        "youtube_channel_title": _row(row, "youtube_channel_title", "") or "",
+        "youtube_display_name": _row(row, "youtube_display_name", "") or "",
+        "default_template_id": _row(row, "default_template_id"),
+        "default_template_name": _row(row, "default_template_name", "") or "",
+        "reaction_pool_id": _row(row, "reaction_pool_id"),
+        "reaction_pool_name": _row(row, "reaction_pool_name", "") or "",
+        "title_template": _row(row, "title_template"),
+        "description_template": _row(row, "description_template"),
+        "tags_template": _row(row, "tags_template"),
+        "default_privacy": _row(row, "default_privacy"),
+        "default_category_id": _row(row, "default_category_id"),
+        "enabled": bool(_row(row, "enabled", 1)),
+        "created_at": _row(row, "created_at"),
+        "updated_at": _row(row, "updated_at"),
     }
 
 
@@ -1724,6 +1823,407 @@ def publish_worker_run_once(req: PublishWorkerRunOnceRequest | None = None) -> d
             "jobs": [_publish_job_dict(row) for row in rows if row is not None],
             "processed": len(rows),
         }
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/editing/reactions")
+def editing_reactions(
+    enabled: bool | None = None,
+    q: str | None = None,
+) -> dict[str, Any]:
+    try:
+        _init()
+        items = [_reaction_asset_dict(row) for row in db.list_reaction_assets(enabled=enabled)]
+        query = str(q or "").strip().casefold()
+        if query:
+            fields = ("name", "tags", "mood", "language", "file_path")
+            items = [
+                item for item in items
+                if any(query in str(item.get(field) or "").casefold() for field in fields)
+            ]
+        return {"items": items, "count": len(items)}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/reactions")
+def editing_reaction_create(req: ReactionAssetCreateRequest) -> dict[str, Any]:
+    try:
+        _init()
+        name = str(req.name or "").strip()
+        file_path = str(req.file_path or "").strip()
+        if not name:
+            raise ValueError("Название реакции обязательно.")
+        if not file_path:
+            raise ValueError("Путь к файлу реакции обязателен.")
+        asset_id = db.create_reaction_asset(
+            name=name,
+            file_path=file_path,
+            duration_sec=req.duration_sec,
+            tags=req.tags,
+            mood=req.mood,
+            language=req.language,
+            enabled=req.enabled,
+        )
+        return {"item": _reaction_asset_dict(db.get_reaction_asset(asset_id))}
+    except sqlite3.IntegrityError as exc:
+        if "file_path" in str(exc):
+            raise _fail(ValueError("Реакция с таким file_path уже существует."))
+        raise _fail(exc)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.patch("/editing/reactions/{asset_id}")
+def editing_reaction_update(
+    asset_id: int,
+    req: ReactionAssetUpdateRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        updates = _request_updates(
+            req,
+            ("name", "file_path", "duration_sec", "tags", "mood", "language", "enabled"),
+        )
+        if "name" in updates and not str(updates["name"] or "").strip():
+            raise ValueError("Название реакции обязательно.")
+        if "file_path" in updates and not str(updates["file_path"] or "").strip():
+            raise ValueError("Путь к файлу реакции обязателен.")
+        ok = db.update_reaction_asset(asset_id, **updates)
+        if not ok:
+            raise FileNotFoundError("Reaction asset не найден.")
+        return {"item": _reaction_asset_dict(db.get_reaction_asset(asset_id))}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except sqlite3.IntegrityError as exc:
+        if "file_path" in str(exc):
+            raise _fail(ValueError("Реакция с таким file_path уже существует."))
+        raise _fail(exc)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/reactions/{asset_id}/disable")
+def editing_reaction_disable(asset_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if not db.disable_reaction_asset(asset_id):
+            raise FileNotFoundError("Reaction asset не найден.")
+        return {"item": _reaction_asset_dict(db.get_reaction_asset(asset_id))}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/reactions/import-folder")
+def editing_reactions_import_folder(req: ReactionFolderImportRequest) -> dict[str, Any]:
+    try:
+        _init()
+        folder = Path(str(req.folder_path or "")).expanduser().resolve()
+        if not folder.exists():
+            raise FileNotFoundError(f"Папка не найдена: {folder}")
+        if not folder.is_dir():
+            raise ValueError(f"Это не папка: {folder}")
+        extensions = {".mp4", ".mov", ".mkv", ".webm"}
+        candidates = folder.rglob("*") if req.recursive else folder.iterdir()
+        files = sorted(
+            path.resolve()
+            for path in candidates
+            if path.is_file() and path.suffix.lower() in extensions
+        )
+        existing_paths = {
+            str(row["file_path"])
+            for row in db.list_reaction_assets()
+        }
+        created = 0
+        skipped = 0
+        errors = 0
+        items: list[dict[str, Any]] = []
+        for path in files:
+            file_path = str(path)
+            if file_path in existing_paths:
+                skipped += 1
+                continue
+            try:
+                asset_id = db.create_reaction_asset(
+                    name=path.stem,
+                    file_path=file_path,
+                    tags=req.tags,
+                    mood=req.mood,
+                    language=req.language,
+                )
+                item = _reaction_asset_dict(db.get_reaction_asset(asset_id))
+                items.append(item)
+                existing_paths.add(file_path)
+                created += 1
+            except sqlite3.IntegrityError:
+                skipped += 1
+            except Exception as exc:
+                errors += 1
+                items.append({"file_path": file_path, "error": str(exc) or exc.__class__.__name__})
+        return {
+            "created": created,
+            "skipped": skipped,
+            "errors": errors,
+            "items": items,
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/editing/reaction-pools")
+def editing_reaction_pools(enabled: bool | None = None) -> dict[str, Any]:
+    try:
+        _init()
+        items = [
+            _reaction_pool_dict(row)
+            for row in db.list_reaction_pools_with_counts(enabled=enabled)
+        ]
+        return {"items": items, "count": len(items)}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/reaction-pools")
+def editing_reaction_pool_create(req: ReactionPoolCreateRequest) -> dict[str, Any]:
+    try:
+        _init()
+        name = str(req.name or "").strip()
+        if not name:
+            raise ValueError("Название пула обязательно.")
+        pool_id = db.create_reaction_pool(
+            name=name,
+            description=req.description,
+            enabled=req.enabled,
+        )
+        row = next(
+            row for row in db.list_reaction_pools_with_counts()
+            if int(row["id"]) == pool_id
+        )
+        return {"item": _reaction_pool_dict(row)}
+    except sqlite3.IntegrityError:
+        raise _fail(ValueError("Пул с таким названием уже существует."))
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.patch("/editing/reaction-pools/{pool_id}")
+def editing_reaction_pool_update(
+    pool_id: int,
+    req: ReactionPoolUpdateRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        updates = _request_updates(req, ("name", "description", "enabled"))
+        if "name" in updates and not str(updates["name"] or "").strip():
+            raise ValueError("Название пула обязательно.")
+        if not db.update_reaction_pool(pool_id, **updates):
+            raise FileNotFoundError("Reaction pool не найден.")
+        row = next(
+            row for row in db.list_reaction_pools_with_counts()
+            if int(row["id"]) == pool_id
+        )
+        return {"item": _reaction_pool_dict(row)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except sqlite3.IntegrityError:
+        raise _fail(ValueError("Пул с таким названием уже существует."))
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/reaction-pools/{pool_id}/items")
+def editing_reaction_pool_item_add(
+    pool_id: int,
+    req: ReactionPoolItemRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_reaction_pool(pool_id) is None:
+            raise FileNotFoundError("Reaction pool не найден.")
+        if db.get_reaction_asset(req.reaction_asset_id) is None:
+            raise FileNotFoundError("Reaction asset не найден.")
+        db.upsert_reaction_pool_item(pool_id, req.reaction_asset_id, req.weight)
+        items = [
+            _reaction_pool_item_dict(row)
+            for row in db.list_reaction_pool_items_with_assets(pool_id)
+        ]
+        return {"items": items}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/editing/reaction-pools/{pool_id}/items")
+def editing_reaction_pool_items(pool_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_reaction_pool(pool_id) is None:
+            raise FileNotFoundError("Reaction pool не найден.")
+        items = [
+            _reaction_pool_item_dict(row)
+            for row in db.list_reaction_pool_items_with_assets(pool_id)
+        ]
+        return {"items": items, "count": len(items)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.delete("/editing/reaction-pools/{pool_id}/items/{reaction_asset_id}")
+def editing_reaction_pool_item_delete(
+    pool_id: int,
+    reaction_asset_id: int,
+) -> dict[str, Any]:
+    try:
+        _init()
+        if not db.remove_reaction_from_pool(pool_id, reaction_asset_id):
+            raise FileNotFoundError("Reaction asset не найден в этом пуле.")
+        return {"status": "ok"}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/editing/templates")
+def editing_templates(enabled: bool | None = None) -> dict[str, Any]:
+    try:
+        _init()
+        items = [_edit_template_dict(row) for row in db.list_edit_templates(enabled=enabled)]
+        return {"items": items, "count": len(items)}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/templates/ensure-defaults")
+def editing_templates_ensure_defaults() -> dict[str, Any]:
+    try:
+        _init()
+        item = db.ensure_default_edit_templates()
+        return {"item": _edit_template_dict(item)}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.patch("/editing/templates/{template_id}")
+def editing_template_update(
+    template_id: int,
+    req: EditTemplateUpdateRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        updates = _request_updates(
+            req,
+            ("name", "description", "renderer", "recipe_json", "enabled"),
+        )
+        if "name" in updates and not str(updates["name"] or "").strip():
+            raise ValueError("Название шаблона обязательно.")
+        if "renderer" in updates and not str(updates["renderer"] or "").strip():
+            raise ValueError("Renderer обязателен.")
+        if not db.update_edit_template(template_id, **updates):
+            raise FileNotFoundError("Edit template не найден.")
+        return {"item": _edit_template_dict(db.get_edit_template(template_id))}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/editing/channel-profiles")
+def editing_channel_profiles(enabled: bool | None = None) -> dict[str, Any]:
+    try:
+        _init()
+        items = [
+            _channel_profile_dict(row)
+            for row in db.list_channel_profiles_with_details(enabled=enabled)
+        ]
+        return {"items": items, "count": len(items)}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/channel-profiles")
+def editing_channel_profile_create(req: ChannelProfileCreateRequest) -> dict[str, Any]:
+    try:
+        _init()
+        name = str(req.name or "").strip()
+        if not name:
+            raise ValueError("Название профиля канала обязательно.")
+        profile_id = db.create_channel_profile(
+            name=name,
+            youtube_account_id=req.youtube_account_id,
+            default_template_id=req.default_template_id,
+            reaction_pool_id=req.reaction_pool_id,
+            title_template=req.title_template,
+            description_template=req.description_template,
+            tags_template=req.tags_template,
+            default_privacy=req.default_privacy,
+            default_category_id=req.default_category_id,
+            enabled=req.enabled,
+        )
+        row = next(
+            row for row in db.list_channel_profiles_with_details()
+            if int(row["id"]) == profile_id
+        )
+        return {"item": _channel_profile_dict(row)}
+    except sqlite3.IntegrityError as exc:
+        raise _fail(ValueError(f"Не удалось связать профиль: {exc}"))
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.patch("/editing/channel-profiles/{profile_id}")
+def editing_channel_profile_update(
+    profile_id: int,
+    req: ChannelProfileUpdateRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        updates = _request_updates(
+            req,
+            (
+                "name", "youtube_account_id", "default_template_id",
+                "reaction_pool_id", "title_template", "description_template",
+                "tags_template", "default_privacy", "default_category_id", "enabled",
+            ),
+        )
+        if "name" in updates and not str(updates["name"] or "").strip():
+            raise ValueError("Название профиля канала обязательно.")
+        if not db.update_channel_profile(profile_id, **updates):
+            raise FileNotFoundError("Channel profile не найден.")
+        row = next(
+            row for row in db.list_channel_profiles_with_details()
+            if int(row["id"]) == profile_id
+        )
+        return {"item": _channel_profile_dict(row)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except sqlite3.IntegrityError as exc:
+        raise _fail(ValueError(f"Не удалось связать профиль: {exc}"))
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/editing/channel-profiles/{profile_id}/disable")
+def editing_channel_profile_disable(profile_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if not db.disable_channel_profile(profile_id):
+            raise FileNotFoundError("Channel profile не найден.")
+        row = next(
+            row for row in db.list_channel_profiles_with_details()
+            if int(row["id"]) == profile_id
+        )
+        return {"item": _channel_profile_dict(row)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
     except Exception as exc:
         raise _fail(exc)
 

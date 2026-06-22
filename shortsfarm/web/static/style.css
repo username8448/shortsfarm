@@ -355,6 +355,25 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .pub-tab.on { display: block; }
 .settings-tab { display: none; }
 .settings-tab.on { display: block; }
+.editing-tab { display: none; }
+.editing-tab.on { display: block; }
+.editing-layout {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.1fr) minmax(360px, .9fr);
+  gap: 14px;
+  align-items: start;
+}
+.editing-side { min-width: 0; }
+.editing-layout .box { margin-bottom: 14px; }
+.editing-list-row { cursor: pointer; }
+.editing-list-row.active td { background: rgba(59,130,246,.16); }
+.editing-wide-form { max-width: none; }
+.recipe-editor { min-height: 360px; tab-size: 2; }
+.compact-input { width: 180px !important; padding: 5px 8px !important; }
+.editing-path {
+  display: block; max-width: 330px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
 .settings-form { max-width: 760px; }
 .hint-box {
   margin-bottom: 18px; padding: 12px 13px;
@@ -613,6 +632,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 @media (max-width: 1080px) {
   .publish-grid,
   .settings-grid,
+  .editing-layout,
   .field-grid,
   .workspace-layout,
   .workspace-prepare-panel,

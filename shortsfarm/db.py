@@ -2727,6 +2727,60 @@ def list_reaction_pools(enabled: bool | None = None) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def update_reaction_pool(
+    pool_id: int,
+    *,
+    name: Any = _UNSET,
+    description: Any = _UNSET,
+    enabled: Any = _UNSET,
+) -> bool:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM reaction_pools WHERE id=?",
+            (int(pool_id),),
+        ).fetchone()
+        if row is None:
+            return False
+        enabled_value = row["enabled"] if enabled is _UNSET else (1 if enabled else 0)
+        con.execute(
+            """
+            UPDATE reaction_pools
+            SET name=?, description=?, enabled=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                _updated_value(row, "name", name),
+                _updated_value(row, "description", description),
+                enabled_value,
+                now_utc(),
+                int(pool_id),
+            ),
+        )
+        return True
+
+
+def list_reaction_pools_with_counts(enabled: bool | None = None) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if enabled is not None:
+        clauses.append("rp.enabled=?")
+        params.append(1 if enabled else 0)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT rp.*, COUNT(rpi.id) AS item_count
+            FROM reaction_pools rp
+            LEFT JOIN reaction_pool_items rpi
+              ON rpi.pool_id=rp.id AND rpi.enabled=1
+            {where}
+            GROUP BY rp.id
+            ORDER BY rp.id ASC
+            """,
+            params,
+        ).fetchall()
+
+
 def add_reaction_to_pool(
     pool_id: int,
     reaction_asset_id: int,
@@ -2744,6 +2798,39 @@ def add_reaction_to_pool(
         return int(cur.lastrowid)
 
 
+def upsert_reaction_pool_item(
+    pool_id: int,
+    reaction_asset_id: int,
+    weight: int = 1,
+) -> int:
+    normalized_weight = int(weight)
+    if normalized_weight <= 0:
+        raise ValueError("Reaction pool item weight must be greater than zero.")
+    with connect() as con:
+        con.execute(
+            """
+            INSERT INTO reaction_pool_items
+                (pool_id, reaction_asset_id, weight, enabled, created_at)
+            VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(pool_id, reaction_asset_id) DO UPDATE SET
+                weight=excluded.weight,
+                enabled=1
+            """,
+            (int(pool_id), int(reaction_asset_id), normalized_weight, now_utc()),
+        )
+        row = con.execute(
+            """
+            SELECT id
+            FROM reaction_pool_items
+            WHERE pool_id=? AND reaction_asset_id=?
+            """,
+            (int(pool_id), int(reaction_asset_id)),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Reaction pool item was saved but cannot be loaded.")
+        return int(row["id"])
+
+
 def list_reaction_pool_items(pool_id: int) -> list[sqlite3.Row]:
     with connect() as con:
         return con.execute(
@@ -2752,6 +2839,31 @@ def list_reaction_pool_items(pool_id: int) -> list[sqlite3.Row]:
             FROM reaction_pool_items
             WHERE pool_id=?
             ORDER BY id ASC
+            """,
+            (int(pool_id),),
+        ).fetchall()
+
+
+def list_reaction_pool_items_with_assets(pool_id: int) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT
+                rpi.id AS item_id,
+                rpi.pool_id,
+                rpi.reaction_asset_id,
+                rpi.weight,
+                rpi.enabled,
+                rpi.created_at,
+                ra.name AS asset_name,
+                ra.file_path,
+                ra.tags,
+                ra.mood,
+                ra.language
+            FROM reaction_pool_items rpi
+            JOIN reaction_assets ra ON ra.id=rpi.reaction_asset_id
+            WHERE rpi.pool_id=?
+            ORDER BY rpi.id ASC
             """,
             (int(pool_id),),
         ).fetchall()
@@ -2955,6 +3067,33 @@ def list_channel_profiles(enabled: bool | None = None) -> list[sqlite3.Row]:
         return con.execute(
             "SELECT * FROM channel_profiles WHERE enabled=? ORDER BY id ASC",
             (1 if enabled else 0,),
+        ).fetchall()
+
+
+def list_channel_profiles_with_details(enabled: bool | None = None) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if enabled is not None:
+        clauses.append("cp.enabled=?")
+        params.append(1 if enabled else 0)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT
+                cp.*,
+                sa.channel_title AS youtube_channel_title,
+                sa.display_name AS youtube_display_name,
+                et.name AS default_template_name,
+                rp.name AS reaction_pool_name
+            FROM channel_profiles cp
+            LEFT JOIN social_accounts sa ON sa.id=cp.youtube_account_id
+            LEFT JOIN edit_templates et ON et.id=cp.default_template_id
+            LEFT JOIN reaction_pools rp ON rp.id=cp.reaction_pool_id
+            {where}
+            ORDER BY cp.id ASC
+            """,
+            params,
         ).fetchall()
 
 

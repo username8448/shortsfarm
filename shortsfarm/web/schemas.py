@@ -184,3 +184,82 @@ class PublishScheduleGroupRequest(BaseModel):
 
 class PublishWorkerRunOnceRequest(BaseModel):
     limit: int = Field(default=3, gt=0)
+
+
+class ReactionAssetCreateRequest(BaseModel):
+    name: str
+    file_path: str
+    duration_sec: float | None = None
+    tags: str | None = None
+    mood: str | None = None
+    language: str | None = None
+    enabled: bool = True
+
+
+class ReactionAssetUpdateRequest(BaseModel):
+    name: str | None = None
+    file_path: str | None = None
+    duration_sec: float | None = None
+    tags: str | None = None
+    mood: str | None = None
+    language: str | None = None
+    enabled: bool | None = None
+
+
+class ReactionFolderImportRequest(BaseModel):
+    folder_path: str
+    recursive: bool = True
+    tags: str | None = None
+    mood: str | None = None
+    language: str | None = None
+
+
+class ReactionPoolCreateRequest(BaseModel):
+    name: str
+    description: str | None = None
+    enabled: bool = True
+
+
+class ReactionPoolUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+
+
+class ReactionPoolItemRequest(BaseModel):
+    reaction_asset_id: int
+    weight: int = Field(default=1, gt=0)
+
+
+class EditTemplateUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    renderer: str | None = None
+    recipe_json: dict | str | None = None
+    enabled: bool | None = None
+
+
+class ChannelProfileCreateRequest(BaseModel):
+    name: str
+    youtube_account_id: int | None = None
+    default_template_id: int | None = None
+    reaction_pool_id: int | None = None
+    title_template: str | None = None
+    description_template: str | None = None
+    tags_template: str | None = None
+    default_privacy: str | None = None
+    default_category_id: str | None = None
+    enabled: bool = True
+
+
+class ChannelProfileUpdateRequest(BaseModel):
+    name: str | None = None
+    youtube_account_id: int | None = None
+    default_template_id: int | None = None
+    reaction_pool_id: int | None = None
+    title_template: str | None = None
+    description_template: str | None = None
+    tags_template: str | None = None
+    default_privacy: str | None = None
+    default_category_id: str | None = None
+    enabled: bool | None = None

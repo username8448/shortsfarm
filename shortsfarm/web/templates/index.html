@@ -26,6 +26,7 @@
       <button class="nb" data-v="videos" onclick="nav('videos', this)"><i class="ti ti-video"></i><span>Видео</span><span id="nav-videos" class="badge-pill" style="background:var(--s2);color:var(--mid);"></span></button>
       <button class="nb" data-v="clips" onclick="nav('clips', this)"><i class="ti ti-player-play"></i><span>Клипы</span><span id="nav-clips" class="badge-pill" style="background:var(--warn-bg);color:var(--warn);"></span></button>
       <button class="nb" data-v="publish" onclick="nav('publish', this)"><i class="ti ti-upload"></i><span>Публикация</span></button>
+      <button class="nb" data-v="editing" onclick="nav('editing', this)"><i class="ti ti-layout-collage"></i><span>Монтаж</span></button>
       <button class="nb" data-v="settings" onclick="nav('settings', this)"><i class="ti ti-settings"></i><span>Настройки</span></button>
     </nav>
 
@@ -345,6 +346,136 @@
 
       <div id="pub-templates" class="pub-tab">
         <div class="box"><div class="box-head">Шаблоны</div><div class="empty">Шаблоны title/description появятся следующим шагом.</div></div>
+      </div>
+    </div>
+
+    <div id="v-editing" class="v">
+      <div class="ph"><h1>Монтаж</h1><p>реакции, пулы, JSON-шаблоны и профили каналов — без запуска рендера</p></div>
+      <div class="tabs">
+        <button class="tab on" data-editing-tab="reactions" onclick="setEditingTab('reactions', this)">Реакции</button>
+        <button class="tab" data-editing-tab="pools" onclick="setEditingTab('pools', this)">Пулы реакций</button>
+        <button class="tab" data-editing-tab="templates" onclick="setEditingTab('templates', this)">Шаблоны</button>
+        <button class="tab" data-editing-tab="profiles" onclick="setEditingTab('profiles', this)">Профили каналов</button>
+      </div>
+      <div id="editing-error" class="err-line" style="display:none;margin-bottom:10px"></div>
+
+      <div id="editing-reactions" class="editing-tab on">
+        <div class="editing-layout">
+          <div class="box">
+            <div class="box-head"><span>Reaction assets</span><div class="row-actions"><input id="editing-reaction-search" class="compact-input" type="text" placeholder="Поиск" oninput="renderEditingReactions()"><button class="btn-secondary" onclick="newEditingReaction()">Добавить реакцию</button></div></div>
+            <div id="editing-reactions-list"></div>
+          </div>
+          <div class="editing-side">
+            <div class="box">
+              <div class="box-head"><span id="editing-reaction-title">Новая реакция</span></div>
+              <div class="form-body">
+                <div class="field"><label class="field-lbl">Название</label><input id="editing-reaction-name" type="text"></div>
+                <div class="field"><label class="field-lbl">Путь к файлу</label><input id="editing-reaction-path" type="text" placeholder="/path/to/reaction.mp4"></div>
+                <div class="field-grid">
+                  <div class="field"><label class="field-lbl">Теги</label><input id="editing-reaction-tags" type="text"></div>
+                  <div class="field"><label class="field-lbl">Mood</label><input id="editing-reaction-mood" type="text"></div>
+                </div>
+                <div class="field"><label class="field-lbl">Язык</label><input id="editing-reaction-language" type="text" placeholder="ru"></div>
+                <div class="toggles"><label class="toggle-label"><input id="editing-reaction-enabled" type="checkbox" checked> Активна</label></div>
+                <div class="action-row"><button class="btn-primary" onclick="saveEditingReaction()">Сохранить</button><button class="btn-danger" id="editing-reaction-disable" style="display:none" onclick="disableEditingReaction()">Отключить</button></div>
+              </div>
+            </div>
+            <div class="box">
+              <div class="box-head">Импорт папки</div>
+              <div class="form-body">
+                <div class="field"><label class="field-lbl">Папка</label><input id="editing-import-folder" type="text" placeholder="/path/to/reactions"></div>
+                <div class="field-grid">
+                  <div class="field"><label class="field-lbl">Теги</label><input id="editing-import-tags" type="text" value="reaction"></div>
+                  <div class="field"><label class="field-lbl">Mood</label><input id="editing-import-mood" type="text"></div>
+                </div>
+                <div class="field"><label class="field-lbl">Язык</label><input id="editing-import-language" type="text" value="ru"></div>
+                <div class="toggles"><label class="toggle-label"><input id="editing-import-recursive" type="checkbox" checked> Включая вложенные папки</label></div>
+                <button class="btn-secondary" onclick="importEditingReactions()">Импортировать папку</button>
+                <div id="editing-import-result" class="settings-meta"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="editing-pools" class="editing-tab">
+        <div class="editing-layout">
+          <div class="box">
+            <div class="box-head"><span>Пулы реакций</span><button class="btn-secondary" onclick="newEditingPool()">Создать pool</button></div>
+            <div id="editing-pools-list"></div>
+          </div>
+          <div class="editing-side">
+            <div class="box">
+              <div class="box-head"><span id="editing-pool-title">Новый pool</span></div>
+              <div class="form-body">
+                <div class="field"><label class="field-lbl">Название</label><input id="editing-pool-name" type="text"></div>
+                <div class="field"><label class="field-lbl">Описание</label><textarea id="editing-pool-description" rows="3"></textarea></div>
+                <div class="toggles"><label class="toggle-label"><input id="editing-pool-enabled" type="checkbox" checked> Активен</label></div>
+                <button class="btn-primary" onclick="saveEditingPool()">Сохранить pool</button>
+              </div>
+            </div>
+            <div class="box">
+              <div class="box-head">Элементы pool</div>
+              <div class="form-body">
+                <div class="field-grid">
+                  <div class="field"><label class="field-lbl">Reaction asset</label><select id="editing-pool-asset"></select></div>
+                  <div class="field"><label class="field-lbl">Weight</label><input id="editing-pool-weight" type="number" min="1" value="1"></div>
+                </div>
+                <button class="btn-secondary" id="editing-pool-add-item" onclick="addEditingPoolItem()">Добавить / обновить</button>
+              </div>
+              <div id="editing-pool-items"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="editing-templates" class="editing-tab">
+        <div class="editing-layout">
+          <div class="box">
+            <div class="box-head"><span>Edit templates</span><button class="btn-secondary" onclick="ensureEditingTemplates()">Создать стандартные шаблоны</button></div>
+            <div id="editing-templates-list"></div>
+          </div>
+          <div class="box">
+            <div class="box-head"><span id="editing-template-title">Выберите шаблон</span></div>
+            <div class="form-body editing-wide-form">
+              <div class="field"><label class="field-lbl">Название</label><input id="editing-template-name" type="text"></div>
+              <div class="field"><label class="field-lbl">Описание</label><textarea id="editing-template-description" rows="3"></textarea></div>
+              <div class="field"><label class="field-lbl">Renderer</label><input id="editing-template-renderer" type="text" value="ffmpeg"></div>
+              <div class="toggles"><label class="toggle-label"><input id="editing-template-enabled" type="checkbox"> Активен</label></div>
+              <div class="field"><label class="field-lbl">recipe_json</label><textarea id="editing-template-recipe" class="recipe-editor" spellcheck="false"></textarea></div>
+              <button class="btn-primary" id="editing-template-save" onclick="saveEditingTemplate()">Сохранить шаблон</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="editing-profiles" class="editing-tab">
+        <div class="editing-layout">
+          <div class="box">
+            <div class="box-head"><span>Профили каналов</span><button class="btn-secondary" onclick="newEditingProfile()">Создать profile</button></div>
+            <div id="editing-profiles-list"></div>
+          </div>
+          <div class="box">
+            <div class="box-head"><span id="editing-profile-title">Новый profile</span></div>
+            <div class="form-body editing-wide-form">
+              <div class="field"><label class="field-lbl">Название</label><input id="editing-profile-name" type="text"></div>
+              <div class="field"><label class="field-lbl">YouTube account</label><select id="editing-profile-account"></select></div>
+              <div class="field-grid">
+                <div class="field"><label class="field-lbl">Default template</label><select id="editing-profile-template"></select></div>
+                <div class="field"><label class="field-lbl">Reaction pool</label><select id="editing-profile-pool"></select></div>
+              </div>
+              <div class="field"><label class="field-lbl">Title template</label><input id="editing-profile-title-template" type="text" placeholder="{title} #shorts"></div>
+              <div class="field"><label class="field-lbl">Description template</label><textarea id="editing-profile-description-template" rows="3"></textarea></div>
+              <div class="field"><label class="field-lbl">Tags template</label><input id="editing-profile-tags-template" type="text" placeholder="shorts,funny,reaction"></div>
+              <div class="field-grid">
+                <div class="field"><label class="field-lbl">Privacy</label><select id="editing-profile-privacy"><option value="">Не задано</option><option value="private">private</option><option value="unlisted">unlisted</option><option value="public">public</option></select></div>
+                <div class="field"><label class="field-lbl">Category ID</label><input id="editing-profile-category" type="text" value="22"></div>
+              </div>
+              <div class="toggles"><label class="toggle-label"><input id="editing-profile-enabled" type="checkbox" checked> Активен</label></div>
+              <div class="action-row"><button class="btn-primary" onclick="saveEditingProfile()">Сохранить profile</button><button class="btn-danger" id="editing-profile-disable" style="display:none" onclick="disableEditingProfile()">Отключить</button></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 

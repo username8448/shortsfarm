@@ -146,6 +146,7 @@ function ruStatus(value) {
     ok:'готово',
     preview:'план',
     active:'активен',
+    disabled:'отключён',
     disconnected:'отключён',
     expired:'истёк',
     error:'ошибка'
@@ -239,6 +240,17 @@ let publishBatchSize = 3;
 let editingPublishScheduleGroupId = null;
 let editingPublishScheduleJobIds = [];
 let editingPublishScheduleInitial = null;
+let currentEditingTab = 'reactions';
+let editingReactions = [];
+let editingPools = [];
+let editingTemplates = [];
+let editingProfiles = [];
+let editingPoolItems = [];
+let editingAccounts = [];
+let editingReactionId = null;
+let editingPoolId = null;
+let editingTemplateId = null;
+let editingProfileId = null;
 const workspaceYoutubeState = {
   selectedAccountId: null,
   busy: false,
@@ -277,6 +289,7 @@ function nav(id, btn) {
   if (id === 'videos') loadVideos();
   if (id === 'clips') loadClips();
   if (id === 'publish') loadPublishView();
+  if (id === 'editing') loadEditingView();
   if (id === 'settings') loadSettingsView();
 }
 
@@ -2474,6 +2487,426 @@ function handleOAuthEvent(payload) {
   }
   loadSettingsView({silent: true});
   loadPublishView({silent: true});
+}
+
+function editingError(message = '') {
+  if (message) showInlineError('editing-error', message);
+  else hideInlineError('editing-error');
+}
+
+function editingOptionalId(value) {
+  return value ? Number(value) : null;
+}
+
+function setEditingTab(id, btn) {
+  currentEditingTab = id;
+  document.querySelectorAll('[data-editing-tab]').forEach(item => item.classList.remove('on'));
+  if (btn) btn.classList.add('on');
+  document.querySelectorAll('.editing-tab').forEach(item => item.classList.remove('on'));
+  document.getElementById('editing-' + id)?.classList.add('on');
+}
+
+async function loadEditingView(options = {}) {
+  const {silent = false} = options;
+  if (!silent) editingError('');
+  try {
+    const [reactionsData, poolsData, templatesData, profilesData, accountsData] = await Promise.all([
+      api.get('/api/editing/reactions'),
+      api.get('/api/editing/reaction-pools'),
+      api.get('/api/editing/templates'),
+      api.get('/api/editing/channel-profiles'),
+      api.get('/api/publish/youtube/accounts'),
+    ]);
+    editingReactions = reactionsData.items || [];
+    editingPools = poolsData.items || [];
+    editingTemplates = templatesData.items || [];
+    editingProfiles = profilesData.items || [];
+    editingAccounts = accountsData.accounts || [];
+    if (editingReactionId && !editingReactions.some(item => Number(item.id) === Number(editingReactionId))) editingReactionId = null;
+    if (editingPoolId && !editingPools.some(item => Number(item.id) === Number(editingPoolId))) editingPoolId = null;
+    if (editingTemplateId && !editingTemplates.some(item => Number(item.id) === Number(editingTemplateId))) editingTemplateId = null;
+    if (editingProfileId && !editingProfiles.some(item => Number(item.id) === Number(editingProfileId))) editingProfileId = null;
+    if (!editingPoolId && editingPools.length) editingPoolId = Number(editingPools[0].id);
+    if (editingPoolId) await loadEditingPoolItems(editingPoolId, true);
+    else editingPoolItems = [];
+    renderEditingView();
+  } catch (err) {
+    if (!silent) editingError(err.message || 'Не удалось загрузить настройки монтажа');
+  }
+}
+
+function renderEditingView() {
+  renderEditingReactions();
+  renderEditingPools();
+  renderEditingPoolItems();
+  renderEditingTemplates();
+  renderEditingProfiles();
+  renderEditingSelects();
+}
+
+function renderEditingReactions() {
+  const el = document.getElementById('editing-reactions-list');
+  if (!el) return;
+  const query = document.getElementById('editing-reaction-search')?.value.trim().toLowerCase() || '';
+  const rows = editingReactions.filter(item => !query || ['name','tags','mood','language','file_path'].some(field => String(item[field] || '').toLowerCase().includes(query)));
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">Reaction assets пока нет.</div>';
+    return;
+  }
+  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Название / файл</th><th>Теги</th><th>Состояние</th></tr></thead><tbody>${rows.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingReactionId) ? 'active' : ''}" onclick="selectEditingReaction(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><span class="editing-path mono dim" title="${esc(item.file_path)}">${esc(shortPath(item.file_path))}</span></td><td class="mono dim">${esc(item.tags || '—')}<br>${esc([item.mood,item.language].filter(Boolean).join(' · ') || '')}</td><td><div class="status-stack">${badge(item.enabled ? 'active' : 'disabled')}${badge(item.file_exists ? 'ok' : 'error')}</div></td></tr>`).join('')}</tbody></table>`;
+}
+
+function newEditingReaction() {
+  editingReactionId = null;
+  document.getElementById('editing-reaction-title').textContent = 'Новая реакция';
+  ['editing-reaction-name','editing-reaction-path','editing-reaction-tags','editing-reaction-mood','editing-reaction-language'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  document.getElementById('editing-reaction-enabled').checked = true;
+  document.getElementById('editing-reaction-disable').style.display = 'none';
+  renderEditingReactions();
+}
+
+function selectEditingReaction(assetId) {
+  const item = editingReactions.find(row => Number(row.id) === Number(assetId));
+  if (!item) return;
+  editingReactionId = Number(item.id);
+  document.getElementById('editing-reaction-title').textContent = `Reaction #${item.id}`;
+  document.getElementById('editing-reaction-name').value = item.name || '';
+  document.getElementById('editing-reaction-path').value = item.file_path || '';
+  document.getElementById('editing-reaction-tags').value = item.tags || '';
+  document.getElementById('editing-reaction-mood').value = item.mood || '';
+  document.getElementById('editing-reaction-language').value = item.language || '';
+  document.getElementById('editing-reaction-enabled').checked = Boolean(item.enabled);
+  document.getElementById('editing-reaction-disable').style.display = item.enabled ? 'inline-flex' : 'none';
+  renderEditingReactions();
+}
+
+async function saveEditingReaction() {
+  editingError('');
+  const wasExisting = Boolean(editingReactionId);
+  const body = {
+    name: document.getElementById('editing-reaction-name')?.value.trim() || '',
+    file_path: document.getElementById('editing-reaction-path')?.value.trim() || '',
+    tags: document.getElementById('editing-reaction-tags')?.value.trim() || null,
+    mood: document.getElementById('editing-reaction-mood')?.value.trim() || null,
+    language: document.getElementById('editing-reaction-language')?.value.trim() || null,
+    enabled: Boolean(document.getElementById('editing-reaction-enabled')?.checked),
+  };
+  try {
+    const data = editingReactionId
+      ? await api.patch(`/api/editing/reactions/${editingReactionId}`, body)
+      : await api.post('/api/editing/reactions', body);
+    editingReactionId = Number(data.item.id);
+    showToast(wasExisting ? 'Сохранено' : 'Создано');
+    await loadEditingView({silent: true});
+    selectEditingReaction(editingReactionId);
+  } catch (err) {
+    editingError(err.message || 'Не удалось сохранить реакцию');
+  }
+}
+
+async function disableEditingReaction() {
+  if (!editingReactionId) return;
+  try {
+    await api.post(`/api/editing/reactions/${editingReactionId}/disable`, {});
+    showToast('Реакция отключена');
+    await loadEditingView({silent: true});
+    selectEditingReaction(editingReactionId);
+  } catch (err) {
+    editingError(err.message || 'Не удалось отключить реакцию');
+  }
+}
+
+async function importEditingReactions() {
+  editingError('');
+  try {
+    const data = await api.post('/api/editing/reactions/import-folder', {
+      folder_path: document.getElementById('editing-import-folder')?.value.trim() || '',
+      recursive: Boolean(document.getElementById('editing-import-recursive')?.checked),
+      tags: document.getElementById('editing-import-tags')?.value.trim() || null,
+      mood: document.getElementById('editing-import-mood')?.value.trim() || null,
+      language: document.getElementById('editing-import-language')?.value.trim() || null,
+    });
+    document.getElementById('editing-import-result').textContent = `Создано: ${data.created} · пропущено: ${data.skipped} · ошибок: ${data.errors}`;
+    showToast(`Импортировано: ${data.created}`);
+    await loadEditingView({silent: true});
+  } catch (err) {
+    editingError(err.message || 'Не удалось импортировать папку');
+  }
+}
+
+function renderEditingPools() {
+  const el = document.getElementById('editing-pools-list');
+  if (!el) return;
+  if (!editingPools.length) {
+    el.innerHTML = '<div class="empty">Пулы реакций пока не созданы.</div>';
+    return;
+  }
+  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Название</th><th>Items</th><th>Статус</th></tr></thead><tbody>${editingPools.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingPoolId) ? 'active' : ''}" onclick="selectEditingPool(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.description || '')}</div></td><td class="mono txt">${item.item_count || 0}</td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function newEditingPool() {
+  editingPoolId = null;
+  editingPoolItems = [];
+  document.getElementById('editing-pool-title').textContent = 'Новый pool';
+  document.getElementById('editing-pool-name').value = '';
+  document.getElementById('editing-pool-description').value = '';
+  document.getElementById('editing-pool-enabled').checked = true;
+  renderEditingPools();
+  renderEditingPoolItems();
+}
+
+async function selectEditingPool(poolId) {
+  const item = editingPools.find(row => Number(row.id) === Number(poolId));
+  if (!item) return;
+  editingPoolId = Number(item.id);
+  document.getElementById('editing-pool-title').textContent = `Pool #${item.id}`;
+  document.getElementById('editing-pool-name').value = item.name || '';
+  document.getElementById('editing-pool-description').value = item.description || '';
+  document.getElementById('editing-pool-enabled').checked = Boolean(item.enabled);
+  await loadEditingPoolItems(editingPoolId);
+  renderEditingPools();
+}
+
+async function loadEditingPoolItems(poolId, silent = false) {
+  try {
+    const data = await api.get(`/api/editing/reaction-pools/${Number(poolId)}/items`);
+    editingPoolItems = data.items || [];
+    renderEditingPoolItems();
+  } catch (err) {
+    editingPoolItems = [];
+    if (!silent) editingError(err.message || 'Не удалось загрузить элементы pool');
+  }
+}
+
+async function saveEditingPool() {
+  editingError('');
+  const body = {
+    name: document.getElementById('editing-pool-name')?.value.trim() || '',
+    description: document.getElementById('editing-pool-description')?.value.trim() || null,
+    enabled: Boolean(document.getElementById('editing-pool-enabled')?.checked),
+  };
+  try {
+    const data = editingPoolId
+      ? await api.patch(`/api/editing/reaction-pools/${editingPoolId}`, body)
+      : await api.post('/api/editing/reaction-pools', body);
+    editingPoolId = Number(data.item.id);
+    showToast('Pool сохранён');
+    await loadEditingView({silent: true});
+    await selectEditingPool(editingPoolId);
+  } catch (err) {
+    editingError(err.message || 'Не удалось сохранить pool');
+  }
+}
+
+function renderEditingSelects() {
+  const assetSelect = document.getElementById('editing-pool-asset');
+  if (assetSelect) assetSelect.innerHTML = `<option value="">Выберите reaction asset</option>${editingReactions.filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}${item.file_exists ? '' : ' · missing'}</option>`).join('')}`;
+  const accountSelect = document.getElementById('editing-profile-account');
+  if (accountSelect) accountSelect.innerHTML = `<option value="">Без YouTube account</option>${editingAccounts.filter(item => item.status === 'active').map(item => `<option value="${item.id}">${esc(item.channel_title || item.display_name || `Account #${item.id}`)}</option>`).join('')}`;
+  const templateSelect = document.getElementById('editing-profile-template');
+  if (templateSelect) templateSelect.innerHTML = `<option value="">Без default template</option>${editingTemplates.map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
+  const poolSelect = document.getElementById('editing-profile-pool');
+  if (poolSelect) poolSelect.innerHTML = `<option value="">Без reaction pool</option>${editingPools.map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
+}
+
+function renderEditingPoolItems() {
+  const el = document.getElementById('editing-pool-items');
+  const addBtn = document.getElementById('editing-pool-add-item');
+  if (addBtn) addBtn.disabled = !editingPoolId;
+  if (!el) return;
+  if (!editingPoolId) {
+    el.innerHTML = '<div class="empty">Сначала выберите или создайте pool.</div>';
+    return;
+  }
+  if (!editingPoolItems.length) {
+    el.innerHTML = '<div class="empty">В этом pool пока нет реакций.</div>';
+    return;
+  }
+  el.innerHTML = `<table class="tbl"><thead><tr><th>Reaction</th><th>Weight</th><th>Файл</th><th></th></tr></thead><tbody>${editingPoolItems.map(item => `<tr><td><div class="mono txt">${esc(item.asset_name)}</div><div class="mono dim">${esc(item.tags || '')}</div></td><td class="mono txt">${item.weight}</td><td>${badge(item.file_exists ? 'ok' : 'error')}</td><td><button class="btn-danger" onclick="removeEditingPoolItem(${Number(item.reaction_asset_id)})">Удалить</button></td></tr>`).join('')}</tbody></table>`;
+}
+
+async function addEditingPoolItem() {
+  if (!editingPoolId) return;
+  const assetId = editingOptionalId(document.getElementById('editing-pool-asset')?.value);
+  if (!assetId) {
+    editingError('Выберите reaction asset.');
+    return;
+  }
+  try {
+    const data = await api.post(`/api/editing/reaction-pools/${editingPoolId}/items`, {
+      reaction_asset_id: assetId,
+      weight: Number(document.getElementById('editing-pool-weight')?.value) || 1,
+    });
+    editingPoolItems = data.items || [];
+    showToast('Reaction добавлена в pool');
+    await loadEditingView({silent: true});
+  } catch (err) {
+    editingError(err.message || 'Не удалось добавить reaction в pool');
+  }
+}
+
+async function removeEditingPoolItem(assetId) {
+  if (!editingPoolId) return;
+  try {
+    await api.del(`/api/editing/reaction-pools/${editingPoolId}/items/${Number(assetId)}`);
+    showToast('Reaction удалена из pool');
+    await loadEditingView({silent: true});
+  } catch (err) {
+    editingError(err.message || 'Не удалось удалить reaction из pool');
+  }
+}
+
+function renderEditingTemplates() {
+  const el = document.getElementById('editing-templates-list');
+  if (!el) return;
+  if (!editingTemplates.length) {
+    el.innerHTML = '<div class="empty">Шаблонов пока нет. Создайте стандартные шаблоны.</div>';
+    return;
+  }
+  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Key / название</th><th>Renderer</th><th>Статус</th></tr></thead><tbody>${editingTemplates.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingTemplateId) ? 'active' : ''}" onclick="selectEditingTemplate(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.key)}</div></td><td class="mono txt">${esc(item.renderer)}</td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function selectEditingTemplate(templateId) {
+  const item = editingTemplates.find(row => Number(row.id) === Number(templateId));
+  if (!item) return;
+  editingTemplateId = Number(item.id);
+  document.getElementById('editing-template-title').textContent = `${item.name} · ${item.key}`;
+  document.getElementById('editing-template-name').value = item.name || '';
+  document.getElementById('editing-template-description').value = item.description || '';
+  document.getElementById('editing-template-renderer').value = item.renderer || 'ffmpeg';
+  document.getElementById('editing-template-enabled').checked = Boolean(item.enabled);
+  let recipe = item.recipe_json || '';
+  try { recipe = JSON.stringify(JSON.parse(recipe), null, 2); } catch {}
+  document.getElementById('editing-template-recipe').value = recipe;
+  document.getElementById('editing-template-save').disabled = false;
+  renderEditingTemplates();
+}
+
+async function ensureEditingTemplates() {
+  try {
+    const data = await api.post('/api/editing/templates/ensure-defaults', {});
+    editingTemplateId = Number(data.item.id);
+    showToast('Стандартные шаблоны готовы');
+    await loadEditingView({silent: true});
+    selectEditingTemplate(editingTemplateId);
+  } catch (err) {
+    editingError(err.message || 'Не удалось создать стандартные шаблоны');
+  }
+}
+
+async function saveEditingTemplate() {
+  if (!editingTemplateId) {
+    editingError('Сначала выберите шаблон.');
+    return;
+  }
+  const rawRecipe = document.getElementById('editing-template-recipe')?.value || '';
+  try {
+    JSON.parse(rawRecipe);
+  } catch (err) {
+    editingError(`Некорректный JSON: ${err.message}`);
+    return;
+  }
+  try {
+    await api.patch(`/api/editing/templates/${editingTemplateId}`, {
+      name: document.getElementById('editing-template-name')?.value.trim() || '',
+      description: document.getElementById('editing-template-description')?.value || null,
+      renderer: document.getElementById('editing-template-renderer')?.value.trim() || '',
+      recipe_json: rawRecipe,
+      enabled: Boolean(document.getElementById('editing-template-enabled')?.checked),
+    });
+    showToast('Сохранено');
+    await loadEditingView({silent: true});
+    selectEditingTemplate(editingTemplateId);
+  } catch (err) {
+    editingError(err.message || 'Не удалось сохранить шаблон');
+  }
+}
+
+function renderEditingProfiles() {
+  const el = document.getElementById('editing-profiles-list');
+  if (!el) return;
+  if (!editingProfiles.length) {
+    el.innerHTML = '<div class="empty">Профилей каналов пока нет.</div>';
+    return;
+  }
+  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Профиль / канал</th><th>Template / pool</th><th>Статус</th></tr></thead><tbody>${editingProfiles.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingProfileId) ? 'active' : ''}" onclick="selectEditingProfile(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.youtube_channel_title || item.youtube_display_name || 'без YouTube account')}</div></td><td><div class="mono dim">${esc(item.default_template_name || 'без template')}</div><div class="mono dim">${esc(item.reaction_pool_name || 'без pool')}</div></td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function newEditingProfile() {
+  editingProfileId = null;
+  document.getElementById('editing-profile-title').textContent = 'Новый profile';
+  ['editing-profile-name','editing-profile-title-template','editing-profile-description-template','editing-profile-tags-template'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  document.getElementById('editing-profile-account').value = '';
+  document.getElementById('editing-profile-template').value = '';
+  document.getElementById('editing-profile-pool').value = '';
+  document.getElementById('editing-profile-privacy').value = '';
+  document.getElementById('editing-profile-category').value = '22';
+  document.getElementById('editing-profile-enabled').checked = true;
+  document.getElementById('editing-profile-disable').style.display = 'none';
+  renderEditingProfiles();
+}
+
+function selectEditingProfile(profileId) {
+  const item = editingProfiles.find(row => Number(row.id) === Number(profileId));
+  if (!item) return;
+  editingProfileId = Number(item.id);
+  document.getElementById('editing-profile-title').textContent = `Profile #${item.id}`;
+  document.getElementById('editing-profile-name').value = item.name || '';
+  document.getElementById('editing-profile-account').value = item.youtube_account_id || '';
+  document.getElementById('editing-profile-template').value = item.default_template_id || '';
+  document.getElementById('editing-profile-pool').value = item.reaction_pool_id || '';
+  document.getElementById('editing-profile-title-template').value = item.title_template || '';
+  document.getElementById('editing-profile-description-template').value = item.description_template || '';
+  document.getElementById('editing-profile-tags-template').value = item.tags_template || '';
+  document.getElementById('editing-profile-privacy').value = item.default_privacy || '';
+  document.getElementById('editing-profile-category').value = item.default_category_id || '';
+  document.getElementById('editing-profile-enabled').checked = Boolean(item.enabled);
+  document.getElementById('editing-profile-disable').style.display = item.enabled ? 'inline-flex' : 'none';
+  renderEditingProfiles();
+}
+
+async function saveEditingProfile() {
+  editingError('');
+  const wasExisting = Boolean(editingProfileId);
+  const body = {
+    name: document.getElementById('editing-profile-name')?.value.trim() || '',
+    youtube_account_id: editingOptionalId(document.getElementById('editing-profile-account')?.value),
+    default_template_id: editingOptionalId(document.getElementById('editing-profile-template')?.value),
+    reaction_pool_id: editingOptionalId(document.getElementById('editing-profile-pool')?.value),
+    title_template: document.getElementById('editing-profile-title-template')?.value || null,
+    description_template: document.getElementById('editing-profile-description-template')?.value || null,
+    tags_template: document.getElementById('editing-profile-tags-template')?.value || null,
+    default_privacy: document.getElementById('editing-profile-privacy')?.value || null,
+    default_category_id: document.getElementById('editing-profile-category')?.value.trim() || null,
+    enabled: Boolean(document.getElementById('editing-profile-enabled')?.checked),
+  };
+  try {
+    const data = editingProfileId
+      ? await api.patch(`/api/editing/channel-profiles/${editingProfileId}`, body)
+      : await api.post('/api/editing/channel-profiles', body);
+    editingProfileId = Number(data.item.id);
+    showToast(wasExisting ? 'Сохранено' : 'Создано');
+    await loadEditingView({silent: true});
+    selectEditingProfile(editingProfileId);
+  } catch (err) {
+    editingError(err.message || 'Не удалось сохранить profile');
+  }
+}
+
+async function disableEditingProfile() {
+  if (!editingProfileId) return;
+  try {
+    await api.post(`/api/editing/channel-profiles/${editingProfileId}/disable`, {});
+    showToast('Profile отключён');
+    await loadEditingView({silent: true});
+    selectEditingProfile(editingProfileId);
+  } catch (err) {
+    editingError(err.message || 'Не удалось отключить profile');
+  }
 }
 
 async function loadOutputs() {
