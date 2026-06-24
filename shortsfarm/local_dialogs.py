@@ -65,7 +65,11 @@ def _pick_with_tkinter(title: str) -> str | None:
     return _normalize_selected_path(selected)
 
 
-def _pick_with_command(command: list[str]) -> str | None:
+def _pick_with_command(
+    command: list[str],
+    *,
+    cancel_codes: tuple[int, ...] = (1,),
+) -> str | None:
     try:
         result = subprocess.run(
             command,
@@ -75,7 +79,7 @@ def _pick_with_command(command: list[str]) -> str | None:
         )
     except OSError as exc:
         raise _DialogBackendUnavailable from exc
-    if result.returncode == 1:
+    if result.returncode in cancel_codes:
         return None
     if result.returncode != 0:
         raise _DialogBackendUnavailable(
@@ -118,6 +122,22 @@ def pick_directory_dialog(
                 "--getexistingdirectory",
                 str(Path.home()),
             ])
+        except _DialogBackendUnavailable:
+            pass
+
+    yad = shutil.which("yad")
+    if yad:
+        try:
+            return _pick_with_command(
+                [
+                    yad,
+                    "--file",
+                    "--directory",
+                    f"--title={title}",
+                    f"--filename={Path.home()}/",
+                ],
+                cancel_codes=(1, 252),
+            )
         except _DialogBackendUnavailable:
             pass
 
