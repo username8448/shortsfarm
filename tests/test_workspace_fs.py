@@ -218,6 +218,66 @@ def test_register_source_only_adds_video_record(tmp_path, monkeypatch):
     assert list((root / "cuts").iterdir()) == []
 
 
+@pytest.mark.parametrize("folder", ["cuts", "prepared", "edits"])
+def test_register_source_rejects_video_outside_sources(tmp_path, folder):
+    from shortsfarm.workspace_fs import register_workspace_source
+
+    root = _set_root(tmp_path)
+    video = root / folder / "result.mp4"
+    video.write_bytes(b"result")
+
+    with pytest.raises(
+        PermissionError,
+        match="только файл из sources/",
+    ):
+        register_workspace_source(f"{folder}/result.mp4")
+
+
+def test_register_source_rejects_non_video_inside_sources(tmp_path):
+    from shortsfarm.workspace_fs import register_workspace_source
+
+    root = _set_root(tmp_path)
+    notes = root / "sources" / "notes.txt"
+    notes.write_text("notes", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="video file"):
+        register_workspace_source("sources/notes.txt")
+
+
+def test_register_source_rejects_symlink_inside_sources(tmp_path):
+    from shortsfarm.workspace_fs import register_workspace_source
+
+    root = _set_root(tmp_path)
+    target = root / "sources" / "target.mp4"
+    target.write_bytes(b"target")
+    link = root / "sources" / "link.mp4"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("Symlinks are not available in this environment.")
+
+    with pytest.raises(PermissionError, match="Symlinks"):
+        register_workspace_source("sources/link.mp4")
+
+
+def test_register_source_api_rejects_video_from_cuts(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import FileRegisterSourceRequest
+
+    root = _set_root(tmp_path)
+    (root / "cuts" / "result.mp4").write_bytes(b"result")
+
+    with pytest.raises(HTTPException) as exc:
+        api.files_register_source(
+            FileRegisterSourceRequest(path="cuts/result.mp4")
+        )
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["message"] == (
+        "Как исходник можно зарегистрировать только файл из sources/."
+    )
+
+
 def test_build_cut_output_dir_preserves_sources_hierarchy(tmp_path):
     from shortsfarm.workspace_fs import build_cut_output_dir
 

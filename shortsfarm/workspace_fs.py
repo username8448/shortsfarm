@@ -434,8 +434,17 @@ def import_source_file(
 
 
 def register_workspace_source(relative_path: str) -> tuple[Path, int]:
+    relative = _relative_path(relative_path, allow_empty=False)
+    if not relative.parts or relative.parts[0] != "sources":
+        raise PermissionError(
+            "Как исходник можно зарегистрировать только файл из sources/."
+        )
     path = resolve_workspace_path(relative_path)
-    if not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS:
+    if not path.exists():
+        raise FileNotFoundError(f"Workspace file не найден: {relative.as_posix()}")
+    if not path.is_file():
+        raise ValueError("Workspace item не является обычным файлом.")
+    if path.suffix.lower() not in VIDEO_EXTENSIONS:
         raise ValueError("Workspace item не является поддерживаемым video file.")
     return path, get_or_add_video(path)
 
