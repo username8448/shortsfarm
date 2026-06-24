@@ -32,6 +32,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "022_add_publish_schedules" in versions
     assert "023_create_editing_models" in versions
     assert "024_add_edit_job_review_status" in versions
+    assert "025_create_workspace_folders" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -204,6 +205,27 @@ def test_edit_job_review_columns_exist(tmp_data_dir):
 
     assert {"review_status", "reviewed_at", "review_note"} <= columns
     assert "idx_edit_jobs_review_status" in indexes
+
+
+def test_workspace_folders_metadata_table_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    with db.connect() as con:
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(workspace_folders)").fetchall()
+        }
+        indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(workspace_folders)").fetchall()
+        }
+
+    assert {
+        "workspace_root", "relative_path", "display_name",
+        "kind", "description", "created_at", "updated_at",
+    } <= columns
+    assert "idx_workspace_folders_root" in indexes
+    assert "idx_workspace_folders_kind" in indexes
 
 
 def test_idempotent(tmp_data_dir):

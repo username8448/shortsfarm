@@ -293,6 +293,35 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .fs-browser { max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 9px; }
 .fs-browser .tbl th, .fs-browser .tbl td { padding: 8px 10px; }
 .fs-type { min-width: 60px; }
+.files-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; padding: 12px 15px;
+}
+.files-layout {
+  display: grid; grid-template-columns: 190px minmax(0, 1fr);
+  gap: 14px; align-items: start;
+}
+.files-sidebar {
+  padding: 12px; position: sticky; top: 14px;
+}
+.files-side-link {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 8px 9px; margin-top: 4px; border-radius: 7px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--mid); font: 600 11px var(--mono); text-align: left;
+}
+.files-side-link:hover,
+.files-side-link.on {
+  color: var(--acc); border-color: var(--acc-br); background: var(--acc-bg);
+}
+.files-content { min-width: 0; overflow: hidden; }
+.files-toolbar {
+  min-height: 46px; display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.files-toolbar .fs-breadcrumb { margin: 0; }
+.files-table { min-width: 900px; }
+.files-content > #files-list { overflow: auto; }
 .video-name-cell {
   display: flex; align-items: center; gap: 9px; min-width: 0;
 }
@@ -335,7 +364,14 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .action-row { margin-top: 4px; }
 .action-row .btn-primary, .action-row .btn-secondary { min-width: 142px; text-align: center; }
 .err-line { white-space: pre-wrap; }
-@media (max-width: 960px) { .split-grid { grid-template-columns: 1fr; } }
+@media (max-width: 960px) {
+  .split-grid { grid-template-columns: 1fr; }
+  .files-layout { grid-template-columns: 1fr; }
+  .files-sidebar { position: static; display: flex; flex-wrap: wrap; gap: 5px; }
+  .files-sidebar .field-lbl { width: 100%; }
+  .files-side-link { width: auto; }
+  .files-head { align-items: flex-start; flex-direction: column; }
+}
 .nb .badge-pill:empty { display: none; }
 @media (max-width: 640px) { .sb-logo-icon { margin: 0 auto; } }
 

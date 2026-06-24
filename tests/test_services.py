@@ -167,6 +167,79 @@ def test_split_video_file_raises_when_skip_covers_everything(dummy_video):
             split_video_file(dummy_video, skip_specs=["start-end"], dry_run=True)
 
 
+def test_split_managed_source_uses_workspace_cuts_tree(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.services import split_video_file
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "managed")
+    source = root / "sources" / "Автор" / "Подкаст" / "Выпуск 001" / "original.mp4"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+
+    def fake_cut(input_path, output_path, start_sec, end_sec):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"segment")
+        return output_path
+
+    with patch("shortsfarm.services.probe_duration", return_value=61.0), \
+         patch("shortsfarm.services.fast_cut_range", side_effect=fake_cut):
+        result = split_video_file(
+            source,
+            run_timestamp="run-001",
+        )
+
+    expected = (
+        root / "cuts" / "Автор" / "Подкаст" / "Выпуск 001"
+        / "original" / "original" / "run-001"
+    )
+    assert result.output_dir == expected
+    assert [path.parent for path in result.files] == [expected, expected]
+    assert [Path(row["path"]).parent for row in db.list_segments(result.video_id)] == [
+        expected,
+        expected,
+    ]
+
+
+def test_split_managed_source_dry_run_plans_without_creating_output(tmp_path):
+    from shortsfarm.services import split_video_file
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "managed-dry")
+    source = root / "sources" / "episode.mp4"
+    source.write_bytes(b"source")
+
+    with patch("shortsfarm.services.probe_duration", return_value=30.0):
+        result = split_video_file(
+            source,
+            dry_run=True,
+            run_timestamp="dry-run",
+        )
+
+    expected = root / "cuts" / "episode" / "original" / "dry-run"
+    assert result.output_dir == expected
+    assert not expected.exists()
+
+
+def test_split_external_source_keeps_legacy_output_path(tmp_path):
+    from shortsfarm.config import output_dir
+    from shortsfarm.services import split_video_file
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    set_workspace_root(tmp_path / "managed-external")
+    source = tmp_path / "external.mp4"
+    source.write_bytes(b"source")
+
+    with patch("shortsfarm.services.probe_duration", return_value=30.0):
+        result = split_video_file(
+            source,
+            dry_run=True,
+            run_timestamp="legacy",
+        )
+
+    assert result.output_dir == output_dir() / "split" / "external" / "legacy"
+
+
 # ---------------------------------------------------------------------------
 # open_video_for_review
 # ---------------------------------------------------------------------------

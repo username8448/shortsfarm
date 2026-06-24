@@ -284,6 +284,83 @@ def test_workspace_prepare_clip_16x9_creates_prepared_path(monkeypatch, video_in
     assert output_dir() / "prepared" / "16x9" in prepared_path.parents
 
 
+def test_workspace_prepare_managed_segment_uses_prepared_tree(monkeypatch, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspacePrepareRequest
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "managed-prepare")
+    source = (
+        root / "sources" / "Автор" / "Подкаст" / "Выпуск 001"
+        / "original.mp4"
+    )
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    video_id = db.add_video(source, "original", 120.0)
+    job_id = db.create_job(video_id, "fast", 60)
+    db.mark_job_done(job_id)
+    segment_path = (
+        root / "cuts" / "Автор" / "Подкаст" / "Выпуск 001"
+        / "original" / "original" / "run-001" / "segment_0001.mp4"
+    )
+    segment_path.parent.mkdir(parents=True)
+    segment_path.write_bytes(b"segment")
+    segment_id = db.insert_segment(
+        video_id,
+        job_id,
+        1,
+        0.0,
+        15.0,
+        segment_path,
+    )
+    _patch_prepare_ffmpeg(monkeypatch)
+
+    data = api.workspace_clip_prepare(
+        f"segment:{segment_id}",
+        WorkspacePrepareRequest(target_aspect="9x16"),
+    )
+
+    prepared = Path(data["item"]["prepared_path"])
+    expected_folder = (
+        root / "prepared" / "Автор" / "Подкаст" / "Выпуск 001"
+        / "original" / "9x16"
+    )
+    assert prepared.parent == expected_folder
+    assert prepared.exists()
+
+
+def test_workspace_prepare_managed_clip_uses_source_lineage(monkeypatch, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspacePrepareRequest
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "managed-clip-prepare")
+    source = root / "sources" / "Channel" / "Episode" / "original.mp4"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    video_id = db.add_video(source, "original", 90.0)
+    mark_id = db.insert_mark(video_id, None, 5.0, 25.0)
+    clip_id = db.insert_clip(video_id, mark_id)
+    clip_path = tmp_path / "rendered-clip.mp4"
+    clip_path.write_bytes(b"clip")
+    db.set_clip_done(clip_id, str(clip_path))
+    _patch_prepare_ffmpeg(monkeypatch)
+
+    data = api.workspace_clip_prepare(
+        f"clip:{clip_id}",
+        WorkspacePrepareRequest(target_aspect="16x9"),
+    )
+
+    prepared = Path(data["item"]["prepared_path"])
+    assert prepared.parent == (
+        root / "prepared" / "Channel" / "Episode"
+        / "original" / "16x9"
+    )
+    assert prepared.exists()
+
+
 def test_workspace_prepare_repeated_uses_same_path(monkeypatch, video_in_db, tmp_path):
     from shortsfarm.config import output_dir
     from shortsfarm.web import api

@@ -114,6 +114,40 @@ def test_plan_endpoint_creates_materialized_job_for_ready_segment(video_in_db, t
     assert recipe["output"]["path"] == job["output_path"]
 
 
+def test_plan_uses_workspace_edits_for_managed_source(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.edit_planner import plan_edit_job_for_workspace_item
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "workspace")
+    source = (
+        root / "sources" / "Автор" / "Подкаст" / "Выпуск 001" / "original.mp4"
+    )
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    video_id = db.add_video(source, source.stem, 120.0)
+    segment_id, item_key, _ = _make_segment(
+        video_id,
+        tmp_path,
+        name="managed-ready",
+    )
+    template_id = _template()
+    profile_id = _profile(template_id=template_id)
+
+    result = plan_edit_job_for_workspace_item(item_key, profile_id)
+
+    job = db.get_edit_job(result["job"]["id"])
+    assert job is not None
+    assert Path(job["output_path"]) == (
+        root / "edits" / "Автор" / "Подкаст" / "Выпуск 001"
+        / "original" / f"segment_{segment_id:03d}" / f"edit_job_{job['id']}.mp4"
+    )
+    recipe = json.loads(job["recipe_json"])
+    assert recipe["workspace"]["source_path"] == str(source)
+    assert recipe["output"]["path"] == job["output_path"]
+    assert not Path(job["output_path"]).parent.exists()
+
+
 def test_plan_skips_draft_missing_and_profile_without_template(video_in_db, tmp_path):
     from shortsfarm.web import api
     from shortsfarm.web.schemas import EditJobsPlanRequest

@@ -89,6 +89,20 @@ def test_media_endpoint_returns_file_response_for_done_job():
     assert response.media_type == "video/mp4"
 
 
+def test_media_endpoint_returns_managed_workspace_edit(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "workspace")
+    managed = root / "edits" / "show" / "segment_001" / "edit_job_1.mp4"
+    job_id, media_path = _done_edit_job(media_path=managed)
+
+    response = api.editing_job_media(job_id)
+
+    assert isinstance(response, FileResponse)
+    assert Path(response.path) == media_path
+
+
 def test_media_endpoint_rejects_path_outside_edited(tmp_path):
     from shortsfarm.web import api
 

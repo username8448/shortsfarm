@@ -8,6 +8,10 @@ from . import db
 from .config import output_dir
 from .ffmpeg_tools import require_binary
 from .services import safe_filename
+from .workspace_fs import (
+    build_prepared_output_dir,
+    workspace_source_relative_path,
+)
 
 
 TARGET_SPECS = {
@@ -26,7 +30,14 @@ def _normalize_target_aspect(value: str | None) -> str:
 def _prepared_output_path(item: dict, target_aspect: str) -> Path:
     source = Path(str(item["path"]))
     stem = safe_filename(source.stem or f"{item['item_type']}_{item['item_id']}")
-    folder = output_dir() / "prepared" / target_aspect
+    source_relative = workspace_source_relative_path(
+        str(item.get("source_path") or "")
+    )
+    folder = (
+        build_prepared_output_dir(source_relative, target_aspect)
+        if source_relative is not None
+        else output_dir() / "prepared" / target_aspect
+    )
     folder.mkdir(parents=True, exist_ok=True)
     return folder / f"{item['item_type']}_{int(item['item_id']):06d}_{stem}_{target_aspect}.mp4"
 

@@ -10,6 +10,7 @@ from typing import Any
 from . import db
 from .config import output_dir
 from .ffmpeg_tools import probe_duration, require_binary
+from .workspace_fs import get_workspace_root
 
 
 SUPPORTED_TEMPLATE = "reaction_top_25"
@@ -48,6 +49,25 @@ def _path_inside(path: Path, root: Path) -> bool:
         return False
 
 
+def _allowed_edit_roots() -> tuple[Path, ...]:
+    roots = [(output_dir() / "edited").resolve()]
+    try:
+        workspace_root = get_workspace_root()
+    except (ValueError, PermissionError):
+        workspace_root = None
+    if workspace_root is not None:
+        workspace_edits = workspace_root / "edits"
+        if not workspace_edits.is_symlink():
+            resolved_edits = workspace_edits.resolve()
+            if _path_inside(resolved_edits, workspace_root):
+                roots.append(resolved_edits)
+    return tuple(roots)
+
+
+def _is_allowed_edit_path(path: Path) -> bool:
+    return any(_path_inside(path, root) for root in _allowed_edit_roots())
+
+
 def resolve_edit_job_media_path(job_id: int) -> Path:
     job = db.get_edit_job(int(job_id))
     if job is None:
@@ -59,10 +79,9 @@ def resolve_edit_job_media_path(job_id: int) -> Path:
     if not raw_path:
         raise FileNotFoundError("У edit job отсутствует rendered media path.")
     media_path = Path(str(raw_path)).expanduser().resolve()
-    edited_root = (output_dir() / "edited").resolve()
-    if not _path_inside(media_path, edited_root):
+    if not _is_allowed_edit_path(media_path):
         raise PermissionError(
-            f"Rendered media должен находиться внутри {edited_root}."
+            "Rendered media должен находиться внутри разрешённой папки edits."
         )
     if not media_path.exists() or not media_path.is_file():
         raise FileNotFoundError(f"Rendered media file не найден: {media_path}")
@@ -102,9 +121,10 @@ def _validated_render_paths(
     if not reaction_path.is_file():
         raise FileNotFoundError(f"Reaction input file не найден: {reaction_path}")
 
-    edited_root = (output_dir() / "edited").resolve()
-    if not _path_inside(output_path, edited_root):
-        raise ValueError(f"Output path должен находиться внутри {edited_root}.")
+    if not _is_allowed_edit_path(output_path):
+        raise ValueError(
+            "Output path должен находиться внутри разрешённой папки edits."
+        )
     if output_path in {main_path, reaction_path}:
         raise ValueError("Output path не может совпадать с input path.")
 

@@ -204,6 +204,46 @@ def test_output_path_outside_edited_directory_is_rejected(tmp_path):
     assert not outside.exists()
 
 
+def test_workspace_edits_output_is_rendered(tmp_path, monkeypatch):
+    from shortsfarm.edit_renderer import render_edit_job
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "workspace")
+    output_path = root / "edits" / "show" / "episode" / "segment_001" / "edit_job_1.mp4"
+    job_id, _main, _reaction, _output = _make_edit_job(
+        tmp_path,
+        name="workspace-edits",
+        output_path=output_path,
+    )
+    _mock_successful_ffmpeg(monkeypatch)
+
+    rendered = render_edit_job(job_id)
+
+    assert rendered["status"] == "done"
+    assert rendered["edited_path"] == str(output_path.resolve())
+    assert output_path.read_bytes() == b"rendered"
+
+
+def test_other_workspace_folder_is_not_allowed_for_render(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.edit_renderer import render_edit_job
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "workspace")
+    outside_edits = root / "ready" / "escape.mp4"
+    job_id, _main, _reaction, _output = _make_edit_job(
+        tmp_path,
+        name="workspace-ready",
+        output_path=outside_edits,
+    )
+
+    with pytest.raises(ValueError, match="внутри"):
+        render_edit_job(job_id)
+
+    assert db.get_edit_job(job_id)["status"] == "failed"
+    assert not outside_edits.exists()
+
+
 def test_ffmpeg_failure_marks_job_failed_and_saves_stderr(tmp_path, monkeypatch):
     from shortsfarm import db
     from shortsfarm.edit_renderer import render_edit_job

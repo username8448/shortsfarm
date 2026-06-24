@@ -58,6 +58,19 @@ from ..services import (
     split_video_folder,
 )
 from ..youtube_oauth import YOUTUBE_SCOPES
+from ..workspace_fs import (
+    SYSTEM_FOLDERS,
+    create_workspace_folder,
+    delete_workspace_item as delete_managed_workspace_item,
+    ensure_workspace_layout,
+    get_workspace_root,
+    import_source_file,
+    list_workspace_dir,
+    move_workspace_item as move_managed_workspace_item,
+    register_workspace_source,
+    rename_workspace_item as rename_managed_workspace_item,
+    set_workspace_root,
+)
 from .schemas import (
     ChannelProfileCreateRequest,
     ChannelProfileUpdateRequest,
@@ -67,6 +80,11 @@ from .schemas import (
     EditJobsPlanRequest,
     EditTemplateUpdateRequest,
     EditWorkerRunOnceRequest,
+    FileFolderCreateRequest,
+    FileImportSourceRequest,
+    FileMoveRequest,
+    FileRegisterSourceRequest,
+    FileRenameRequest,
     OpenMpvRequest,
     PublishJobRetryRequest,
     PublishJobRunRequest,
@@ -87,6 +105,7 @@ from .schemas import (
     WorkspaceBulkStatusRequest,
     WorkspaceItemUpdateRequest,
     WorkspacePrepareRequest,
+    WorkspaceRootRequest,
     WorkspaceYouTubeEnqueueRequest,
     YouTubeMetadataUpdateRequest,
     YouTubeClientJsonImportRequest,
@@ -928,6 +947,204 @@ def _save_youtube_settings(
         db.set_setting(YOUTUBE_CLIENT_SECRET_SETTING, existing_client_secret, is_secret=True)
     db.set_setting(YOUTUBE_REDIRECT_URI_SETTING, resolved_redirect_uri, is_secret=False)
     return _youtube_settings_status()
+
+
+def _workspace_settings_payload() -> dict[str, Any]:
+    root = get_workspace_root()
+    if root is None:
+        return {
+            "workspace_root": None,
+            "exists": False,
+            "layout": {},
+        }
+    exists = root.exists() and root.is_dir()
+    layout = {
+        name: str(root / name)
+        for name in SYSTEM_FOLDERS
+        if exists and (root / name).is_dir()
+    }
+    return {
+        "workspace_root": str(root),
+        "exists": exists,
+        "layout": layout,
+    }
+
+
+@router.get("/settings/workspace")
+def workspace_settings_get() -> dict[str, Any]:
+    try:
+        _init()
+        return _workspace_settings_payload()
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/settings/workspace")
+def workspace_settings_save(req: WorkspaceRootRequest) -> dict[str, Any]:
+    try:
+        _init()
+        set_workspace_root(req.workspace_root)
+        return _workspace_settings_payload()
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/files")
+def files_list(path: str = "") -> dict[str, Any]:
+    try:
+        _init()
+        return list_workspace_dir(path)
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/files/folder")
+def files_folder_create(req: FileFolderCreateRequest) -> dict[str, Any]:
+    try:
+        _init()
+        created = create_workspace_folder(
+            req.parent_path,
+            req.name,
+            kind=req.kind,
+        )
+        root = get_workspace_root()
+        if root is None:
+            raise ValueError("workspace_root не настроен.")
+        return {
+            "status": "ok",
+            "path": created.relative_to(root).as_posix(),
+            "name": created.name,
+            "kind": req.kind,
+        }
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileExistsError as exc:
+        raise _fail(exc, status_code=409)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.patch("/files/rename")
+def files_rename(req: FileRenameRequest) -> dict[str, Any]:
+    try:
+        _init()
+        renamed = rename_managed_workspace_item(req.path, req.new_name)
+        root = get_workspace_root()
+        if root is None:
+            raise ValueError("workspace_root не настроен.")
+        return {
+            "status": "ok",
+            "path": renamed.relative_to(root).as_posix(),
+            "name": renamed.name,
+        }
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except FileExistsError as exc:
+        raise _fail(exc, status_code=409)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/files/move")
+def files_move(req: FileMoveRequest) -> dict[str, Any]:
+    try:
+        _init()
+        moved = move_managed_workspace_item(
+            req.source_path,
+            req.target_folder,
+        )
+        root = get_workspace_root()
+        if root is None:
+            raise ValueError("workspace_root не настроен.")
+        return {
+            "status": "ok",
+            "path": moved.relative_to(root).as_posix(),
+        }
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except FileExistsError as exc:
+        raise _fail(exc, status_code=409)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.delete("/files")
+def files_delete(path: str, recursive: bool = False) -> dict[str, Any]:
+    try:
+        _init()
+        deleted = delete_managed_workspace_item(path, recursive=recursive)
+        return {"status": "ok", "path": path, "deleted": deleted}
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except OSError as exc:
+        raise _fail(
+            ValueError(
+                "Папка не пуста. Подтвердите recursive delete."
+                if not recursive
+                else str(exc)
+            )
+        )
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/files/import-source")
+def files_import_source(req: FileImportSourceRequest) -> dict[str, Any]:
+    try:
+        _init()
+        imported, video_id = import_source_file(
+            req.source_path,
+            req.target_folder,
+            mode=req.mode,
+        )
+        root = get_workspace_root()
+        if root is None:
+            raise ValueError("workspace_root не настроен.")
+        return {
+            "status": "ok",
+            "path": imported.relative_to(root).as_posix(),
+            "name": imported.name,
+            "video_id": video_id,
+        }
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/files/register-source")
+def files_register_source(req: FileRegisterSourceRequest) -> dict[str, Any]:
+    try:
+        _init()
+        path, video_id = register_workspace_source(req.path)
+        root = get_workspace_root()
+        if root is None:
+            raise ValueError("workspace_root не настроен.")
+        return {
+            "status": "ok",
+            "path": path.relative_to(root).as_posix(),
+            "video_id": video_id,
+        }
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
 
 
 @router.get("/fs/roots")

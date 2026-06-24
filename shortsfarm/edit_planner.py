@@ -9,6 +9,7 @@ from typing import Any
 from . import db
 from .config import output_dir
 from .services import safe_filename
+from .workspace_fs import build_edit_output_path, workspace_source_relative_path
 
 
 def parse_workspace_item_key(item_key: str) -> tuple[str, int]:
@@ -148,7 +149,7 @@ def plan_edit_job_for_workspace_item(
             "job": _job_dict(existing),
         }
 
-    item_type, item_id, _item, input_path = _resolve_workspace_item(normalized_item_key)
+    item_type, item_id, item, input_path = _resolve_workspace_item(normalized_item_key)
     reaction = _resolve_reaction(profile, reaction_asset_id)
     renderer = str(template["renderer"] or "ffmpeg")
 
@@ -160,16 +161,29 @@ def plan_edit_job_for_workspace_item(
         input_path=str(input_path),
         renderer=renderer,
     )
-    template_key = safe_filename(str(template["key"] or f"template_{template['id']}"))
-    output_path = (
-        output_dir()
-        / "edited"
-        / template_key
-        / (
-            f"{item_type}_{item_id}__profile_{int(profile['id'])}"
-            f"__job_{job_id}.mp4"
+    source_path = str(item.get("source_path") or "")
+    source_relative_path = workspace_source_relative_path(source_path)
+    if source_relative_path is not None:
+        output_path = build_edit_output_path(
+            source_relative_path,
+            item_type,
+            item_id,
+            job_id,
+            create=False,
+        ).resolve()
+    else:
+        template_key = safe_filename(
+            str(template["key"] or f"template_{template['id']}")
         )
-    ).resolve()
+        output_path = (
+            output_dir()
+            / "edited"
+            / template_key
+            / (
+                f"{item_type}_{item_id}__profile_{int(profile['id'])}"
+                f"__job_{job_id}.mp4"
+            )
+        ).resolve()
     try:
         template_recipe = json.loads(str(template["recipe_json"]))
     except json.JSONDecodeError as exc:
@@ -189,6 +203,7 @@ def plan_edit_job_for_workspace_item(
             "item_type": item_type,
             "item_id": item_id,
             "main_input_path": str(input_path),
+            "source_path": source_path,
         },
         "channel_profile": {
             "id": int(profile["id"]),

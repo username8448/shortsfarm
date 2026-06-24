@@ -24,6 +24,36 @@ class OpenMpvRequest(BaseModel):
     path: str
 
 
+class WorkspaceRootRequest(BaseModel):
+    workspace_root: str
+
+
+class FileFolderCreateRequest(BaseModel):
+    parent_path: str = ""
+    name: str
+    kind: str = "custom"
+
+
+class FileRenameRequest(BaseModel):
+    path: str
+    new_name: str
+
+
+class FileMoveRequest(BaseModel):
+    source_path: str
+    target_folder: str
+
+
+class FileImportSourceRequest(BaseModel):
+    source_path: str
+    target_folder: str = "sources"
+    mode: str = "copy"
+
+
+class FileRegisterSourceRequest(BaseModel):
+    path: str
+
+
 class WorkspaceItemUpdateRequest(BaseModel):
     workspace_status: str | None = None
     title: str | None = None

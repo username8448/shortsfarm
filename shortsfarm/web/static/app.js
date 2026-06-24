@@ -291,6 +291,13 @@ const fsState = {
   lastList: null
 };
 
+const managedFilesState = {
+  workspaceRoot: null,
+  currentPath: '',
+  data: null,
+  loading: false,
+};
+
 function nav(id, btn) {
   currentView = id;
   document.querySelectorAll('.v').forEach(el => el.classList.remove('on'));
@@ -298,6 +305,7 @@ function nav(id, btn) {
   document.querySelectorAll('.nb').forEach(b => b.classList.remove('on'));
   if (btn) btn.classList.add('on');
   if (id === 'dashboard') loadDashboard();
+  if (id === 'files') loadManagedFiles();
   if (id === 'split' && !fsState.currentPath) initFsBrowser();
   if (id === 'queue') loadJobs();
   if (id === 'videos') loadVideos();
@@ -305,6 +313,200 @@ function nav(id, btn) {
   if (id === 'publish') loadPublishView();
   if (id === 'editing') loadEditingView();
   if (id === 'settings') loadSettingsView();
+}
+
+function openWorkspaceSettings() {
+  nav('settings', document.querySelector('[data-v="settings"]'));
+  setSettingsTab('workspace', document.querySelector('[data-settings-tab="workspace"]'));
+}
+
+function managedAbsolutePath(relativePath) {
+  const root = String(managedFilesState.workspaceRoot || '').replace(/\/+$/, '');
+  const relative = String(relativePath || '').replace(/^\/+/, '');
+  return relative ? `${root}/${relative}` : root;
+}
+
+async function loadManagedFiles(path = managedFilesState.currentPath || '') {
+  const setup = document.getElementById('files-setup');
+  const manager = document.getElementById('files-manager');
+  if (!setup || !manager) return;
+  hideInlineError('files-error');
+  managedFilesState.loading = true;
+  try {
+    const settings = await api.get('/api/settings/workspace');
+    if (
+      managedFilesState.workspaceRoot
+      && settings.workspace_root
+      && managedFilesState.workspaceRoot !== settings.workspace_root
+    ) {
+      path = '';
+      managedFilesState.currentPath = '';
+    }
+    managedFilesState.workspaceRoot = settings.workspace_root || null;
+    if (!settings.workspace_root || !settings.exists) {
+      manager.style.display = 'none';
+      setup.style.display = 'block';
+      setup.innerHTML = `<div class="empty"><div style="margin-bottom:12px">Рабочая папка ещё не настроена.</div><button class="btn-primary" onclick="openWorkspaceSettings()">Настроить workspace_root</button></div>`;
+      return;
+    }
+    setup.style.display = 'none';
+    manager.style.display = 'block';
+    document.getElementById('files-root-path').textContent = settings.workspace_root;
+    const data = await api.get(`/api/files?path=${encodeURIComponent(path || '')}`);
+    managedFilesState.currentPath = data.path || '';
+    managedFilesState.data = data;
+    renderManagedFiles();
+  } catch (err) {
+    manager.style.display = 'block';
+    setup.style.display = 'none';
+    showInlineError('files-error', err.message || 'Не удалось загрузить workspace');
+  } finally {
+    managedFilesState.loading = false;
+  }
+}
+
+function renderManagedFiles() {
+  const data = managedFilesState.data || {path: '', breadcrumbs: [], items: []};
+  const sidebar = document.getElementById('files-sidebar');
+  const crumbs = document.getElementById('files-breadcrumbs');
+  const list = document.getElementById('files-list');
+  const systemFolders = ['sources','cuts','prepared','edits','ready','published'];
+  if (sidebar) {
+    sidebar.innerHTML = `<div class="field-lbl">Workspace</div>${systemFolders.map(name => {
+      const active = data.path === name || data.path.startsWith(name + '/');
+      return `<button class="files-side-link${active ? ' on' : ''}" onclick="loadManagedFiles('${name}')"><i class="ti ti-folder"></i><span>${name}</span></button>`;
+    }).join('')}`;
+  }
+  if (crumbs) {
+    crumbs.innerHTML = `<button class="crumb" onclick="loadManagedFiles('')">workspace</button>${(data.breadcrumbs || []).map(item => `<span class="mono dim">/</span><button class="crumb" data-path="${esc(item.path)}" onclick="loadManagedFiles(this.dataset.path)">${esc(item.name)}</button>`).join('')}`;
+  }
+  if (!list) return;
+  const items = data.items || [];
+  if (!items.length) {
+    list.innerHTML = '<div class="empty">Папка пуста. Создайте структуру или импортируйте видео.</div>';
+    return;
+  }
+  list.innerHTML = `<table class="tbl files-table"><thead><tr><th>Тип</th><th>Имя</th><th>Размер</th><th>Изменён</th><th>Действия</th></tr></thead><tbody>${items.map(item => {
+    const folder = item.type === 'folder';
+    const system = folder && !item.path.includes('/') && ['sources','cuts','prepared','edits','ready','published'].includes(item.path);
+    const icon = folder ? 'ti-folder' : item.media_type === 'video' ? 'ti-video' : item.media_type === 'image' ? 'ti-photo' : 'ti-file';
+    const type = folder ? item.kind : item.media_type;
+    const open = folder
+      ? `<button class="btn-mini" data-path="${esc(item.path)}" onclick="loadManagedFiles(this.dataset.path)">Открыть</button>`
+      : '';
+    const videoActions = !folder && item.media_type === 'video'
+      ? `<button class="btn-mini" data-path="${esc(item.path)}" onclick="openManagedFileInStudio(this.dataset.path)">Открыть в Нарезке</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="registerManagedSource(this.dataset.path)">Добавить как исходник</button>`
+      : '';
+    const mutations = system ? '' : `<button class="btn-mini" data-path="${esc(item.path)}" data-name="${esc(item.name)}" onclick="renameManagedItem(this.dataset.path,this.dataset.name)">Переименовать</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="moveManagedItem(this.dataset.path)">Переместить</button><button class="btn-danger" data-path="${esc(item.path)}" data-folder="${folder ? '1' : '0'}" onclick="deleteManagedItem(this.dataset.path,this.dataset.folder==='1')">Удалить</button>`;
+    return `<tr><td><span class="workspace-type ${folder ? 'segment' : 'clip'}"><i class="ti ${icon}"></i>&nbsp;${esc(type || 'file')}</span></td><td><div class="mono txt">${esc(item.display_name || item.name)}</div><div class="mono dim">${esc(item.path)}</div>${folder ? `<div class="mono dim">${Number(item.children_count || 0)} объектов</div>` : ''}</td><td class="mono mid">${folder ? '—' : esc(formatFileSize(item.size))}</td><td class="mono dim">${esc(formatMtime(item.modified_at))}</td><td><div class="row-actions">${open}${videoActions}${mutations}</div></td></tr>`;
+  }).join('')}</tbody></table>`;
+}
+
+function refreshManagedFiles() {
+  loadManagedFiles(managedFilesState.currentPath || '');
+}
+
+function managedFilesUp() {
+  const path = managedFilesState.currentPath || '';
+  if (!path) return;
+  const parts = path.split('/');
+  parts.pop();
+  loadManagedFiles(parts.join('/'));
+}
+
+async function createManagedFolder(kind = 'custom') {
+  const labels = {custom:'папки', collection:'коллекции', project:'проекта'};
+  const name = prompt(`Название новой ${labels[kind] || 'папки'}:`);
+  if (!name) return;
+  try {
+    await api.post('/api/files/folder', {
+      parent_path: managedFilesState.currentPath || '',
+      name,
+      kind,
+    });
+    showToast('Папка создана');
+    refreshManagedFiles();
+  } catch (err) {
+    showInlineError('files-error', err.message || 'Не удалось создать папку');
+  }
+}
+
+async function renameManagedItem(path, currentName) {
+  const name = prompt('Новое имя:', currentName || '');
+  if (!name || name === currentName) return;
+  try {
+    await api.patch('/api/files/rename', {path, new_name: name});
+    showToast('Workspace item переименован');
+    refreshManagedFiles();
+  } catch (err) {
+    showInlineError('files-error', err.message || 'Не удалось переименовать item');
+  }
+}
+
+async function moveManagedItem(path) {
+  const target = prompt('Целевая папка относительно workspace_root:', managedFilesState.currentPath || '');
+  if (target === null) return;
+  try {
+    await api.post('/api/files/move', {source_path: path, target_folder: target});
+    showToast('Workspace item перемещён');
+    refreshManagedFiles();
+  } catch (err) {
+    showInlineError('files-error', err.message || 'Не удалось переместить item');
+  }
+}
+
+async function deleteManagedItem(path, folder = false) {
+  let recursive = false;
+  if (folder) {
+    recursive = confirm(`Удалить папку ${path} вместе со всем содержимым?\n\nOK — recursive delete, Отмена — ничего не удалять.`);
+    if (!recursive) return;
+  } else if (!confirm(`Удалить файл ${path}?`)) {
+    return;
+  }
+  try {
+    await api.del(`/api/files?path=${encodeURIComponent(path)}&recursive=${recursive ? 'true' : 'false'}`);
+    showToast('Workspace item удалён');
+    refreshManagedFiles();
+  } catch (err) {
+    showInlineError('files-error', err.message || 'Не удалось удалить item');
+  }
+}
+
+async function importManagedSource() {
+  const sourcePath = prompt('Абсолютный путь к внешнему видеофайлу:');
+  if (!sourcePath) return;
+  const current = managedFilesState.currentPath || '';
+  const target = current === 'sources' || current.startsWith('sources/')
+    ? current
+    : 'sources';
+  try {
+    const data = await api.post('/api/files/import-source', {
+      source_path: sourcePath,
+      target_folder: target,
+      mode: 'copy',
+    });
+    showToast(`Видео импортировано: ${data.name}`);
+    loadManagedFiles(target);
+  } catch (err) {
+    showInlineError('files-error', err.message || 'Не удалось импортировать видео');
+  }
+}
+
+async function registerManagedSource(path) {
+  try {
+    const data = await api.post('/api/files/register-source', {path});
+    showToast(`Видео добавлено как исходник #${data.video_id}`);
+  } catch (err) {
+    showInlineError('files-error', err.message || 'Не удалось добавить исходник');
+  }
+}
+
+async function openManagedFileInStudio(path) {
+  const absolute = managedAbsolutePath(path);
+  if (!fsState.currentPath) await initFsBrowser();
+  nav('split', document.querySelector('[data-v="split"]'));
+  setMode('file');
+  await selectVideo(absolute);
 }
 
 async function loadDashboard() {
@@ -2262,6 +2464,45 @@ function showSettingsOk(message) {
   else hideInlineOk('settings-ok');
 }
 
+async function loadWorkspaceSettings(options = {}) {
+  const {silent = false} = options;
+  try {
+    const data = await api.get('/api/settings/workspace');
+    const input = document.getElementById('settings-workspace-root');
+    const status = document.getElementById('settings-workspace-status');
+    if (input) input.value = data.workspace_root || '';
+    if (status) {
+      const folders = Object.keys(data.layout || {});
+      status.textContent = data.workspace_root
+        ? `${data.exists ? 'Workspace доступен' : 'Папка отсутствует'} · ${folders.length} системных папок`
+        : 'workspace_root пока не настроен';
+    }
+    return data;
+  } catch (err) {
+    if (!silent) showSettingsError(err.message || 'Не удалось загрузить workspace settings');
+    return null;
+  }
+}
+
+async function saveWorkspaceSettings() {
+  showSettingsError('');
+  showSettingsOk('');
+  const workspaceRoot = document.getElementById('settings-workspace-root')?.value.trim() || '';
+  if (!workspaceRoot) {
+    showSettingsError('Укажите абсолютный путь workspace_root.');
+    return;
+  }
+  try {
+    const data = await api.post('/api/settings/workspace', {workspace_root: workspaceRoot});
+    managedFilesState.workspaceRoot = data.workspace_root;
+    managedFilesState.currentPath = '';
+    showSettingsOk(`Workspace сохранён: ${data.workspace_root}`);
+    await loadWorkspaceSettings({silent: true});
+  } catch (err) {
+    showSettingsError(err.message || 'Не удалось сохранить workspace_root');
+  }
+}
+
 function setOAuthManualMode(mode) {
   oauthManualMode = mode === 'manual' ? 'manual' : 'json';
   const jsonWrap = document.getElementById('settings-oauth-json-wrap');
@@ -2354,6 +2595,7 @@ function renderOAuthProfilesSettings() {
 async function loadSettingsView(options = {}) {
   const {silent = false} = options;
   if (!silent) showSettingsError('');
+  await loadWorkspaceSettings({silent: true});
   try {
     const data = await api.get('/api/publish/youtube/oauth-profiles');
     lastYoutubeProfiles = data.profiles || [];

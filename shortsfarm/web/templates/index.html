@@ -21,6 +21,7 @@
 
     <nav>
       <button class="nb on" data-v="dashboard" onclick="nav('dashboard', this)"><i class="ti ti-layout-dashboard"></i><span>Панель</span></button>
+      <button class="nb" data-v="files" onclick="nav('files', this)"><i class="ti ti-folders"></i><span>Файлы</span></button>
       <button class="nb" data-v="split" onclick="nav('split', this)"><i class="ti ti-scissors"></i><span>Нарезка</span></button>
       <button class="nb" data-v="queue" onclick="nav('queue', this)"><i class="ti ti-list"></i><span>Очередь</span><span id="nav-jobs" class="badge-pill" style="background:var(--acc-bg);color:var(--acc);"></span></button>
       <button class="nb" data-v="videos" onclick="nav('videos', this)"><i class="ti ti-video"></i><span>Видео</span><span id="nav-videos" class="badge-pill" style="background:var(--s2);color:var(--mid);"></span></button>
@@ -52,6 +53,37 @@
       <div class="g2">
         <div class="box" style="margin-bottom:0"><div class="box-head">Статусы видео</div><div id="video-status-bars" style="padding:12px 15px"></div></div>
         <div class="box" style="margin-bottom:0"><div class="box-head">Последние ошибки</div><div id="recent-errors"></div></div>
+      </div>
+    </div>
+
+    <div id="v-files" class="v">
+      <div class="ph"><h1>Файлы</h1><p>управляемая библиотека исходников и результатов внутри workspace_root</p></div>
+      <div id="files-setup" class="box" style="display:none"></div>
+      <div id="files-manager" style="display:none">
+        <div class="box files-head">
+          <div>
+            <div class="field-lbl">Рабочая папка</div>
+            <div id="files-root-path" class="mono txt"></div>
+          </div>
+          <div class="row-actions">
+            <button class="btn-mini" onclick="refreshManagedFiles()">Обновить</button>
+            <button class="btn-secondary" onclick="createManagedFolder('custom')">Новая папка</button>
+            <button class="btn-secondary" onclick="createManagedFolder('collection')">Новая коллекция</button>
+            <button class="btn-secondary" onclick="createManagedFolder('project')">Новый проект</button>
+            <button class="btn-primary" onclick="importManagedSource()">Импорт видео</button>
+          </div>
+        </div>
+        <div class="files-layout">
+          <aside class="box files-sidebar" id="files-sidebar"></aside>
+          <section class="box files-content">
+            <div class="files-toolbar">
+              <button class="btn-mini" onclick="managedFilesUp()">Вверх</button>
+              <div id="files-breadcrumbs" class="fs-breadcrumb"></div>
+            </div>
+            <div id="files-error" class="err-line" style="display:none"></div>
+            <div id="files-list"></div>
+          </section>
+        </div>
       </div>
     </div>
 
@@ -532,9 +564,10 @@
     </div>
 
     <div id="v-settings" class="v">
-      <div class="ph"><h1>Настройки</h1><p>OAuth client для подключения YouTube-каналов и публикации роликов</p></div>
+      <div class="ph"><h1>Настройки</h1><p>рабочая папка ShortsFarm и OAuth client для YouTube-каналов</p></div>
       <div class="tabs">
         <button class="tab on" data-settings-tab="youtube-oauth" onclick="setSettingsTab('youtube-oauth', this)">YouTube OAuth</button>
+        <button class="tab" data-settings-tab="workspace" onclick="setSettingsTab('workspace', this)">Workspace</button>
       </div>
 
       <div id="settings-error" class="err-line" style="display:none;margin-bottom:14px"></div>
@@ -606,6 +639,27 @@
               </div>
               <div id="settings-oauth-status" class="settings-meta"></div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="settings-workspace" class="settings-tab">
+        <div class="box">
+          <div class="box-head"><span>Рабочая папка ShortsFarm</span></div>
+          <div class="form-body settings-form">
+            <div class="hint-box">
+              Все операции раздела «Файлы» ограничены этой папкой. При сохранении
+              будут созданы sources, cuts, prepared, edits, ready и published.
+            </div>
+            <div class="field">
+              <label class="field-lbl">workspace_root · абсолютный локальный путь</label>
+              <input id="settings-workspace-root" type="text" placeholder="/home/user/Videos/ShortsFarm_Workspace">
+            </div>
+            <div class="action-row">
+              <button class="btn-primary" onclick="saveWorkspaceSettings()">Сохранить workspace</button>
+              <button class="btn-secondary" onclick="loadWorkspaceSettings()">Обновить</button>
+            </div>
+            <div id="settings-workspace-status" class="settings-meta"></div>
           </div>
         </div>
       </div>

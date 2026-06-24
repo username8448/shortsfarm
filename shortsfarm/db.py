@@ -1397,6 +1397,157 @@ def list_settings(mask_secrets: bool = True) -> list[dict[str, Any]]:
     return items
 
 
+# ---------------------------------------------------------------------------
+# managed workspace folder metadata
+# ---------------------------------------------------------------------------
+
+WORKSPACE_FOLDER_KINDS = {
+    "custom", "collection", "project", "source_group", "podcast", "episode",
+}
+
+
+def upsert_workspace_folder_metadata(
+    workspace_root: str,
+    relative_path: str,
+    *,
+    display_name: str | None = None,
+    kind: str = "custom",
+    description: str | None = None,
+) -> int:
+    normalized_kind = str(kind or "custom").strip().lower()
+    if normalized_kind not in WORKSPACE_FOLDER_KINDS:
+        raise ValueError(
+            "Workspace folder kind must be one of: "
+            + ", ".join(sorted(WORKSPACE_FOLDER_KINDS))
+        )
+    now = now_utc()
+    with connect() as con:
+        con.execute(
+            """
+            INSERT INTO workspace_folders
+                (workspace_root, relative_path, display_name, kind,
+                 description, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(workspace_root, relative_path) DO UPDATE SET
+                display_name=excluded.display_name,
+                kind=excluded.kind,
+                description=excluded.description,
+                updated_at=excluded.updated_at
+            """,
+            (
+                workspace_root,
+                relative_path,
+                display_name,
+                normalized_kind,
+                description,
+                now,
+                now,
+            ),
+        )
+        row = con.execute(
+            """
+            SELECT id FROM workspace_folders
+            WHERE workspace_root=? AND relative_path=?
+            """,
+            (workspace_root, relative_path),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Workspace folder metadata was not saved.")
+        return int(row["id"])
+
+
+def get_workspace_folder_metadata(
+    workspace_root: str,
+    relative_path: str,
+) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT * FROM workspace_folders
+            WHERE workspace_root=? AND relative_path=?
+            """,
+            (workspace_root, relative_path),
+        ).fetchone()
+
+
+def list_workspace_folder_metadata(workspace_root: str) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT * FROM workspace_folders
+            WHERE workspace_root=?
+            ORDER BY relative_path ASC
+            """,
+            (workspace_root,),
+        ).fetchall()
+
+
+def delete_workspace_folder_metadata(
+    workspace_root: str,
+    relative_path: str,
+    *,
+    include_descendants: bool = False,
+) -> int:
+    with connect() as con:
+        if include_descendants:
+            escaped = (
+                relative_path.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            result = con.execute(
+                """
+                DELETE FROM workspace_folders
+                WHERE workspace_root=?
+                  AND (relative_path=? OR relative_path LIKE ? ESCAPE '\\')
+                """,
+                (workspace_root, relative_path, f"{escaped}/%"),
+            )
+        else:
+            result = con.execute(
+                """
+                DELETE FROM workspace_folders
+                WHERE workspace_root=? AND relative_path=?
+                """,
+                (workspace_root, relative_path),
+            )
+        return int(result.rowcount)
+
+
+def move_workspace_folder_metadata(
+    workspace_root: str,
+    source_relative_path: str,
+    target_relative_path: str,
+) -> int:
+    rows = list_workspace_folder_metadata(workspace_root)
+    affected = [
+        row for row in rows
+        if (
+            str(row["relative_path"]) == source_relative_path
+            or str(row["relative_path"]).startswith(source_relative_path + "/")
+        )
+    ]
+    if not affected:
+        return 0
+
+    with connect() as con:
+        for row in sorted(
+            affected,
+            key=lambda item: len(str(item["relative_path"])),
+        ):
+            old_path = str(row["relative_path"])
+            suffix = old_path[len(source_relative_path):]
+            con.execute(
+                """
+                UPDATE workspace_folders
+                SET relative_path=?, updated_at=?
+                WHERE id=?
+                """,
+                (target_relative_path + suffix, now_utc(), int(row["id"])),
+            )
+    return len(affected)
+
+
 def create_youtube_oauth_profile(
     *,
     name: str,

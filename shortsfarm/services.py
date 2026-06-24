@@ -295,6 +295,25 @@ def _run_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
 
 
+def _split_output_dir(source: Path, timestamp: str) -> Path:
+    from .workspace_fs import (
+        build_cut_output_dir,
+        workspace_source_relative_path,
+    )
+
+    source_relative = workspace_source_relative_path(source)
+    if source_relative is not None:
+        return (
+            build_cut_output_dir(
+                source_relative,
+                "original",
+                create=False,
+            )
+            / timestamp
+        )
+    return output_dir() / "split" / safe_filename(source.stem) / timestamp
+
+
 def _build_segment_ranges_for_source(
     source_path: Path,
     duration_sec: float,
@@ -339,7 +358,7 @@ def split_video_file(
 
     safe_stem = safe_filename(source.stem)
     timestamp = run_timestamp or _run_timestamp()
-    video_output_dir = output_dir() / "split" / safe_stem / timestamp
+    video_output_dir = _split_output_dir(source, timestamp)
 
     if dry_run:
         return FileSplitResult(
