@@ -33,6 +33,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "023_create_editing_models" in versions
     assert "024_add_edit_job_review_status" in versions
     assert "025_create_workspace_folders" in versions
+    assert "026_create_remotion_studio" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -226,6 +227,23 @@ def test_workspace_folders_metadata_table_exists(tmp_data_dir):
     } <= columns
     assert "idx_workspace_folders_root" in indexes
     assert "idx_workspace_folders_kind" in indexes
+
+
+def test_remotion_studio_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    with db.connect() as con:
+        con.execute("SELECT * FROM studio_projects LIMIT 0")
+        con.execute("SELECT * FROM remotion_render_jobs LIMIT 0")
+        indexes = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA index_list(remotion_render_jobs)"
+            ).fetchall()
+        }
+
+    assert "idx_remotion_render_jobs_one_active_global" in indexes
+    assert "idx_remotion_render_jobs_one_active_project" in indexes
 
 
 def test_idempotent(tmp_data_dir):

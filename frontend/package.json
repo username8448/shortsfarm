@@ -1,0 +1,27 @@
+{
+  "name": "shortsfarm-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.482",
+    "@remotion/player": "4.0.482",
+    "@remotion/renderer": "4.0.482",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "remotion": "4.0.482",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.0"
+  }
+}

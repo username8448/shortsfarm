@@ -3,13 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .. import db
 from .api import router as api_router
+from .studio_api import router as studio_api_router
 
 WEB_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = WEB_DIR.parents[1]
+STUDIO_DIST = PROJECT_ROOT / "frontend" / "dist"
 FAVICON_PATH = WEB_DIR / "static" / "favicon.svg"
 ASSET_VERSION = max(
     (WEB_DIR / "static" / "app.js").stat().st_mtime_ns,
@@ -20,7 +24,18 @@ ASSET_VERSION = max(
 def create_app() -> FastAPI:
     app = FastAPI(title="ShortsFarm Web")
     app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+    if (STUDIO_DIST / "assets").is_dir():
+        app.mount(
+            "/studio/assets",
+            StaticFiles(directory=str(STUDIO_DIST / "assets")),
+            name="studio-assets",
+        )
     templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
+
+    @app.on_event("startup")
+    def recover_remotion_jobs() -> None:
+        db.init_db()
+        db.fail_interrupted_remotion_render_jobs()
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
@@ -45,6 +60,35 @@ def create_app() -> FastAPI:
         return FileResponse(FAVICON_PATH, media_type="image/svg+xml")
 
     app.include_router(api_router, prefix="/api")
+    app.include_router(studio_api_router, prefix="/api/studio")
+
+    def studio_response() -> FileResponse | HTMLResponse:
+        index_path = STUDIO_DIST / "index.html"
+        if index_path.is_file():
+            return FileResponse(index_path, media_type="text/html")
+        return HTMLResponse(
+            """
+            <!doctype html>
+            <html lang="ru"><meta charset="utf-8">
+            <title>ShortsFarm Studio</title>
+            <body style="font-family:system-ui;background:#101216;color:#eee;padding:40px">
+              <h1>ShortsFarm Studio ещё не собрана</h1>
+              <p>Выполните в корне проекта:</p>
+              <pre style="padding:16px;background:#191d24;border-radius:8px">npm --prefix frontend install
+npm --prefix frontend run build</pre>
+              <p><a href="/" style="color:#8ab4ff">Вернуться в legacy UI</a></p>
+            </body></html>
+            """,
+            status_code=503,
+        )
+
+    @app.get("/studio", include_in_schema=False)
+    def studio_index() -> Response:
+        return studio_response()
+
+    @app.get("/studio/{path:path}", include_in_schema=False)
+    def studio_spa(path: str) -> Response:
+        return studio_response()
     return app
 
 

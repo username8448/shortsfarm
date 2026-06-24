@@ -3683,6 +3683,198 @@ def retry_edit_job(job_id: int) -> bool:
         return result.rowcount > 0
 
 
+def create_studio_project(
+    *,
+    main_workspace_path: str,
+    template_key: str,
+    reaction_asset_id: int | None,
+    recipe_json: dict[str, Any] | str,
+    workspace_item_key: str | None = None,
+) -> int:
+    normalized_recipe = _normalize_recipe_json(recipe_json, required=True)
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO studio_projects
+                (workspace_item_key, main_workspace_path, template_key,
+                 reaction_asset_id, recipe_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                workspace_item_key,
+                main_workspace_path,
+                template_key,
+                reaction_asset_id,
+                normalized_recipe,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def get_studio_project(project_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM studio_projects WHERE id=?",
+            (int(project_id),),
+        ).fetchone()
+
+
+def update_studio_project(
+    project_id: int,
+    *,
+    main_workspace_path: str,
+    template_key: str,
+    reaction_asset_id: int | None,
+    recipe_json: dict[str, Any] | str,
+    workspace_item_key: str | None = None,
+) -> bool:
+    normalized_recipe = _normalize_recipe_json(recipe_json, required=True)
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE studio_projects
+            SET workspace_item_key=?, main_workspace_path=?, template_key=?,
+                reaction_asset_id=?, recipe_json=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                workspace_item_key,
+                main_workspace_path,
+                template_key,
+                reaction_asset_id,
+                normalized_recipe,
+                now_utc(),
+                int(project_id),
+            ),
+        )
+        return result.rowcount > 0
+
+
+def create_remotion_render_job(
+    studio_project_id: int,
+    output_path: str | None = None,
+) -> int:
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO remotion_render_jobs
+                (studio_project_id, status, output_path, created_at)
+            VALUES (?, 'queued', ?, ?)
+            """,
+            (int(studio_project_id), output_path, now_utc()),
+        )
+        return int(cur.lastrowid)
+
+
+def update_remotion_render_job_output(job_id: int, output_path: str) -> bool:
+    with connect() as con:
+        result = con.execute(
+            "UPDATE remotion_render_jobs SET output_path=? WHERE id=?",
+            (output_path, int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def get_remotion_render_job(job_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM remotion_render_jobs WHERE id=?",
+            (int(job_id),),
+        ).fetchone()
+
+
+def get_active_remotion_render_job() -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM remotion_render_jobs
+            WHERE status IN ('queued', 'rendering')
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+
+
+def claim_remotion_render_job(job_id: int) -> sqlite3.Row | None:
+    ensure_dirs()
+    con = sqlite3.connect(str(db_path()), isolation_level=None)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode = WAL")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        result = con.execute(
+            """
+            UPDATE remotion_render_jobs
+            SET status='rendering', started_at=?, finished_at=NULL, error=NULL
+            WHERE id=? AND status='queued'
+            """,
+            (now_utc(), int(job_id)),
+        )
+        if result.rowcount == 0:
+            con.execute("COMMIT")
+            return None
+        row = con.execute(
+            "SELECT * FROM remotion_render_jobs WHERE id=?",
+            (int(job_id),),
+        ).fetchone()
+        con.execute("COMMIT")
+        return row
+    except Exception:
+        try:
+            con.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        con.close()
+
+
+def mark_remotion_render_job_done(job_id: int, output_path: str) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE remotion_render_jobs
+            SET status='done', output_path=?, error=NULL, finished_at=?
+            WHERE id=?
+            """,
+            (output_path, now_utc(), int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def mark_remotion_render_job_failed(job_id: int, error: str) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE remotion_render_jobs
+            SET status='failed', error=?, finished_at=?
+            WHERE id=?
+            """,
+            (error, now_utc(), int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def fail_interrupted_remotion_render_jobs() -> int:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE remotion_render_jobs
+            SET status='failed',
+                error='Remotion render был прерван перезапуском backend.',
+                finished_at=?
+            WHERE status IN ('queued', 'rendering')
+            """,
+            (now_utc(),),
+        )
+        return int(result.rowcount)
+
+
 def ensure_default_edit_templates() -> sqlite3.Row:
     key = "reaction_top_25"
     existing = get_edit_template_by_key(key)

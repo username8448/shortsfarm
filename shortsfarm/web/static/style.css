@@ -74,6 +74,7 @@
     cursor: pointer; font-size: 12px; font-family: var(--sans);
     text-align: left; transition: background .12s, color .12s;
     margin-bottom: 1px;
+    text-decoration: none;
   }
   .nb:hover { background: var(--s2); color: var(--txt); border-color: var(--border2); }
   .nb.on    { background: var(--acc-bg); color: #bfdbfe; border-color: var(--acc-br); font-weight: 700; }
