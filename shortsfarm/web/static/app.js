@@ -346,7 +346,7 @@ async function loadManagedFiles(path = managedFilesState.currentPath || '') {
     if (!settings.workspace_root || !settings.exists) {
       manager.style.display = 'none';
       setup.style.display = 'block';
-      setup.innerHTML = `<div class="empty"><div style="margin-bottom:12px">Рабочая папка ещё не настроена.</div><button class="btn-primary" onclick="openWorkspaceSettings()">Настроить workspace_root</button></div>`;
+      setup.innerHTML = `<div class="empty"><div style="margin-bottom:12px">Рабочая папка ещё не настроена.</div><button class="btn-primary" onclick="openWorkspaceSettings()">Открыть настройки Workspace</button></div>`;
       return;
     }
     setup.style.display = 'none';
@@ -2500,6 +2500,29 @@ async function saveWorkspaceSettings() {
     await loadWorkspaceSettings({silent: true});
   } catch (err) {
     showSettingsError(err.message || 'Не удалось сохранить workspace_root');
+  }
+}
+
+async function pickWorkspaceDirectory() {
+  showSettingsError('');
+  showSettingsOk('');
+  const button = document.getElementById('settings-workspace-pick-btn');
+  if (button) button.disabled = true;
+  try {
+    const data = await api.post('/api/settings/workspace/pick-directory', {});
+    if (!data.selected) return;
+    const input = document.getElementById('settings-workspace-root');
+    if (input) input.value = data.workspace_root || '';
+    managedFilesState.workspaceRoot = data.workspace_root || null;
+    managedFilesState.currentPath = '';
+    await loadWorkspaceSettings({silent: true});
+    showSettingsOk('Папка выбрана и workspace создан.');
+  } catch (err) {
+    showSettingsError(
+      err.message || 'Локальный выбор папки недоступен. Укажите путь вручную.'
+    );
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 

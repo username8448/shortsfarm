@@ -35,6 +35,104 @@ def test_workspace_root_setting_and_base_layout(tmp_path):
     assert {item["name"] for item in root_list["items"]} == set(SYSTEM_FOLDERS)
 
 
+def test_workspace_pick_directory_saves_selected_root(tmp_path, monkeypatch):
+    from shortsfarm import db
+    from shortsfarm.web import api
+
+    selected = tmp_path / "picked-workspace"
+    saved_paths: list[str] = []
+    real_set_workspace_root = api.set_workspace_root
+
+    def tracked_set_workspace_root(path):
+        saved_paths.append(path)
+        return real_set_workspace_root(path)
+
+    monkeypatch.setattr(
+        api,
+        "pick_directory_dialog",
+        lambda: str(selected),
+    )
+    monkeypatch.setattr(api, "set_workspace_root", tracked_set_workspace_root)
+
+    data = api.workspace_settings_pick_directory()
+
+    assert data["selected"] is True
+    assert saved_paths == [str(selected)]
+    assert data["workspace_root"] == str(selected.resolve())
+    assert db.get_setting("workspace_root") == str(selected.resolve())
+
+
+def test_workspace_pick_directory_cancel_keeps_current_root(tmp_path, monkeypatch):
+    from shortsfarm.web import api
+
+    current = _set_root(tmp_path, "current-workspace")
+    monkeypatch.setattr(api, "pick_directory_dialog", lambda: None)
+    monkeypatch.setattr(
+        api,
+        "set_workspace_root",
+        lambda path: pytest.fail("set_workspace_root must not run after cancel"),
+    )
+
+    data = api.workspace_settings_pick_directory()
+
+    assert data == {
+        "selected": False,
+        "workspace_root": str(current.resolve()),
+    }
+    assert api.workspace_settings_get()["workspace_root"] == str(current.resolve())
+
+
+def test_workspace_pick_directory_unavailable_returns_http_409(monkeypatch):
+    from shortsfarm.local_dialogs import (
+        UNAVAILABLE_MESSAGE,
+        LocalDialogUnavailable,
+    )
+    from shortsfarm.web import api
+
+    def unavailable():
+        raise LocalDialogUnavailable(UNAVAILABLE_MESSAGE)
+
+    monkeypatch.setattr(api, "pick_directory_dialog", unavailable)
+
+    with pytest.raises(HTTPException) as exc:
+        api.workspace_settings_pick_directory()
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["message"] == UNAVAILABLE_MESSAGE
+
+
+def test_workspace_pick_directory_creates_layout(tmp_path, monkeypatch):
+    from shortsfarm.web import api
+    from shortsfarm.workspace_fs import SYSTEM_FOLDERS
+
+    selected = tmp_path / "picked-layout"
+    monkeypatch.setattr(
+        api,
+        "pick_directory_dialog",
+        lambda: str(selected),
+    )
+
+    data = api.workspace_settings_pick_directory()
+
+    assert data["exists"] is True
+    assert set(data["layout"]) == set(SYSTEM_FOLDERS)
+    assert all((selected / name).is_dir() for name in SYSTEM_FOLDERS)
+
+
+def test_manual_workspace_settings_still_work(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import WorkspaceRootRequest
+
+    manual = tmp_path / "manual-workspace"
+
+    data = api.workspace_settings_save(
+        WorkspaceRootRequest(workspace_root=str(manual))
+    )
+
+    assert data["workspace_root"] == str(manual.resolve())
+    assert data["exists"] is True
+
+
 def test_workspace_path_rejects_traversal_absolute_internal_and_symlink(tmp_path):
     from shortsfarm.workspace_fs import resolve_workspace_path
 

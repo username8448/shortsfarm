@@ -37,6 +37,7 @@ from ..edit_renderer import (
     run_edit_queue_once,
 )
 from ..ffmpeg_tools import probe_duration, require_binary
+from ..local_dialogs import LocalDialogUnavailable, pick_directory_dialog
 from ..mpv_session import require_mpv
 from ..publish_youtube import (
     parse_tags,
@@ -985,6 +986,29 @@ def workspace_settings_save(req: WorkspaceRootRequest) -> dict[str, Any]:
         _init()
         set_workspace_root(req.workspace_root)
         return _workspace_settings_payload()
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/settings/workspace/pick-directory")
+def workspace_settings_pick_directory() -> dict[str, Any]:
+    try:
+        _init()
+        selected_path = pick_directory_dialog()
+        if selected_path is None:
+            return {
+                "selected": False,
+                "workspace_root": _workspace_settings_payload()["workspace_root"],
+            }
+        set_workspace_root(selected_path)
+        return {
+            "selected": True,
+            **_workspace_settings_payload(),
+        }
+    except LocalDialogUnavailable as exc:
+        raise _fail(exc, status_code=409)
     except PermissionError as exc:
         raise _fail(exc, status_code=403)
     except Exception as exc:
