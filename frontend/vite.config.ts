@@ -14,5 +14,16 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/studio.js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: (assetInfo) => (
+          assetInfo.names?.some((name) => name.endsWith('.css'))
+            ? 'assets/studio.css'
+            : 'assets/[name][extname]'
+        ),
+      },
+    },
   },
 });

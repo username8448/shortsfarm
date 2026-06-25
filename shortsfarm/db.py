@@ -3690,6 +3690,8 @@ def create_studio_project(
     reaction_asset_id: int | None,
     recipe_json: dict[str, Any] | str,
     workspace_item_key: str | None = None,
+    studio_template_id: int | None = None,
+    reaction_pool_id: int | None = None,
 ) -> int:
     normalized_recipe = _normalize_recipe_json(recipe_json, required=True)
     now = now_utc()
@@ -3698,8 +3700,9 @@ def create_studio_project(
             """
             INSERT INTO studio_projects
                 (workspace_item_key, main_workspace_path, template_key,
-                 reaction_asset_id, recipe_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 reaction_asset_id, recipe_json, created_at, updated_at,
+                 studio_template_id, reaction_pool_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 workspace_item_key,
@@ -3709,6 +3712,8 @@ def create_studio_project(
                 normalized_recipe,
                 now,
                 now,
+                studio_template_id,
+                reaction_pool_id,
             ),
         )
         return int(cur.lastrowid)
@@ -3730,6 +3735,8 @@ def update_studio_project(
     reaction_asset_id: int | None,
     recipe_json: dict[str, Any] | str,
     workspace_item_key: str | None = None,
+    studio_template_id: int | None = None,
+    reaction_pool_id: int | None = None,
 ) -> bool:
     normalized_recipe = _normalize_recipe_json(recipe_json, required=True)
     with connect() as con:
@@ -3737,7 +3744,8 @@ def update_studio_project(
             """
             UPDATE studio_projects
             SET workspace_item_key=?, main_workspace_path=?, template_key=?,
-                reaction_asset_id=?, recipe_json=?, updated_at=?
+                reaction_asset_id=?, recipe_json=?, updated_at=?,
+                studio_template_id=?, reaction_pool_id=?
             WHERE id=?
             """,
             (
@@ -3747,6 +3755,8 @@ def update_studio_project(
                 reaction_asset_id,
                 normalized_recipe,
                 now_utc(),
+                studio_template_id,
+                reaction_pool_id,
                 int(project_id),
             ),
         )
@@ -3873,6 +3883,107 @@ def fail_interrupted_remotion_render_jobs() -> int:
             (now_utc(),),
         )
         return int(result.rowcount)
+
+
+def create_studio_template(
+    *,
+    template_key: str,
+    name: str,
+    engine: str,
+    version: int,
+    status: str,
+    definition_json: dict[str, Any] | str,
+) -> int:
+    normalized = _normalize_recipe_json(definition_json, required=True)
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO studio_templates
+                (template_key, name, engine, version, status,
+                 definition_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                template_key,
+                name,
+                engine,
+                int(version),
+                status,
+                normalized,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def get_studio_template(template_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM studio_templates WHERE id=?",
+            (int(template_id),),
+        ).fetchone()
+
+
+def get_latest_studio_template_by_key(
+    template_key: str,
+) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM studio_templates
+            WHERE template_key=?
+            ORDER BY version DESC, id DESC
+            LIMIT 1
+            """,
+            (template_key,),
+        ).fetchone()
+
+
+def list_studio_templates() -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM studio_templates
+            ORDER BY updated_at DESC, id DESC
+            """
+        ).fetchall()
+
+
+def update_studio_template(
+    template_id: int,
+    *,
+    name: str,
+    status: str,
+    definition_json: dict[str, Any] | str,
+) -> bool:
+    normalized = _normalize_recipe_json(definition_json, required=True)
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE studio_templates
+            SET name=?, status=?, definition_json=?, updated_at=?
+            WHERE id=?
+            """,
+            (name, status, normalized, now_utc(), int(template_id)),
+        )
+        return result.rowcount > 0
+
+
+def next_studio_template_version(template_key: str) -> int:
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT COALESCE(MAX(version), 0) AS max_version
+            FROM studio_templates
+            WHERE template_key=?
+            """,
+            (template_key,),
+        ).fetchone()
+    return int(row["max_version"]) + 1
 
 
 def ensure_default_edit_templates() -> sqlite3.Row:

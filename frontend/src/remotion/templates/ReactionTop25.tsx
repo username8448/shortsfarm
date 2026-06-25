@@ -21,18 +21,19 @@ const overlayStyle: React.CSSProperties = {
 
 export const ReactionTop25: React.FC<ResolvedRecipe> = (recipe) => {
   const {reaction_height, main_fit, reaction_fit, background_color} = recipe.layout;
+  const hasReaction = Boolean(recipe.media.reaction.url);
   return (
     <AbsoluteFill style={{backgroundColor: background_color, overflow: 'hidden'}}>
-      <div style={{position: 'absolute', inset: `0 0 auto 0`, height: reaction_height}}>
+      {hasReaction ? <div style={{position: 'absolute', inset: `0 0 auto 0`, height: reaction_height}}>
         <Html5Video
-          src={recipe.media.reaction.url}
+          src={recipe.media.reaction.url!}
           loop
           muted={recipe.audio.mute_reaction}
           volume={recipe.audio.reaction_volume}
           style={{width: '100%', height: '100%', objectFit: reaction_fit}}
         />
-      </div>
-      <div style={{position: 'absolute', inset: `${reaction_height}px 0 0 0`}}>
+      </div> : null}
+      <div style={{position: 'absolute', inset: `${hasReaction ? reaction_height : 0}px 0 0 0`}}>
         <Html5Video
           src={recipe.media.main.url}
           volume={recipe.audio.main_volume}

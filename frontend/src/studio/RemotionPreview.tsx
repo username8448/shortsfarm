@@ -6,19 +6,24 @@ import type {ResolvedRecipe} from './recipe';
 export const RemotionPreview = ({recipe}: {recipe: ResolvedRecipe | null}) => {
   const inputProps = useMemo(() => recipe, [recipe]);
   if (!inputProps) {
-    return <div className="preview-empty">Выберите main video и reaction</div>;
+    return <div className="preview-empty">Выберите main sample</div>;
   }
   return (
-    <Player
-      component={ReactionTop25}
-      inputProps={inputProps}
-      durationInFrames={inputProps.duration_in_frames}
-      compositionWidth={inputProps.canvas.width}
-      compositionHeight={inputProps.canvas.height}
-      fps={inputProps.canvas.fps}
-      controls
-      loop
-      style={{width: '100%', maxHeight: 'calc(100vh - 150px)', aspectRatio: '9 / 16'}}
-    />
+    <div className="preview-frame">
+      <Player
+        component={ReactionTop25}
+        inputProps={inputProps}
+        durationInFrames={inputProps.duration_in_frames}
+        compositionWidth={inputProps.canvas.width}
+        compositionHeight={inputProps.canvas.height}
+        fps={inputProps.canvas.fps}
+        controls
+        loop
+        style={{width: '100%', aspectRatio: '9 / 16'}}
+      />
+      {!inputProps.media.reaction.url
+        ? <div className="slot-warning">Reaction не выбран · main-only preview</div>
+        : null}
+    </div>
   );
 };

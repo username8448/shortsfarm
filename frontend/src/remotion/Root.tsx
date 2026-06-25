@@ -8,7 +8,7 @@ const defaultProps: ResolvedRecipe = {
   ...defaults,
   media: {
     main: {...defaults.media.main, url: '', duration_sec: 1},
-    reaction: {asset_id: 1, url: '', duration_sec: 1},
+    reaction: {asset_id: null},
   },
   duration_in_frames: 30,
 };

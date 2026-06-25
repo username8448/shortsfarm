@@ -14,7 +14,6 @@ from pydantic import BaseModel
 from .. import db
 from ..remotion_renderer import start_remotion_render_job
 from ..studio import (
-    STUDIO_TEMPLATE_KEY,
     build_remotion_output_paths,
     list_studio_media_items,
     normalize_studio_recipe,
@@ -22,6 +21,13 @@ from ..studio import (
     resolve_studio_media_path,
     resolved_studio_recipe,
     studio_project_payload,
+)
+from ..studio_templates import (
+    TEMPLATE_STATUSES,
+    ensure_default_studio_template,
+    normalize_template_definition,
+    template_row_payload,
+    unique_duplicate_key,
 )
 from ..workspace_fs import get_workspace_root
 
@@ -32,6 +38,14 @@ router = APIRouter()
 class StudioProjectRequest(BaseModel):
     recipe_json: dict[str, Any]
     workspace_item_key: str | None = None
+    studio_template_id: int | None = None
+    reaction_pool_id: int | None = None
+
+
+class StudioTemplateRequest(BaseModel):
+    name: str
+    status: str = "draft"
+    definition: dict[str, Any]
 
 
 def _fail(exc: Exception, status_code: int = 400) -> HTTPException:
@@ -180,6 +194,35 @@ def studio_reactions() -> dict[str, Any]:
     return {"items": items}
 
 
+@router.get("/reaction-pools")
+def studio_reaction_pools() -> dict[str, Any]:
+    db.init_db()
+    pools: list[dict[str, Any]] = []
+    for pool in db.list_reaction_pools(enabled=True):
+        items: list[dict[str, Any]] = []
+        for row in db.list_reaction_pool_items_with_assets(int(pool["id"])):
+            if not bool(row["enabled"]) or not bool(row["asset_enabled"]):
+                continue
+            try:
+                asset, _path = resolve_reaction_media_path(
+                    int(row["reaction_asset_id"])
+                )
+            except (ValueError, PermissionError, FileNotFoundError):
+                continue
+            items.append({
+                "asset_id": int(asset["id"]),
+                "name": str(asset["name"]),
+                "weight": int(row["weight"]),
+            })
+        pools.append({
+            "id": int(pool["id"]),
+            "name": str(pool["name"]),
+            "description": pool["description"],
+            "items": items,
+        })
+    return {"items": pools}
+
+
 @router.get("/reaction-media/{asset_id}")
 def studio_reaction_media(asset_id: int, request: Request) -> Response:
     try:
@@ -194,51 +237,128 @@ def studio_reaction_media(asset_id: int, request: Request) -> Response:
         raise _fail(exc)
 
 
-def _template_payload() -> dict[str, Any]:
-    template = db.ensure_default_edit_templates()
-    defaults = {
-        "version": 1,
-        "template": {"key": STUDIO_TEMPLATE_KEY, "renderer": "remotion"},
-        "canvas": {"width": 1080, "height": 1920, "fps": 30},
-        "media": {
-            "main": {"workspace_path": ""},
-            "reaction": {"asset_id": None},
-        },
-        "layout": {
-            "reaction_height": 480,
-            "main_fit": "cover",
-            "reaction_fit": "cover",
-            "background_color": "#000000",
-        },
-        "audio": {
-            "main_volume": 1,
-            "reaction_volume": 0,
-            "mute_reaction": True,
-        },
-        "overlays": {"top_text": "", "bottom_text": ""},
-    }
-    return {
-        "id": int(template["id"]),
-        "key": STUDIO_TEMPLATE_KEY,
-        "name": str(template["name"]),
-        "description": template["description"],
-        "renderer": "remotion",
-        "recipe_defaults": defaults,
-    }
-
-
 @router.get("/templates")
 def studio_templates() -> dict[str, Any]:
     db.init_db()
-    return {"items": [_template_payload()]}
+    ensure_default_studio_template()
+    return {
+        "items": [
+            template_row_payload(row)
+            for row in db.list_studio_templates()
+        ]
+    }
 
 
-@router.get("/templates/{template_key}")
-def studio_template(template_key: str) -> dict[str, Any]:
+@router.get("/templates/{template_identifier}")
+def studio_template(template_identifier: str) -> dict[str, Any]:
     db.init_db()
-    if template_key != STUDIO_TEMPLATE_KEY:
+    ensure_default_studio_template()
+    row = (
+        db.get_studio_template(int(template_identifier))
+        if template_identifier.isdigit()
+        else db.get_latest_studio_template_by_key(template_identifier)
+    )
+    if row is None:
         raise _fail(ValueError("Studio template не найден."), 404)
-    return {"item": _template_payload()}
+    return {"item": template_row_payload(row)}
+
+
+@router.patch("/templates/{template_id}")
+def studio_template_update(
+    template_id: int,
+    req: StudioTemplateRequest,
+) -> dict[str, Any]:
+    try:
+        db.init_db()
+        row = db.get_studio_template(template_id)
+        if row is None:
+            raise FileNotFoundError("Studio template не найден.")
+        status = str(req.status or "").strip().lower()
+        if status not in TEMPLATE_STATUSES:
+            raise ValueError("Template status должен быть draft, active или archived.")
+        definition = normalize_template_definition(req.definition)
+        if definition["key"] != str(row["template_key"]):
+            raise ValueError("Template key нельзя менять внутри существующей версии.")
+        definition["name"] = str(req.name or "").strip()
+        if not definition["name"]:
+            raise ValueError("Template name обязателен.")
+        db.update_studio_template(
+            template_id,
+            name=definition["name"],
+            status=status,
+            definition_json=definition,
+        )
+        updated = db.get_studio_template(template_id)
+        assert updated is not None
+        return {"item": template_row_payload(updated)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, 404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/templates/{template_id}/duplicate")
+def studio_template_duplicate(template_id: int) -> dict[str, Any]:
+    try:
+        db.init_db()
+        row = db.get_studio_template(template_id)
+        if row is None:
+            raise FileNotFoundError("Studio template не найден.")
+        definition = normalize_template_definition(
+            json.loads(str(row["definition_json"]))
+        )
+        duplicate_key = unique_duplicate_key(str(row["template_key"]))
+        definition["key"] = duplicate_key
+        definition["name"] = f"{row['name']} Copy"
+        new_id = db.create_studio_template(
+            template_key=duplicate_key,
+            name=definition["name"],
+            engine=str(row["engine"]),
+            version=1,
+            status="draft",
+            definition_json=definition,
+        )
+        created = db.get_studio_template(new_id)
+        assert created is not None
+        return {"item": template_row_payload(created)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, 404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/templates/{template_id}/versions")
+def studio_template_create_version(
+    template_id: int,
+    req: StudioTemplateRequest,
+) -> dict[str, Any]:
+    try:
+        db.init_db()
+        row = db.get_studio_template(template_id)
+        if row is None:
+            raise FileNotFoundError("Studio template не найден.")
+        status = str(req.status or "draft").strip().lower()
+        if status not in TEMPLATE_STATUSES:
+            raise ValueError("Template status должен быть draft, active или archived.")
+        definition = normalize_template_definition(req.definition)
+        definition["key"] = str(row["template_key"])
+        definition["name"] = str(req.name or "").strip()
+        version = db.next_studio_template_version(str(row["template_key"]))
+        new_id = db.create_studio_template(
+            template_key=str(row["template_key"]),
+            name=definition["name"],
+            engine=str(row["engine"]),
+            version=version,
+            status=status,
+            definition_json=definition,
+        )
+        created = db.get_studio_template(new_id)
+        assert created is not None
+        return {"item": template_row_payload(created)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, 404)
+    except Exception as exc:
+        raise _fail(exc)
 
 
 @router.post("/projects")
@@ -249,7 +369,11 @@ def studio_project_create(
     try:
         db.init_db()
         recipe = normalize_studio_recipe(req.recipe_json)
-        resolved_studio_recipe(recipe, base_url=_base_url(request))
+        resolved_studio_recipe(
+            recipe,
+            base_url=_base_url(request),
+            require_reaction=False,
+        )
         main_path, template_key, reaction_id = _project_columns(recipe)
         project_id = db.create_studio_project(
             workspace_item_key=req.workspace_item_key,
@@ -257,6 +381,8 @@ def studio_project_create(
             template_key=template_key,
             reaction_asset_id=reaction_id,
             recipe_json=recipe,
+            studio_template_id=req.studio_template_id,
+            reaction_pool_id=req.reaction_pool_id,
         )
         row = db.get_studio_project(project_id)
         assert row is not None
@@ -296,7 +422,11 @@ def studio_project_update(
         if db.get_studio_project(project_id) is None:
             raise FileNotFoundError("Studio project не найден.")
         recipe = normalize_studio_recipe(req.recipe_json)
-        resolved_studio_recipe(recipe, base_url=_base_url(request))
+        resolved_studio_recipe(
+            recipe,
+            base_url=_base_url(request),
+            require_reaction=False,
+        )
         main_path, template_key, reaction_id = _project_columns(recipe)
         db.update_studio_project(
             project_id,
@@ -305,6 +435,8 @@ def studio_project_update(
             template_key=template_key,
             reaction_asset_id=reaction_id,
             recipe_json=recipe,
+            studio_template_id=req.studio_template_id,
+            reaction_pool_id=req.reaction_pool_id,
         )
         row = db.get_studio_project(project_id)
         assert row is not None
@@ -326,7 +458,11 @@ def studio_project_render(project_id: int, request: Request) -> JSONResponse:
         if project is None:
             raise FileNotFoundError("Studio project не найден.")
         recipe = json.loads(str(project["recipe_json"]))
-        resolved_studio_recipe(recipe, base_url=_base_url(request))
+        resolved_studio_recipe(
+            recipe,
+            base_url=_base_url(request),
+            require_reaction=True,
+        )
         job_id = db.create_remotion_render_job(project_id)
         _temp_path, final_path = build_remotion_output_paths(
             str(project["main_workspace_path"]),

@@ -34,6 +34,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "024_add_edit_job_review_status" in versions
     assert "025_create_workspace_folders" in versions
     assert "026_create_remotion_studio" in versions
+    assert "027_create_studio_templates" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -244,6 +245,30 @@ def test_remotion_studio_schema_exists(tmp_data_dir):
 
     assert "idx_remotion_render_jobs_one_active_global" in indexes
     assert "idx_remotion_render_jobs_one_active_project" in indexes
+
+
+def test_studio_template_definition_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    with db.connect() as con:
+        columns = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA table_info(studio_templates)"
+            ).fetchall()
+        }
+        project_columns = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA table_info(studio_projects)"
+            ).fetchall()
+        }
+
+    assert {
+        "template_key", "name", "engine", "version", "status",
+        "definition_json", "created_at", "updated_at",
+    } <= columns
+    assert {"studio_template_id", "reaction_pool_id"} <= project_columns
 
 
 def test_idempotent(tmp_data_dir):

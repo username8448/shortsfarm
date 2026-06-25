@@ -25,7 +25,11 @@ export type Recipe = {
 export type ResolvedRecipe = Recipe & {
   media: {
     main: {workspace_path: string; url: string; duration_sec: number};
-    reaction: {asset_id: number; url: string; duration_sec?: number | null};
+    reaction: {
+      asset_id: number | null;
+      url?: string;
+      duration_sec?: number | null;
+    };
   };
   duration_in_frames: number;
 };
@@ -56,7 +60,7 @@ export const resolveDraftRecipe = (
   recipe: Recipe,
   mainUrl: string,
   mainDuration: number,
-  reactionUrl: string,
+  reactionUrl?: string,
   reactionDuration?: number | null,
 ): ResolvedRecipe => ({
   ...recipe,
@@ -67,8 +71,8 @@ export const resolveDraftRecipe = (
       duration_sec: mainDuration,
     },
     reaction: {
-      asset_id: recipe.media.reaction.asset_id as number,
-      url: reactionUrl,
+      asset_id: recipe.media.reaction.asset_id,
+      ...(reactionUrl ? {url: reactionUrl} : {}),
       duration_sec: reactionDuration,
     },
   },

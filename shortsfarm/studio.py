@@ -252,6 +252,7 @@ def resolved_studio_recipe(
     recipe: dict[str, Any],
     *,
     base_url: str = "",
+    require_reaction: bool = True,
 ) -> dict[str, Any]:
     normalized = normalize_studio_recipe(recipe)
     main_path = resolve_studio_media_path(
@@ -262,10 +263,8 @@ def resolved_studio_recipe(
         raise ValueError(f"Не удалось определить duration main media: {main_path}")
 
     asset_id = normalized["media"]["reaction"]["asset_id"]
-    if asset_id is None:
+    if asset_id is None and require_reaction:
         raise ValueError("Выберите reaction asset.")
-    _asset, reaction_path = resolve_reaction_media_path(asset_id)
-    reaction_duration = probe_duration(reaction_path)
 
     prefix = str(base_url or "").rstrip("/")
     main_relative = normalized["media"]["main"]["workspace_path"]
@@ -276,10 +275,13 @@ def resolved_studio_recipe(
         ),
         "duration_sec": duration,
     })
-    resolved["media"]["reaction"].update({
-        "url": f"{prefix}/api/studio/reaction-media/{asset_id}",
-        "duration_sec": reaction_duration,
-    })
+    if asset_id is not None:
+        _asset, reaction_path = resolve_reaction_media_path(asset_id)
+        reaction_duration = probe_duration(reaction_path)
+        resolved["media"]["reaction"].update({
+            "url": f"{prefix}/api/studio/reaction-media/{asset_id}",
+            "duration_sec": reaction_duration,
+        })
     resolved["duration_in_frames"] = max(
         1,
         int(round(duration * normalized["canvas"]["fps"])),
@@ -302,6 +304,7 @@ def studio_project_payload(
         "resolved_recipe_json": resolved_studio_recipe(
             recipe,
             base_url=base_url,
+            require_reaction=False,
         ),
     }
 

@@ -223,6 +223,90 @@ def test_studio_project_create_and_update(tmp_path, monkeypatch):
     assert updated["recipe_json"]["layout"]["reaction_height"] == 600
 
 
+def test_template_definition_lists_slots_parameters_rules_and_versions():
+    from shortsfarm.web.studio_api import (
+        StudioTemplateRequest,
+        studio_template_create_version,
+        studio_template_duplicate,
+        studio_templates,
+    )
+
+    items = studio_templates()["items"]
+    template = next(item for item in items if item["key"] == "reaction_top_25")
+    definition = template["definition"]
+
+    assert definition["slots"]["main"]["duration_policy"] == (
+        "defines_output_duration"
+    )
+    assert definition["slots"]["reaction"]["playback"] == "loop"
+    assert definition["parameters"]["reaction_height"]["default"] == 480
+    assert definition["rules"]["output_duration"] == "main.duration"
+
+    duplicate = studio_template_duplicate(template["id"])["item"]
+    assert duplicate["status"] == "draft"
+    assert duplicate["key"].startswith("reaction_top_25_copy")
+
+    new_version = studio_template_create_version(
+        template["id"],
+        StudioTemplateRequest(
+            name=template["name"],
+            status="draft",
+            definition=definition,
+        ),
+    )["item"]
+    assert new_version["key"] == "reaction_top_25"
+    assert new_version["version"] == template["version"] + 1
+
+
+def test_studio_project_allows_main_only_test_context(tmp_path, monkeypatch):
+    from shortsfarm.web.studio_api import (
+        StudioProjectRequest,
+        studio_project_create,
+    )
+
+    root = _workspace(tmp_path)
+    main = root / "prepared" / "main.mp4"
+    main.write_bytes(b"main")
+    monkeypatch.setattr("shortsfarm.studio.probe_duration", lambda path: 8.0)
+    recipe = _recipe("prepared/main.mp4", 1)
+    recipe["media"]["reaction"]["asset_id"] = None
+
+    created = studio_project_create(
+        StudioProjectRequest(recipe_json=recipe),
+        _request(),
+    )["item"]
+
+    assert created["recipe_json"]["media"]["reaction"]["asset_id"] is None
+    assert "url" not in created["resolved_recipe_json"]["media"]["reaction"]
+
+
+def test_render_rejects_test_context_without_required_reaction(
+    tmp_path,
+    monkeypatch,
+):
+    from shortsfarm import db
+    from shortsfarm.web.studio_api import studio_project_render
+
+    root = _workspace(tmp_path)
+    main = root / "sources" / "main.mp4"
+    main.write_bytes(b"main")
+    monkeypatch.setattr("shortsfarm.studio.probe_duration", lambda path: 8.0)
+    recipe = _recipe("sources/main.mp4", 1)
+    recipe["media"]["reaction"]["asset_id"] = None
+    project_id = db.create_studio_project(
+        main_workspace_path="sources/main.mp4",
+        template_key="reaction_top_25",
+        reaction_asset_id=None,
+        recipe_json=recipe,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        studio_project_render(project_id, _request())
+
+    assert exc.value.status_code == 400
+    assert "reaction" in exc.value.detail["message"].lower()
+
+
 def test_remotion_render_global_and_project_locks(tmp_path, monkeypatch):
     from shortsfarm import db
 
@@ -337,3 +421,18 @@ def test_studio_route_shows_build_instructions_without_dist(tmp_path, monkeypatc
     assert isinstance(response, HTMLResponse)
     assert response.status_code == 503
     assert b"npm --prefix frontend run build" in response.body
+
+
+def test_main_panel_embeds_template_studio_without_legacy_word():
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "shortsfarm"
+        / "web"
+        / "templates"
+        / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'data-v="studio"' in template
+    assert 'id="v-studio"' in template
+    assert 'id="studio-root"' in template
+    assert "Legacy" not in template

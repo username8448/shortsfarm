@@ -4,28 +4,48 @@ import {
   type MediaItem,
   type MediaSection,
   type ReactionItem,
+  type ReactionPool,
   type RenderJob,
 } from '../api';
-import {MediaPicker} from './MediaPicker';
-import {ReactionPicker} from './ReactionPicker';
 import {RemotionPreview} from './RemotionPreview';
 import {RenderPanel} from './RenderPanel';
-import {StudioLayout} from './StudioLayout';
-import {TemplateControls} from './TemplateControls';
+import {ParametersPanel} from './ParametersPanel';
+import {RulesPanel} from './RulesPanel';
+import {SlotsPanel} from './SlotsPanel';
+import {TemplatesPage} from './TemplatesPage';
+import {TestMediaPanel} from './TestMediaPanel';
 import {
   createDefaultRecipe,
   resolveDraftRecipe,
   type Recipe,
 } from './recipe';
+import {
+  recipeFromTemplate,
+  type AutomationTemplate,
+  type TemplateDefinition,
+  type TemplateStatus,
+} from './template';
 
-export const StudioPage = () => {
+type StudioMode = 'templates' | 'builder' | 'test';
+
+const cloneDefinition = (value: TemplateDefinition): TemplateDefinition =>
+  JSON.parse(JSON.stringify(value)) as TemplateDefinition;
+
+export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
+  const [mode, setMode] = useState<StudioMode>('templates');
+  const [templates, setTemplates] = useState<AutomationTemplate[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<AutomationTemplate | null>(null);
+  const [definition, setDefinition] = useState<TemplateDefinition | null>(null);
   const [sections, setSections] = useState<MediaSection[]>([]);
   const [reactions, setReactions] = useState<ReactionItem[]>([]);
+  const [pools, setPools] = useState<ReactionPool[]>([]);
   const [recipe, setRecipe] = useState<Recipe>(createDefaultRecipe);
+  const [reactionPoolId, setReactionPoolId] = useState<number | null>(null);
   const [projectId, setProjectId] = useState<number | null>(null);
   const [job, setJob] = useState<RenderJob | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
 
   const mediaItems = sections.flatMap((section) => section.items);
   const mainItem = mediaItems.find(
@@ -35,33 +55,57 @@ export const StudioPage = () => {
     (item) => item.id === recipe.media.reaction.asset_id,
   );
   const resolvedRecipe = useMemo(() => {
-    if (!mainItem?.url || !mainItem.duration_sec || !reaction?.url) return null;
+    if (!mainItem?.url || !mainItem.duration_sec) return null;
     return resolveDraftRecipe(
       recipe,
       mainItem.url,
       mainItem.duration_sec,
-      reaction.url,
-      reaction.duration_sec,
+      reaction?.url,
+      reaction?.duration_sec,
     );
   }, [recipe, mainItem, reaction]);
+
+  const refreshTemplates = async () => {
+    const data = await studioApi.templates();
+    setTemplates(data.items);
+    return data.items;
+  };
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [media, reactionData, templates] = await Promise.all([
+        const [media, reactionData, poolData, templateData] = await Promise.all([
           studioApi.mediaItems(),
           studioApi.reactions(),
+          studioApi.reactionPools(),
           studioApi.templates(),
         ]);
         setSections(media.sections);
         setReactions(reactionData.items);
-        const id = Number(new URLSearchParams(window.location.search).get('project'));
-        if (id > 0) {
-          const project = await studioApi.project(id);
+        setPools(poolData.items);
+        setTemplates(templateData.items);
+
+        const projectIdFromUrl = Number(
+          new URLSearchParams(window.location.search).get('project'),
+        );
+        if (projectIdFromUrl > 0) {
+          const project = await studioApi.project(projectIdFromUrl);
+          const template = templateData.items.find(
+            (item) => item.id === project.item.studio_template_id,
+          ) || templateData.items[0];
+          if (template) {
+            setSelectedTemplate(template);
+            setDefinition(cloneDefinition(template.definition));
+          }
           setProjectId(project.item.id);
+          setReactionPoolId(project.item.reaction_pool_id);
           setRecipe(project.item.recipe_json);
-        } else if (templates.items[0]) {
-          setRecipe(templates.items[0].recipe_defaults);
+          setMode('test');
+        } else if (templateData.items[0]) {
+          const template = templateData.items[0];
+          setSelectedTemplate(template);
+          setDefinition(cloneDefinition(template.definition));
+          setRecipe(recipeFromTemplate(template));
         }
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));
@@ -84,6 +128,72 @@ export const StudioPage = () => {
     return () => window.clearInterval(timer);
   }, [job?.id, job?.status]);
 
+  const openTemplate = (
+    template: AutomationTemplate,
+    targetMode: StudioMode = 'builder',
+  ) => {
+    setSelectedTemplate(template);
+    setDefinition(cloneDefinition(template.definition));
+    setRecipe((current) => recipeFromTemplate(template, current));
+    setMode(targetMode);
+    setMessage('');
+    setError('');
+  };
+
+  const duplicateTemplate = async (template: AutomationTemplate) => {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await studioApi.duplicateTemplate(template.id);
+      await refreshTemplates();
+      openTemplate(result.item);
+      setMessage(`Создан draft template ${result.item.key}.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveTemplate = async (newVersion = false) => {
+    if (!selectedTemplate || !definition) return;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const result = newVersion
+        ? await studioApi.createTemplateVersion(
+          selectedTemplate.id,
+          definition.name,
+          'draft',
+          definition,
+        )
+        : await studioApi.updateTemplate(
+          selectedTemplate.id,
+          definition.name,
+          selectedTemplate.status,
+          definition,
+        );
+      await refreshTemplates();
+      setSelectedTemplate(result.item);
+      setDefinition(cloneDefinition(result.item.definition));
+      setMessage(
+        newVersion
+          ? `Сохранена новая версия v${result.item.version}.`
+          : `Template v${result.item.version} сохранён.`,
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateTemplateStatus = (status: TemplateStatus) => {
+    if (!selectedTemplate) return;
+    setSelectedTemplate({...selectedTemplate, status});
+  };
+
   const selectMedia = (item: MediaItem) => {
     setRecipe((current) => ({
       ...current,
@@ -98,11 +208,29 @@ export const StudioPage = () => {
     }));
   };
 
-  const save = async () => {
-    if (!resolvedRecipe) throw new Error('Выберите доступные main video и reaction.');
+  const selectPool = (id: number | null) => {
+    setReactionPoolId(id);
+    if (id) {
+      const pool = pools.find((item) => item.id === id);
+      selectReaction(pool?.items[0]?.asset_id ?? null);
+    }
+  };
+
+  const saveTestProject = async () => {
+    if (!selectedTemplate) throw new Error('Выберите automation template.');
+    if (!mainItem) throw new Error('Выберите main sample.');
     const response = projectId
-      ? await studioApi.updateProject(projectId, recipe)
-      : await studioApi.createProject(recipe);
+      ? await studioApi.updateProject(
+        projectId,
+        recipe,
+        selectedTemplate.id,
+        reactionPoolId,
+      )
+      : await studioApi.createProject(
+        recipe,
+        selectedTemplate.id,
+        reactionPoolId,
+      );
     setProjectId(response.item.id);
     const url = new URL(window.location.href);
     url.searchParams.set('project', String(response.item.id));
@@ -110,11 +238,12 @@ export const StudioPage = () => {
     return response.item.id;
   };
 
-  const handleSave = async () => {
+  const handleSaveProject = async () => {
     setBusy(true);
     setError('');
     try {
-      await save();
+      await saveTestProject();
+      setMessage('Test context сохранён.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -126,9 +255,10 @@ export const StudioPage = () => {
     setBusy(true);
     setError('');
     try {
-      const id = await save();
+      const id = await saveTestProject();
       const response = await studioApi.render(id);
       setJob(response.job);
+      setMessage('Test render добавлен в очередь.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -136,34 +266,155 @@ export const StudioPage = () => {
     }
   };
 
+  const openReactions = () => {
+    const host = window as typeof window & {
+      nav?: (id: string, element: Element | null) => void;
+    };
+    host.nav?.('editing', document.querySelector('[data-v="editing"]'));
+  };
+
+  const mainAllowedSections = (
+    definition?.slots.main?.allowed_sections || ['sources', 'cuts', 'prepared']
+  );
+  const missingMain = Boolean(definition?.slots.main?.required) && !mainItem;
+  const missingReaction = Boolean(definition?.slots.reaction?.required) && !reaction?.url;
+  const renderDisabled = missingMain || missingReaction;
+  const disabledReason = [
+    missingMain ? 'Main sample не выбран.' : '',
+    missingReaction ? 'Reaction не выбран.' : '',
+  ].filter(Boolean).join(' ');
+
+  const testMedia = definition ? (
+    <TestMediaPanel
+      sections={sections}
+      selectedMain={recipe.media.main.workspace_path}
+      allowedSections={mainAllowedSections}
+      reactions={reactions}
+      pools={pools}
+      reactionAssetId={recipe.media.reaction.asset_id}
+      reactionPoolId={reactionPoolId}
+      onMain={selectMedia}
+      onReaction={selectReaction}
+      onPool={selectPool}
+      onOpenReactions={openReactions}
+    />
+  ) : null;
+
   return (
-    <div className="studio-shell">
-      <header>
+    <div className={`template-studio ${embedded ? 'embedded' : 'standalone'}`}>
+      <div className="ts-topbar">
         <div>
-          <h1>ShortsFarm Studio</h1>
-          <p>Remotion · reaction_top_25</p>
+          <h1>Template Studio</h1>
+          <p>Automation Template Builder · sample media отделены от definition</p>
         </div>
-        <a href="/">Legacy UI</a>
-      </header>
-      {error ? <div className="global-error">{error}</div> : null}
-      <StudioLayout
-        media={<MediaPicker sections={sections} selected={recipe.media.main.workspace_path} onSelect={selectMedia} />}
-        preview={<RemotionPreview recipe={resolvedRecipe} />}
-        controls={(
-          <>
-            <h2>Controls</h2>
-            <ReactionPicker reactions={reactions} value={recipe.media.reaction.asset_id} onChange={selectReaction} />
-            <TemplateControls recipe={recipe} onChange={setRecipe} />
-            <RenderPanel
-              projectId={projectId}
-              job={job}
-              busy={busy}
-              onSave={handleSave}
-              onRender={handleRender}
+        {!embedded ? <a href="/">Основная панель</a> : null}
+      </div>
+      <nav className="ts-tabs">
+        <button className={mode === 'templates' ? 'active' : ''} onClick={() => setMode('templates')}>Templates</button>
+        <button className={mode === 'builder' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('builder')}>Template Builder</button>
+        <button className={mode === 'test' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('test')}>Test Render</button>
+      </nav>
+      {error ? <div className="ts-alert error">{error}</div> : null}
+      {message ? <div className="ts-alert success">{message}</div> : null}
+
+      {mode === 'templates' ? (
+        <TemplatesPage
+          templates={templates}
+          onOpen={(item) => openTemplate(item, 'builder')}
+          onDuplicate={duplicateTemplate}
+          onTest={(item) => openTemplate(item, 'test')}
+        />
+      ) : null}
+
+      {mode === 'builder' && selectedTemplate && definition ? (
+        <div className="builder-grid">
+          <div className="builder-left">
+            <section className="ts-card template-info">
+              <div className="ts-card-head"><h2>Template Info</h2></div>
+              <label><span>Key</span><input value={selectedTemplate.key} disabled /></label>
+              <label><span>Name</span><input value={definition.name} onChange={(event) => setDefinition({...definition, name: event.target.value})} /></label>
+              <div className="info-row">
+                <label><span>Engine</span><input value={selectedTemplate.engine} disabled /></label>
+                <label><span>Version</span><input value={`v${selectedTemplate.version}`} disabled /></label>
+              </div>
+              <label>
+                <span>Status</span>
+                <select value={selectedTemplate.status} onChange={(event) => updateTemplateStatus(event.target.value as TemplateStatus)}>
+                  <option value="draft">draft</option>
+                  <option value="active">active</option>
+                  <option value="archived">archived</option>
+                </select>
+              </label>
+              <div className="ts-row-actions">
+                <button className="primary" disabled={busy} onClick={() => void saveTemplate(false)}>Save template</button>
+                <button disabled={busy} onClick={() => void saveTemplate(true)}>Save new version</button>
+              </div>
+            </section>
+            <SlotsPanel definition={definition} onChange={setDefinition} />
+            <RulesPanel definition={definition} />
+          </div>
+          <div className="builder-center">
+            <section className="ts-card preview-card">
+              <div className="ts-card-head"><h2>Preview</h2><span className="ts-badge">9:16</span></div>
+              <RemotionPreview recipe={resolvedRecipe} />
+            </section>
+            {testMedia}
+          </div>
+          <div className="builder-right">
+            <ParametersPanel
+              definition={definition}
+              recipe={recipe}
+              onDefinitionChange={setDefinition}
+              onRecipeChange={setRecipe}
             />
-          </>
-        )}
-      />
+            <section className="ts-card">
+              <div className="ts-card-head"><h2>Render Test</h2></div>
+              <RenderPanel
+                projectId={projectId}
+                job={job}
+                busy={busy}
+                renderDisabled={renderDisabled}
+                disabledReason={disabledReason}
+                onSave={handleSaveProject}
+                onRender={handleRender}
+              />
+            </section>
+          </div>
+        </div>
+      ) : null}
+
+      {mode === 'test' && selectedTemplate && definition ? (
+        <div className="test-render-grid">
+          <div>{testMedia}</div>
+          <section className="ts-card preview-card">
+            <div className="ts-card-head">
+              <div><h2>Test Preview</h2><p>{selectedTemplate.key} · v{selectedTemplate.version}</p></div>
+              <span className="ts-badge engine">{selectedTemplate.engine}</span>
+            </div>
+            <RemotionPreview recipe={resolvedRecipe} />
+          </section>
+          <div>
+            <ParametersPanel
+              definition={definition}
+              recipe={recipe}
+              onDefinitionChange={setDefinition}
+              onRecipeChange={setRecipe}
+            />
+            <section className="ts-card">
+              <div className="ts-card-head"><h2>Render Test</h2></div>
+              <RenderPanel
+                projectId={projectId}
+                job={job}
+                busy={busy}
+                renderDisabled={renderDisabled}
+                disabledReason={disabledReason}
+                onSave={handleSaveProject}
+                onRender={handleRender}
+              />
+            </section>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

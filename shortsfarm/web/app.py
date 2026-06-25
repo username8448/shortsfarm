@@ -39,7 +39,11 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request):
-        context = {"request": request, "asset_version": ASSET_VERSION}
+        context = {
+            "request": request,
+            "asset_version": ASSET_VERSION,
+            "studio_built": (STUDIO_DIST / "assets" / "studio.js").is_file(),
+        }
         headers = {"Cache-Control": "no-store"}
         try:
             return templates.TemplateResponse(
@@ -76,7 +80,7 @@ def create_app() -> FastAPI:
               <p>Выполните в корне проекта:</p>
               <pre style="padding:16px;background:#191d24;border-radius:8px">npm --prefix frontend install
 npm --prefix frontend run build</pre>
-              <p><a href="/" style="color:#8ab4ff">Вернуться в legacy UI</a></p>
+              <p><a href="/" style="color:#8ab4ff">Вернуться в основную панель</a></p>
             </body></html>
             """,
             status_code=503,

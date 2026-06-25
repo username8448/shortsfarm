@@ -1,4 +1,9 @@
 import type {Recipe, ResolvedRecipe} from './studio/recipe';
+import type {
+  AutomationTemplate,
+  TemplateDefinition,
+  TemplateStatus,
+} from './studio/template';
 
 export type MediaItem = {
   name: string;
@@ -27,12 +32,21 @@ export type ReactionItem = {
   url?: string;
 };
 
+export type ReactionPool = {
+  id: number;
+  name: string;
+  description?: string | null;
+  items: Array<{asset_id: number; name: string; weight: number}>;
+};
+
 export type StudioProject = {
   id: number;
   workspace_item_key: string | null;
   main_workspace_path: string;
   template_key: string;
   reaction_asset_id: number | null;
+  reaction_pool_id: number | null;
+  studio_template_id: number | null;
   recipe_json: Recipe;
   resolved_recipe_json: ResolvedRecipe;
   created_at: string;
@@ -72,15 +86,56 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const studioApi = {
   mediaItems: () => request<{sections: MediaSection[]}>('/api/studio/media-items'),
   reactions: () => request<{items: ReactionItem[]}>('/api/studio/reactions'),
-  templates: () => request<{items: Array<{key: string; name: string; recipe_defaults: Recipe}>}>('/api/studio/templates'),
-  project: (id: number) => request<{item: StudioProject}>(`/api/studio/projects/${id}`),
-  createProject: (recipe: Recipe) => request<{item: StudioProject}>('/api/studio/projects', {
-    method: 'POST',
-    body: JSON.stringify({recipe_json: recipe}),
-  }),
-  updateProject: (id: number, recipe: Recipe) => request<{item: StudioProject}>(`/api/studio/projects/${id}`, {
+  reactionPools: () => request<{items: ReactionPool[]}>('/api/studio/reaction-pools'),
+  templates: () => request<{items: AutomationTemplate[]}>('/api/studio/templates'),
+  template: (id: number) => request<{item: AutomationTemplate}>(`/api/studio/templates/${id}`),
+  updateTemplate: (
+    id: number,
+    name: string,
+    status: TemplateStatus,
+    definition: TemplateDefinition,
+  ) => request<{item: AutomationTemplate}>(`/api/studio/templates/${id}`, {
     method: 'PATCH',
-    body: JSON.stringify({recipe_json: recipe}),
+    body: JSON.stringify({name, status, definition}),
+  }),
+  duplicateTemplate: (id: number) => request<{item: AutomationTemplate}>(`/api/studio/templates/${id}/duplicate`, {
+    method: 'POST',
+    body: '{}',
+  }),
+  createTemplateVersion: (
+    id: number,
+    name: string,
+    status: TemplateStatus,
+    definition: TemplateDefinition,
+  ) => request<{item: AutomationTemplate}>(`/api/studio/templates/${id}/versions`, {
+    method: 'POST',
+    body: JSON.stringify({name, status, definition}),
+  }),
+  project: (id: number) => request<{item: StudioProject}>(`/api/studio/projects/${id}`),
+  createProject: (
+    recipe: Recipe,
+    templateId: number,
+    reactionPoolId: number | null,
+  ) => request<{item: StudioProject}>('/api/studio/projects', {
+    method: 'POST',
+    body: JSON.stringify({
+      recipe_json: recipe,
+      studio_template_id: templateId,
+      reaction_pool_id: reactionPoolId,
+    }),
+  }),
+  updateProject: (
+    id: number,
+    recipe: Recipe,
+    templateId: number,
+    reactionPoolId: number | null,
+  ) => request<{item: StudioProject}>(`/api/studio/projects/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      recipe_json: recipe,
+      studio_template_id: templateId,
+      reaction_pool_id: reactionPoolId,
+    }),
   }),
   render: (id: number) => request<{job: RenderJob}>(`/api/studio/projects/${id}/render`, {
     method: 'POST',

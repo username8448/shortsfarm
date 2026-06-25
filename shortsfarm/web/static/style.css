@@ -96,6 +96,7 @@
   /* ── Views ───────────────────────────────────────── */
   .v { padding: 22px 24px; display: none; }
   .v.on { display: block; }
+  .studio-host-view { padding: 0; min-height: 100%; }
 
   /* ── Page header ─────────────────────────────────── */
   .ph h1 { font-size: 18px; font-weight: 600; color: var(--txt); letter-spacing: -.015em; margin-bottom: 2px; }

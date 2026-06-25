@@ -28,7 +28,7 @@
       <button class="nb" data-v="clips" onclick="nav('clips', this)"><i class="ti ti-player-play"></i><span>Клипы</span><span id="nav-clips" class="badge-pill" style="background:var(--warn-bg);color:var(--warn);"></span></button>
       <button class="nb" data-v="publish" onclick="nav('publish', this)"><i class="ti ti-upload"></i><span>Публикация</span></button>
       <button class="nb" data-v="editing" onclick="nav('editing', this)"><i class="ti ti-layout-collage"></i><span>Монтаж</span></button>
-      <a class="nb" href="/studio"><i class="ti ti-movie"></i><span>Studio</span></a>
+      <button class="nb" data-v="studio" onclick="nav('studio', this)"><i class="ti ti-movie"></i><span>Template Studio</span></button>
       <button class="nb" data-v="settings" onclick="nav('settings', this)"><i class="ti ti-settings"></i><span>Настройки</span></button>
     </nav>
 
@@ -667,6 +667,21 @@
       </div>
     </div>
 
+    <div id="v-studio" class="v studio-host-view">
+      {% if studio_built %}
+      <div id="studio-root"></div>
+      {% else %}
+      <div class="box">
+        <div class="box-head">Template Studio не собрана</div>
+        <div class="form-body">
+          <p class="mono dim">Выполните в корне проекта:</p>
+          <pre class="mono" style="margin-top:10px">npm --prefix frontend install
+npm --prefix frontend run build</pre>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
   </main>
 </div>
 
@@ -721,5 +736,9 @@
   </section>
 </div>
 <script src="/static/app.js?v={{ asset_version }}"></script>
+{% if studio_built %}
+<link rel="stylesheet" href="/studio/assets/studio.css">
+<script type="module" src="/studio/assets/studio.js"></script>
+{% endif %}
 </body>
 </html>
