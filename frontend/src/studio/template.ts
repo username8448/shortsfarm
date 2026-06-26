@@ -33,6 +33,31 @@ export type TemplateDefinition = {
   rules: Record<string, string>;
 };
 
+export type TemplateRendererAdapter = {
+  key: string;
+  compositionId: string;
+  displayName: string;
+};
+
+export const TEMPLATE_RENDERER_REGISTRY: Record<string, TemplateRendererAdapter> = {
+  reaction_layout: {
+    key: 'reaction_layout',
+    compositionId: 'ReactionLayoutTemplate',
+    displayName: 'Reaction Layout Template',
+  },
+};
+
+export const rendererAdapterKey = (definition: TemplateDefinition): string =>
+  String(definition.rules.renderer_adapter || 'reaction_layout');
+
+export const rendererAdapter = (
+  definition: TemplateDefinition,
+): TemplateRendererAdapter | null =>
+  TEMPLATE_RENDERER_REGISTRY[rendererAdapterKey(definition)] || null;
+
+export const hasRendererAdapter = (definition: TemplateDefinition): boolean =>
+  Boolean(rendererAdapter(definition));
+
 export type AutomationTemplate = {
   id: number;
   key: string;
@@ -51,22 +76,32 @@ export const recipeFromTemplate = (
   current?: Recipe,
 ): Recipe => {
   const defaults = template.definition.parameters;
+  const adapter = rendererAdapter(template.definition);
   const value = (key: string, fallback: string | number | boolean) =>
     defaults[key]?.default ?? fallback;
   return {
     version: 1,
-    template: {key: 'reaction_top_25', renderer: 'remotion'},
+    template: {
+      key: template.key,
+      renderer: 'remotion',
+      renderer_adapter: adapter?.key || rendererAdapterKey(template.definition),
+      composition_id: String(
+        template.definition.rules.composition_id || adapter?.compositionId || 'ReactionLayoutTemplate',
+      ),
+    },
     canvas: {
-      width: 1080,
-      height: 1920,
-      fps: 30,
+      width: template.definition.canvas.width,
+      height: template.definition.canvas.height,
+      fps: template.definition.canvas.fps,
     },
     media: current?.media ?? {
       main: {workspace_path: ''},
       reaction: {asset_id: null},
     },
     layout: {
+      reaction_position: String(value('reaction_position', 'top')) as Recipe['layout']['reaction_position'],
       reaction_height: Number(value('reaction_height', 480)),
+      pip_position: String(value('pip_position', 'top_right')) as Recipe['layout']['pip_position'],
       main_fit: String(value('main_fit', 'cover')) as 'cover' | 'contain',
       reaction_fit: String(value('reaction_fit', 'cover')) as 'cover' | 'contain',
       background_color: String(value('background_color', '#000000')),
@@ -88,7 +123,9 @@ export const parameterValue = (
   key: string,
 ): string | number | boolean => {
   const values: Record<string, string | number | boolean> = {
+    reaction_position: recipe.layout.reaction_position,
     reaction_height: recipe.layout.reaction_height,
+    pip_position: recipe.layout.pip_position,
     main_fit: recipe.layout.main_fit,
     reaction_fit: recipe.layout.reaction_fit,
     background_color: recipe.layout.background_color,
@@ -108,6 +145,24 @@ export const setRecipeParameter = (
 ): Recipe => {
   if (key === 'reaction_height') {
     return {...recipe, layout: {...recipe.layout, reaction_height: Number(value)}};
+  }
+  if (key === 'reaction_position') {
+    return {
+      ...recipe,
+      layout: {
+        ...recipe.layout,
+        reaction_position: String(value) as Recipe['layout']['reaction_position'],
+      },
+    };
+  }
+  if (key === 'pip_position') {
+    return {
+      ...recipe,
+      layout: {
+        ...recipe.layout,
+        pip_position: String(value) as Recipe['layout']['pip_position'],
+      },
+    };
   }
   if (key === 'main_fit' || key === 'reaction_fit') {
     return {

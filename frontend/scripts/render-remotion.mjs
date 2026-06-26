@@ -17,9 +17,10 @@ await readFile(path.resolve('src/remotion/index.ts'));
 const serveUrl = await bundle({
   entryPoint: path.resolve('src/remotion/index.ts'),
 });
+const compositionId = payload.recipe?.template?.composition_id || 'ReactionLayoutTemplate';
 const rendererOptions = {
   serveUrl,
-  id: 'ReactionTop25',
+  id: compositionId,
   inputProps: payload.recipe,
   browserExecutable: payload.browserExecutable || undefined,
   chromiumOptions: {enableMultiProcessOnLinux: true},

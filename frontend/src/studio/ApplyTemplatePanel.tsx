@@ -17,7 +17,9 @@ import {
   workspacePathLabel,
 } from './labels';
 import {
+  hasRendererAdapter,
   parameterValue,
+  rendererAdapter,
   setRecipeParameter,
   type AutomationTemplate,
   type ParameterDefinition,
@@ -157,17 +159,15 @@ export const ApplyTemplatePanel = ({
     });
   };
 
-  const parameterValues = () => ({
-    reaction_height: recipe.layout.reaction_height,
-    main_fit: recipe.layout.main_fit,
-    reaction_fit: recipe.layout.reaction_fit,
-    background_color: recipe.layout.background_color,
-    main_volume: recipe.audio.main_volume,
-    reaction_volume: recipe.audio.reaction_volume,
-    mute_reaction: recipe.audio.mute_reaction,
-    top_text: recipe.overlays.top_text,
-    bottom_text: recipe.overlays.bottom_text,
-  });
+  const adapter = rendererAdapter(template.definition);
+  const supported = hasRendererAdapter(template.definition);
+
+  const parameterValues = () => Object.fromEntries(
+    Object.keys(template.definition.parameters).map((key) => [
+      key,
+      parameterValue(recipe, key),
+    ]),
+  );
 
   const requestBody = () => ({
     name: batchName,
@@ -245,6 +245,17 @@ export const ApplyTemplatePanel = ({
         <div className="ts-card-head">
           <div><h2>Apply Template</h2><p>{template.name} · {template.key} · v{template.version}</p></div>
         </div>
+        <div className="adapter-note">
+          Этот template использует существующий Remotion renderer adapter:
+          {' '}
+          <b>{adapter?.displayName || template.definition.rules.renderer_adapter || 'не найден'}</b>.
+          {' '}
+          Можно менять параметры, defaults и правила. Для полностью нового
+          визуального renderer нужно добавить adapter.
+        </div>
+        {!supported ? (
+          <div className="ts-alert error">Этот template пока не имеет Remotion renderer adapter.</div>
+        ) : null}
         {error ? <div className="ts-alert error">{error}</div> : null}
         <label>
           <span>Название batch</span>
@@ -353,10 +364,10 @@ export const ApplyTemplatePanel = ({
           {!previewItems.length ? <div className="empty-note">Видео не выбраны.</div> : null}
         </div>
         <div className="ts-row-actions">
-          <button className="primary" disabled={busy || !previewItems.length} onClick={() => void createBatch()}>
+          <button className="primary" disabled={busy || !supported || !previewItems.length} onClick={() => void createBatch()}>
             Create render batch
           </button>
-          <button disabled={busy || !previewItems.length} onClick={() => void savePipeline()}>
+          <button disabled={busy || !supported || !previewItems.length} onClick={() => void savePipeline()}>
             Сохранить pipeline
           </button>
         </div>

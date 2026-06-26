@@ -1,6 +1,6 @@
 import {useMemo} from 'react';
 import {Player} from '@remotion/player';
-import {ReactionTop25} from '../remotion/templates/ReactionTop25';
+import {ReactionLayoutTemplate} from '../remotion/templates/ReactionLayoutTemplate';
 import type {ResolvedRecipe} from './recipe';
 
 export const RemotionPreview = ({recipe}: {recipe: ResolvedRecipe | null}) => {
@@ -11,7 +11,7 @@ export const RemotionPreview = ({recipe}: {recipe: ResolvedRecipe | null}) => {
   return (
     <div className="preview-frame">
       <Player
-        component={ReactionTop25}
+        component={ReactionLayoutTemplate}
         inputProps={inputProps}
         durationInFrames={inputProps.duration_in_frames}
         compositionWidth={inputProps.canvas.width}

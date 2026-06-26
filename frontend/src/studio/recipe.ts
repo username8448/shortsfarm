@@ -1,15 +1,24 @@
 export type FitMode = 'cover' | 'contain';
+export type ReactionPosition = 'top' | 'bottom' | 'pip' | 'none';
+export type PipPosition = 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
 
 export type Recipe = {
   version: 1;
-  template: {key: 'reaction_top_25'; renderer: 'remotion'};
-  canvas: {width: 1080; height: 1920; fps: 30};
+  template: {
+    key: string;
+    renderer: 'remotion';
+    renderer_adapter?: string;
+    composition_id?: string;
+  };
+  canvas: {width: number; height: number; fps: number};
   media: {
     main: {workspace_path: string};
     reaction: {asset_id: number | null};
   };
   layout: {
+    reaction_position: ReactionPosition;
     reaction_height: number;
+    pip_position: PipPosition;
     main_fit: FitMode;
     reaction_fit: FitMode;
     background_color: string;
@@ -36,14 +45,21 @@ export type ResolvedRecipe = Recipe & {
 
 export const createDefaultRecipe = (): Recipe => ({
   version: 1,
-  template: {key: 'reaction_top_25', renderer: 'remotion'},
+  template: {
+    key: 'reaction_top_25',
+    renderer: 'remotion',
+    renderer_adapter: 'reaction_layout',
+    composition_id: 'ReactionLayoutTemplate',
+  },
   canvas: {width: 1080, height: 1920, fps: 30},
   media: {
     main: {workspace_path: ''},
     reaction: {asset_id: null},
   },
   layout: {
+    reaction_position: 'top',
     reaction_height: 480,
+    pip_position: 'top_right',
     main_fit: 'cover',
     reaction_fit: 'cover',
     background_color: '#000000',

@@ -232,6 +232,13 @@ def test_template_definition_lists_slots_parameters_rules_and_versions():
     )
 
     items = studio_templates()["items"]
+    assert {
+        "reaction_top_25",
+        "reaction_top_33",
+        "reaction_top_50",
+        "reaction_bottom_25",
+        "reaction_pip_corner",
+    } <= {item["key"] for item in items}
     template = next(item for item in items if item["key"] == "reaction_top_25")
     definition = template["definition"]
 
@@ -240,7 +247,10 @@ def test_template_definition_lists_slots_parameters_rules_and_versions():
     )
     assert definition["slots"]["reaction"]["playback"] == "loop"
     assert definition["parameters"]["reaction_height"]["default"] == 480
+    assert definition["parameters"]["reaction_position"]["default"] == "top"
     assert definition["rules"]["output_duration"] == "main.duration"
+    assert definition["rules"]["renderer_adapter"] == "reaction_layout"
+    assert definition["rules"]["composition_id"] == "ReactionLayoutTemplate"
 
     duplicate = studio_template_duplicate(template["id"])["item"]
     assert duplicate["status"] == "draft"
@@ -421,7 +431,10 @@ def test_apply_template_selected_creates_batch_projects_and_jobs(tmp_path, monke
     second.write_bytes(b"two")
     asset_id, _ = _reaction(tmp_path)
     monkeypatch.setattr("shortsfarm.studio.probe_duration", lambda path: 10.0)
-    template = api.studio_templates()["items"][0]
+    template = next(
+        item for item in api.studio_templates()["items"]
+        if item["key"] == "reaction_top_25"
+    )
 
     response = api.studio_template_apply(
         template["id"],
@@ -448,8 +461,85 @@ def test_apply_template_selected_creates_batch_projects_and_jobs(tmp_path, monke
         project = db.get_studio_project(item["studio_project_id"])
         assert job["status"] == "queued"
         assert "/edits/" in job["output_path"]
-        assert "/reaction_top_25/" in job["output_path"]
+        assert f"/{template['key']}/" in job["output_path"]
         assert json.loads(project["recipe_json"])["layout"]["reaction_height"] == 600
+
+
+def test_apply_template_uses_selected_non_default_template(tmp_path, monkeypatch):
+    from shortsfarm import db
+    from shortsfarm.web import studio_api as api
+
+    root = _workspace(tmp_path)
+    main = root / "sources" / "one.mp4"
+    main.write_bytes(b"one")
+    asset_id, _ = _reaction(tmp_path)
+    monkeypatch.setattr("shortsfarm.studio.probe_duration", lambda path: 10.0)
+    template = next(
+        item for item in api.studio_templates()["items"]
+        if item["key"] == "reaction_bottom_25"
+    )
+
+    response = api.studio_template_apply(
+        template["id"],
+        api.StudioApplyRequest(
+            name="Bottom batch",
+            source_mode="selected",
+            source_paths=["sources/one.mp4"],
+            reaction_strategy="fixed_asset",
+            reaction_asset_id=asset_id,
+            start=False,
+        ),
+        _request(),
+    )
+    payload = json.loads(response.body)
+    item = payload["batch"]["items"][0]
+    project = db.get_studio_project(item["studio_project_id"])
+    job = db.get_remotion_render_job(item["render_job_id"])
+    recipe = json.loads(project["recipe_json"])
+
+    assert payload["batch"]["template_key"] == "reaction_bottom_25"
+    assert project["template_key"] == "reaction_bottom_25"
+    assert recipe["template"]["key"] == "reaction_bottom_25"
+    assert recipe["layout"]["reaction_position"] == "bottom"
+    assert "/reaction_bottom_25/" in job["output_path"]
+
+
+def test_apply_template_rejects_template_without_remotion_adapter(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.studio_templates import default_reaction_top_25_definition
+    from shortsfarm.web import studio_api as api
+
+    _workspace(tmp_path)
+    definition = default_reaction_top_25_definition()
+    definition["key"] = "ffmpeg_only_template"
+    definition["name"] = "FFmpeg only"
+    definition["engine"] = "ffmpeg"
+    definition["rules"]["renderer"] = "ffmpeg"
+    definition["rules"].pop("renderer_adapter", None)
+    definition["rules"].pop("composition_id", None)
+    template_id = db.create_studio_template(
+        template_key=definition["key"],
+        name=definition["name"],
+        engine="ffmpeg",
+        version=1,
+        status="active",
+        definition_json=definition,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        api.studio_template_apply(
+            template_id,
+            api.StudioApplyRequest(
+                source_mode="selected",
+                source_paths=["sources/missing.mp4"],
+                reaction_asset_id=1,
+                start=False,
+            ),
+            _request(),
+        )
+
+    assert exc.value.status_code == 400
+    assert "Remotion renderer adapter" in exc.value.detail["message"]
 
 
 def test_apply_template_folder_recursive_and_pipeline_run(tmp_path, monkeypatch):

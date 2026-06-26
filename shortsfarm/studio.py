@@ -12,10 +12,10 @@ from urllib.parse import quote
 from . import db
 from .ffmpeg_tools import probe_duration
 from .services import VIDEO_EXTENSIONS, safe_filename
+from .studio_templates import composition_id_for_definition, require_remotion_adapter
 from .workspace_fs import get_workspace_root, resolve_workspace_path
 
 
-STUDIO_TEMPLATE_KEY = "reaction_top_25"
 STUDIO_RENDERER = "remotion"
 STUDIO_MEDIA_SECTIONS = (
     ("sources", "Исходники", "source"),
@@ -24,6 +24,9 @@ STUDIO_MEDIA_SECTIONS = (
     ("edits", "Результаты монтажа", "edited"),
 )
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+_TEMPLATE_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_]{1,79}$")
+_REACTION_POSITIONS = {"top", "bottom", "pip", "none"}
+_PIP_POSITIONS = {"top_left", "top_right", "bottom_left", "bottom_right"}
 
 
 def _dict(value: Any, name: str) -> dict[str, Any]:
@@ -58,12 +61,29 @@ def _overlay_text(value: Any, name: str) -> str:
 
 def normalize_studio_recipe(value: Any) -> dict[str, Any]:
     recipe = _dict(value, "recipe_json")
+    template = _dict(recipe.get("template") or {}, "recipe.template")
     media = _dict(recipe.get("media"), "recipe.media")
     main = _dict(media.get("main"), "recipe.media.main")
     reaction = _dict(media.get("reaction") or {}, "recipe.media.reaction")
+    canvas = _dict(recipe.get("canvas") or {}, "recipe.canvas")
     layout = _dict(recipe.get("layout") or {}, "recipe.layout")
     audio = _dict(recipe.get("audio") or {}, "recipe.audio")
     overlays = _dict(recipe.get("overlays") or {}, "recipe.overlays")
+
+    template_key = str(template.get("key") or "reaction_top_25").strip().lower()
+    if not _TEMPLATE_KEY_RE.fullmatch(template_key):
+        raise ValueError("recipe.template.key имеет некорректный формат.")
+    renderer = str(template.get("renderer") or STUDIO_RENDERER).strip().lower()
+    if renderer != STUDIO_RENDERER:
+        raise ValueError("Studio recipe поддерживает только renderer=remotion.")
+    renderer_adapter = str(template.get("renderer_adapter") or "").strip()
+    composition_id = str(template.get("composition_id") or "").strip()
+
+    width = int(canvas.get("width", 1080))
+    height = int(canvas.get("height", 1920))
+    fps = int(canvas.get("fps", 30))
+    if width <= 0 or height <= 0 or fps <= 0:
+        raise ValueError("Canvas width, height и fps должны быть положительными.")
 
     workspace_path = str(main.get("workspace_path") or "").strip()
     if not workspace_path:
@@ -86,6 +106,19 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
     if not 240 <= reaction_height <= 960:
         raise ValueError("reaction_height должен быть от 240 до 960.")
 
+    reaction_position = str(
+        layout.get("reaction_position") or "top"
+    ).strip().lower()
+    if reaction_position not in _REACTION_POSITIONS:
+        raise ValueError("reaction_position должен быть top, bottom, pip или none.")
+    pip_position = str(
+        layout.get("pip_position") or "top_right"
+    ).strip().lower()
+    if pip_position not in _PIP_POSITIONS:
+        raise ValueError(
+            "pip_position должен быть top_left, top_right, bottom_left или bottom_right."
+        )
+
     background_color = str(
         layout.get("background_color") or "#000000"
     ).strip()
@@ -95,16 +128,20 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
     return {
         "version": 1,
         "template": {
-            "key": STUDIO_TEMPLATE_KEY,
-            "renderer": STUDIO_RENDERER,
+            "key": template_key,
+            "renderer": renderer,
+            **({"renderer_adapter": renderer_adapter} if renderer_adapter else {}),
+            **({"composition_id": composition_id} if composition_id else {}),
         },
-        "canvas": {"width": 1080, "height": 1920, "fps": 30},
+        "canvas": {"width": width, "height": height, "fps": fps},
         "media": {
             "main": {"workspace_path": workspace_path},
             "reaction": {"asset_id": normalized_asset_id},
         },
         "layout": {
+            "reaction_position": reaction_position,
             "reaction_height": reaction_height,
+            "pip_position": pip_position,
             "main_fit": _fit(layout.get("main_fit"), "main_fit"),
             "reaction_fit": _fit(
                 layout.get("reaction_fit"),
@@ -139,8 +176,15 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
 def default_studio_recipe(
     main_workspace_path: str = "",
     reaction_asset_id: int | None = None,
+    template_key: str = "reaction_top_25",
 ) -> dict[str, Any]:
     return normalize_studio_recipe({
+        "template": {
+            "key": template_key,
+            "renderer": STUDIO_RENDERER,
+            "renderer_adapter": "reaction_layout",
+            "composition_id": "ReactionLayoutTemplate",
+        },
         "media": {
             "main": {"workspace_path": main_workspace_path or "sources/placeholder.mp4"},
             "reaction": {"asset_id": reaction_asset_id},
@@ -359,6 +403,8 @@ def parameterized_recipe_from_template(
 ) -> dict[str, Any]:
     params = definition.get("parameters") or {}
     overrides = parameter_values or {}
+    adapter = require_remotion_adapter(definition)
+    composition_id = composition_id_for_definition(definition)
 
     def value(key: str, fallback: Any) -> Any:
         if key in overrides:
@@ -370,14 +416,21 @@ def parameterized_recipe_from_template(
 
     return normalize_studio_recipe({
         "version": 1,
-        "template": {"key": STUDIO_TEMPLATE_KEY, "renderer": STUDIO_RENDERER},
-        "canvas": {"width": 1080, "height": 1920, "fps": 30},
+        "template": {
+            "key": str(definition["key"]),
+            "renderer": str(definition["engine"]),
+            "renderer_adapter": adapter.key,
+            "composition_id": composition_id,
+        },
+        "canvas": definition.get("canvas") or {"width": 1080, "height": 1920, "fps": 30},
         "media": {
             "main": {"workspace_path": main_workspace_path},
             "reaction": {"asset_id": reaction_asset_id},
         },
         "layout": {
+            "reaction_position": value("reaction_position", "top"),
             "reaction_height": value("reaction_height", 480),
+            "pip_position": value("pip_position", "top_right"),
             "main_fit": value("main_fit", "cover"),
             "reaction_fit": value("reaction_fit", "cover"),
             "background_color": value("background_color", "#000000"),
@@ -477,7 +530,7 @@ def studio_project_payload(
     *,
     base_url: str = "",
 ) -> dict[str, Any]:
-    recipe = json.loads(str(row["recipe_json"]))
+    recipe = normalize_studio_recipe(json.loads(str(row["recipe_json"])))
     return {
         key: row[key]
         for key in row.keys()

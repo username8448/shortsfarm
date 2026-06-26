@@ -29,8 +29,9 @@ from ..studio import (
 )
 from ..studio_templates import (
     TEMPLATE_STATUSES,
-    ensure_default_studio_template,
+    ensure_default_studio_templates,
     normalize_template_definition,
+    require_remotion_adapter,
     template_row_payload,
     unique_duplicate_key,
 )
@@ -145,13 +146,12 @@ def _pipeline_payload(row: Any) -> dict[str, Any]:
 
 
 def _template_for_apply(template_id: int) -> Any:
-    ensure_default_studio_template()
+    ensure_default_studio_templates()
     row = db.get_studio_template(int(template_id))
     if row is None:
         raise FileNotFoundError("Studio template не найден.")
     definition = normalize_template_definition(json.loads(str(row["definition_json"])))
-    if definition["engine"] != "remotion" or definition["key"] != "reaction_top_25":
-        raise ValueError("Apply Template сейчас поддерживает только reaction_top_25/remotion.")
+    require_remotion_adapter(definition)
     return row, definition
 
 
@@ -430,7 +430,7 @@ def studio_reaction_media(asset_id: int, request: Request) -> Response:
 @router.get("/templates")
 def studio_templates() -> dict[str, Any]:
     db.init_db()
-    ensure_default_studio_template()
+    ensure_default_studio_templates()
     return {
         "items": [
             template_row_payload(row)
@@ -442,7 +442,7 @@ def studio_templates() -> dict[str, Any]:
 @router.get("/templates/{template_identifier}")
 def studio_template(template_identifier: str) -> dict[str, Any]:
     db.init_db()
-    ensure_default_studio_template()
+    ensure_default_studio_templates()
     row = (
         db.get_studio_template(int(template_identifier))
         if template_identifier.isdigit()

@@ -34,7 +34,9 @@ export const slotValueLabel = (value: unknown): string => ({
 }[String(value)] || String(value ?? '—'));
 
 export const parameterLabel = (key: string): string => ({
+  reaction_position: 'Положение реакции',
   reaction_height: 'Высота блока реакции',
+  pip_position: 'Угол picture-in-picture',
   main_fit: 'Масштаб основного видео',
   reaction_fit: 'Масштаб реакции',
   background_color: 'Цвет фона',
@@ -63,6 +65,14 @@ export const groupLabel = (group: string): string => ({
 export const fitLabel = (value: string): string => ({
   cover: 'cover · заполнить кадр',
   contain: 'contain · поместить целиком',
+  top: 'сверху',
+  bottom: 'снизу',
+  pip: 'picture-in-picture',
+  none: 'без реакции',
+  top_left: 'верхний левый',
+  top_right: 'верхний правый',
+  bottom_left: 'нижний левый',
+  bottom_right: 'нижний правый',
 }[value] || value);
 
 export const ruleLabel = (key: string): string => ({
@@ -71,6 +81,9 @@ export const ruleLabel = (key: string): string => ({
   output_aspect: 'Формат кадра',
   output_folder: 'Папка результата',
   renderer: 'Renderer',
+  renderer_adapter: 'Renderer adapter',
+  composition_id: 'Remotion composition',
+  layout_variant: 'Вариант layout',
 }[key] || key.replaceAll('_', ' '));
 
 export const ruleValueLabel = (value: unknown): string => ({
@@ -78,6 +91,11 @@ export const ruleValueLabel = (value: unknown): string => ({
   loop: 'повторять по кругу',
   edits: 'workspace_root/edits',
   remotion: 'Remotion',
+  reaction_layout: 'Reaction layout adapter',
+  ReactionLayoutTemplate: 'ReactionLayoutTemplate',
+  top_reaction: 'реакция сверху',
+  bottom_reaction: 'реакция снизу',
+  picture_in_picture: 'picture-in-picture',
 }[String(value)] || String(value ?? '—'));
 
 export const folderSectionLabel = (section: string): string => ({

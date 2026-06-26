@@ -131,6 +131,17 @@
 .template-info { padding-bottom: 12px; }
 .template-info > label,
 .template-info .info-row { margin: 10px 12px 0; }
+.adapter-note {
+  margin: 10px 12px 0;
+  padding: 9px 10px;
+  border: 1px dashed #536781;
+  border-radius: 8px;
+  background: rgba(75, 141, 247, .08);
+  color: var(--ts-mid);
+  font-size: 10px;
+  line-height: 1.45;
+}
+.adapter-note b { color: #b9d4ff; }
 .template-info label { display: block; min-width: 0; }
 .template-info label > span,
 .test-selects label > span {

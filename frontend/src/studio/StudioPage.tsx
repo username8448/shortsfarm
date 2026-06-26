@@ -25,6 +25,7 @@ import {
   type Recipe,
 } from './recipe';
 import {
+  rendererAdapter,
   recipeFromTemplate,
   type AutomationTemplate,
   type TemplateDefinition,
@@ -136,8 +137,12 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
         } else if (batchIdFromUrl > 0) {
           const batch = await studioApi.renderBatch(batchIdFromUrl);
           setActiveBatch(batch.batch);
-          if (templateData.items[0]) {
-            const template = templateData.items[0];
+          const template = templateData.items.find(
+            (item) => item.id === batch.batch.studio_template_id,
+          ) || templateData.items.find(
+            (item) => item.key === batch.batch.template_key,
+          ) || templateData.items[0];
+          if (template) {
             setSelectedTemplate(template);
             setDefinition(cloneDefinition(template.definition));
             setRecipe(recipeFromTemplate(template));
@@ -324,6 +329,14 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
     host.nav?.('editing', document.querySelector('[data-v="editing"]'));
   };
 
+  const openMainPanelUrl = useMemo(() => {
+    const url = new URL('/', window.location.origin);
+    for (const [key, value] of new URLSearchParams(window.location.search)) {
+      url.searchParams.set(key, value);
+    }
+    return url.pathname + url.search;
+  }, []);
+
   const handleBatchCreated = (batch: RenderBatch) => {
     setActiveBatch(batch);
     setBatches((current) => [batch, ...current.filter((item) => item.id !== batch.id)]);
@@ -367,7 +380,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           <h1>Template Studio</h1>
           <p>Конструктор автоматизированных шаблонов · тестовые медиа отделены от определения шаблона</p>
         </div>
-        {!embedded ? <a href="/">Основная панель</a> : null}
+        {!embedded ? <a href={openMainPanelUrl}>Открыть в основной панели</a> : null}
       </div>
       <nav className="ts-tabs">
         <button className={mode === 'templates' ? 'active' : ''} onClick={() => setMode('templates')}>Шаблоны</button>
@@ -392,6 +405,14 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           <div className="builder-left">
             <section className="ts-card template-info">
               <div className="ts-card-head"><h2>Информация о шаблоне</h2></div>
+              <div className="adapter-note">
+                Этот template использует Remotion renderer adapter:
+                {' '}
+                <b>{rendererAdapter(definition)?.displayName || definition.rules.renderer_adapter || 'не найден'}</b>.
+                {' '}
+                Можно менять параметры, defaults и правила. Для полностью нового
+                визуального renderer нужно добавить adapter.
+              </div>
               <label><span>Ключ шаблона</span><input value={selectedTemplate.key} disabled /></label>
               <label><span>Название</span><input value={definition.name} onChange={(event) => setDefinition({...definition, name: event.target.value})} /></label>
               <div className="info-row">
