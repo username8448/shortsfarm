@@ -37,6 +37,14 @@ type StudioMode = 'templates' | 'builder' | 'test' | 'apply';
 const cloneDefinition = (value: TemplateDefinition): TemplateDefinition =>
   JSON.parse(JSON.stringify(value)) as TemplateDefinition;
 
+const templateForBatch = (
+  items: AutomationTemplate[],
+  batch: RenderBatch,
+): AutomationTemplate | undefined =>
+  items.find((item) => item.id === batch.studio_template_id)
+    || items.find((item) => item.key === batch.template_key)
+    || items[0];
+
 export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   const [mode, setMode] = useState<StudioMode>('templates');
   const [templates, setTemplates] = useState<AutomationTemplate[]>([]);
@@ -125,6 +133,8 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           const project = await studioApi.project(projectIdFromUrl);
           const template = templateData.items.find(
             (item) => item.id === project.item.studio_template_id,
+          ) || templateData.items.find(
+            (item) => item.key === project.item.template_key,
           ) || templateData.items[0];
           if (template) {
             setSelectedTemplate(template);
@@ -137,11 +147,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
         } else if (batchIdFromUrl > 0) {
           const batch = await studioApi.renderBatch(batchIdFromUrl);
           setActiveBatch(batch.batch);
-          const template = templateData.items.find(
-            (item) => item.id === batch.batch.studio_template_id,
-          ) || templateData.items.find(
-            (item) => item.key === batch.batch.template_key,
-          ) || templateData.items[0];
+          const template = templateForBatch(templateData.items, batch.batch);
           if (template) {
             setSelectedTemplate(template);
             setDefinition(cloneDefinition(template.definition));
@@ -346,6 +352,33 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
     window.history.replaceState({}, '', url);
   };
 
+  const handleOpenBatch = async (batchId: number) => {
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const response = await studioApi.renderBatch(batchId);
+      const batch = response.batch;
+      setActiveBatch(batch);
+      setBatches((current) => [batch, ...current.filter((item) => item.id !== batch.id)]);
+      const template = templateForBatch(templates, batch);
+      if (template) {
+        setSelectedTemplate(template);
+        setDefinition(cloneDefinition(template.definition));
+        setRecipe(recipeFromTemplate(template));
+      }
+      setMode('apply');
+      const url = new URL(window.location.href);
+      url.searchParams.set('batch', String(batch.id));
+      url.searchParams.delete('project');
+      window.history.replaceState({}, '', url);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const mainAllowedSections = (
     definition?.slots.main?.allowed_sections || ['sources', 'cuts', 'prepared']
   );
@@ -510,6 +543,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           batches={activeBatch ? [activeBatch, ...batches.filter((item) => item.id !== activeBatch.id)] : batches}
           pipelines={pipelines}
           onBatchCreated={handleBatchCreated}
+          onOpenBatch={handleOpenBatch}
           onRefreshBatches={refreshBatches}
           onRefreshPipelines={refreshPipelines}
         />

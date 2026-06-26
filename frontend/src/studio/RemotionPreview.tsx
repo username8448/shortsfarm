@@ -1,6 +1,6 @@
 import {useMemo} from 'react';
 import {Player} from '@remotion/player';
-import {ReactionLayoutTemplate} from '../remotion/templates/ReactionLayoutTemplate';
+import {previewComponentForComposition} from './previewRegistry';
 import type {ResolvedRecipe} from './recipe';
 
 export const RemotionPreview = ({recipe}: {recipe: ResolvedRecipe | null}) => {
@@ -8,10 +8,19 @@ export const RemotionPreview = ({recipe}: {recipe: ResolvedRecipe | null}) => {
   if (!inputProps) {
     return <div className="preview-empty">Выберите основное тестовое видео</div>;
   }
+  const compositionId = inputProps.template.composition_id || 'ReactionLayoutTemplate';
+  const PreviewComponent = previewComponentForComposition(compositionId);
+  if (!PreviewComponent) {
+    return (
+      <div className="preview-empty">
+        Preview component не найден для composition_id: {compositionId}
+      </div>
+    );
+  }
   return (
     <div className="preview-frame">
       <Player
-        component={ReactionLayoutTemplate}
+        component={PreviewComponent}
         inputProps={inputProps}
         durationInFrames={inputProps.duration_in_frames}
         compositionWidth={inputProps.canvas.width}

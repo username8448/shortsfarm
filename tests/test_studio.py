@@ -611,3 +611,44 @@ def test_main_panel_embeds_template_studio_without_legacy_word():
     assert 'id="v-studio"' in template
     assert 'id="studio-root"' in template
     assert "Legacy" not in template
+
+
+def test_studio_frontend_uses_preview_registry_and_embedded_batch_open():
+    root = Path(__file__).resolve().parents[1]
+    preview = (
+        root
+        / "frontend"
+        / "src"
+        / "studio"
+        / "RemotionPreview.tsx"
+    ).read_text(encoding="utf-8")
+    registry = (
+        root
+        / "frontend"
+        / "src"
+        / "studio"
+        / "previewRegistry.ts"
+    ).read_text(encoding="utf-8")
+    apply_panel = (
+        root
+        / "frontend"
+        / "src"
+        / "studio"
+        / "ApplyTemplatePanel.tsx"
+    ).read_text(encoding="utf-8")
+    legacy_js = (
+        root
+        / "shortsfarm"
+        / "web"
+        / "static"
+        / "app.js"
+    ).read_text(encoding="utf-8")
+
+    assert "previewComponentForComposition" in preview
+    assert "component={ReactionLayoutTemplate}" not in preview
+    assert "ReactionTop25: ReactionLayoutTemplate" in registry
+    assert "/studio?batch=" not in apply_panel
+    assert "onOpenBatch(batch.id)" in apply_panel
+    assert "activateInitialViewFromQuery" in legacy_js
+    assert "params.has('batch')" in legacy_js
+    assert "nav('studio'" in legacy_js

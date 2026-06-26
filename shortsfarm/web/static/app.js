@@ -379,6 +379,13 @@ function openWorkspaceSettings() {
   setSettingsTab('workspace', document.querySelector('[data-settings-tab="workspace"]'));
 }
 
+function activateInitialViewFromQuery() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has('batch') || params.has('project')) {
+    nav('studio', document.querySelector('[data-v="studio"]'));
+  }
+}
+
 function managedAbsolutePath(relativePath) {
   const root = String(managedFilesState.workspaceRoot || '').replace(/\/+$/, '');
   const relative = String(relativePath || '').replace(/^\/+/, '');
@@ -3720,6 +3727,7 @@ window.addEventListener('DOMContentLoaded', () => {
   loadPublishView();
   initFsBrowser();
   onPublishModeChange();
+  activateInitialViewFromQuery();
 });
 window.addEventListener('message', event => {
   if (event.origin !== window.location.origin) return;

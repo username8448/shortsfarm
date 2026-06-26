@@ -103,6 +103,7 @@ export const ApplyTemplatePanel = ({
   batches,
   pipelines,
   onBatchCreated,
+  onOpenBatch,
   onRefreshBatches,
   onRefreshPipelines,
 }: {
@@ -116,6 +117,7 @@ export const ApplyTemplatePanel = ({
   batches: RenderBatch[];
   pipelines: RemotionPipeline[];
   onBatchCreated: (batch: RenderBatch) => void;
+  onOpenBatch: (batchId: number) => Promise<void>;
   onRefreshBatches: () => Promise<void>;
   onRefreshPipelines: () => Promise<void>;
 }) => {
@@ -389,7 +391,7 @@ export const ApplyTemplatePanel = ({
               <div className="ts-row-actions">
                 {batch.status === 'queued' ? <button onClick={() => void startBatch(batch.id)}>Старт</button> : null}
                 {['queued', 'running'].includes(batch.status) ? <button onClick={() => void cancelBatch(batch.id)}>Отменить queued</button> : null}
-                <a href={`/studio?batch=${batch.id}`}>Открыть</a>
+                <button onClick={() => void onOpenBatch(batch.id)}>Открыть</button>
               </div>
             </article>
           ))}
