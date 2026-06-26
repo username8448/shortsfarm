@@ -9,6 +9,7 @@ import {
 } from '../api';
 import {RemotionPreview} from './RemotionPreview';
 import {RenderPanel} from './RenderPanel';
+import {statusLabel} from './labels';
 import {ParametersPanel} from './ParametersPanel';
 import {RulesPanel} from './RulesPanel';
 import {SlotsPanel} from './SlotsPanel';
@@ -147,7 +148,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
       const result = await studioApi.duplicateTemplate(template.id);
       await refreshTemplates();
       openTemplate(result.item);
-      setMessage(`Создан draft template ${result.item.key}.`);
+      setMessage(`Создан черновик шаблона ${result.item.key}.`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -180,7 +181,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
       setMessage(
         newVersion
           ? `Сохранена новая версия v${result.item.version}.`
-          : `Template v${result.item.version} сохранён.`,
+          : `Шаблон v${result.item.version} сохранён.`,
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -217,8 +218,8 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   };
 
   const saveTestProject = async () => {
-    if (!selectedTemplate) throw new Error('Выберите automation template.');
-    if (!mainItem) throw new Error('Выберите main sample.');
+    if (!selectedTemplate) throw new Error('Выберите шаблон автоматизации.');
+    if (!mainItem) throw new Error('Выберите основное тестовое видео.');
     const response = projectId
       ? await studioApi.updateProject(
         projectId,
@@ -243,7 +244,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
     setError('');
     try {
       await saveTestProject();
-      setMessage('Test context сохранён.');
+      setMessage('Тестовый контекст сохранён.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -258,7 +259,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
       const id = await saveTestProject();
       const response = await studioApi.render(id);
       setJob(response.job);
-      setMessage('Test render добавлен в очередь.');
+      setMessage('Тестовый рендер добавлен в очередь.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -280,8 +281,8 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   const missingReaction = Boolean(definition?.slots.reaction?.required) && !reaction?.url;
   const renderDisabled = missingMain || missingReaction;
   const disabledReason = [
-    missingMain ? 'Main sample не выбран.' : '',
-    missingReaction ? 'Reaction не выбран.' : '',
+    missingMain ? 'Основное тестовое видео не выбрано.' : '',
+    missingReaction ? 'Реакция не выбрана.' : '',
   ].filter(Boolean).join(' ');
 
   const testMedia = definition ? (
@@ -305,14 +306,14 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
       <div className="ts-topbar">
         <div>
           <h1>Template Studio</h1>
-          <p>Automation Template Builder · sample media отделены от definition</p>
+          <p>Конструктор автоматизированных шаблонов · тестовые медиа отделены от определения шаблона</p>
         </div>
         {!embedded ? <a href="/">Основная панель</a> : null}
       </div>
       <nav className="ts-tabs">
-        <button className={mode === 'templates' ? 'active' : ''} onClick={() => setMode('templates')}>Templates</button>
-        <button className={mode === 'builder' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('builder')}>Template Builder</button>
-        <button className={mode === 'test' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('test')}>Test Render</button>
+        <button className={mode === 'templates' ? 'active' : ''} onClick={() => setMode('templates')}>Шаблоны</button>
+        <button className={mode === 'builder' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('builder')}>Конструктор шаблона</button>
+        <button className={mode === 'test' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('test')}>Тестовый рендер</button>
       </nav>
       {error ? <div className="ts-alert error">{error}</div> : null}
       {message ? <div className="ts-alert success">{message}</div> : null}
@@ -330,24 +331,24 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
         <div className="builder-grid">
           <div className="builder-left">
             <section className="ts-card template-info">
-              <div className="ts-card-head"><h2>Template Info</h2></div>
-              <label><span>Key</span><input value={selectedTemplate.key} disabled /></label>
-              <label><span>Name</span><input value={definition.name} onChange={(event) => setDefinition({...definition, name: event.target.value})} /></label>
+              <div className="ts-card-head"><h2>Информация о шаблоне</h2></div>
+              <label><span>Ключ шаблона</span><input value={selectedTemplate.key} disabled /></label>
+              <label><span>Название</span><input value={definition.name} onChange={(event) => setDefinition({...definition, name: event.target.value})} /></label>
               <div className="info-row">
-                <label><span>Engine</span><input value={selectedTemplate.engine} disabled /></label>
-                <label><span>Version</span><input value={`v${selectedTemplate.version}`} disabled /></label>
+                <label><span>Движок</span><input value={selectedTemplate.engine} disabled /></label>
+                <label><span>Версия</span><input value={`v${selectedTemplate.version}`} disabled /></label>
               </div>
               <label>
-                <span>Status</span>
+                <span>Статус</span>
                 <select value={selectedTemplate.status} onChange={(event) => updateTemplateStatus(event.target.value as TemplateStatus)}>
-                  <option value="draft">draft</option>
-                  <option value="active">active</option>
-                  <option value="archived">archived</option>
+                  <option value="draft">{statusLabel('draft')}</option>
+                  <option value="active">{statusLabel('active')}</option>
+                  <option value="archived">{statusLabel('archived')}</option>
                 </select>
               </label>
               <div className="ts-row-actions">
-                <button className="primary" disabled={busy} onClick={() => void saveTemplate(false)}>Save template</button>
-                <button disabled={busy} onClick={() => void saveTemplate(true)}>Save new version</button>
+                <button className="primary" disabled={busy} onClick={() => void saveTemplate(false)}>Сохранить шаблон</button>
+                <button disabled={busy} onClick={() => void saveTemplate(true)}>Сохранить новую версию</button>
               </div>
             </section>
             <SlotsPanel definition={definition} onChange={setDefinition} />
@@ -355,7 +356,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           </div>
           <div className="builder-center">
             <section className="ts-card preview-card">
-              <div className="ts-card-head"><h2>Preview</h2><span className="ts-badge">9:16</span></div>
+              <div className="ts-card-head"><h2>Предпросмотр</h2><span className="ts-badge">9:16</span></div>
               <RemotionPreview recipe={resolvedRecipe} />
             </section>
             {testMedia}
@@ -368,7 +369,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
               onRecipeChange={setRecipe}
             />
             <section className="ts-card">
-              <div className="ts-card-head"><h2>Render Test</h2></div>
+              <div className="ts-card-head"><h2>Тестовый рендер</h2></div>
               <RenderPanel
                 projectId={projectId}
                 job={job}
@@ -388,7 +389,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           <div>{testMedia}</div>
           <section className="ts-card preview-card">
             <div className="ts-card-head">
-              <div><h2>Test Preview</h2><p>{selectedTemplate.key} · v{selectedTemplate.version}</p></div>
+              <div><h2>Тестовый предпросмотр</h2><p>{selectedTemplate.key} · v{selectedTemplate.version}</p></div>
               <span className="ts-badge engine">{selectedTemplate.engine}</span>
             </div>
             <RemotionPreview recipe={resolvedRecipe} />
@@ -401,7 +402,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
               onRecipeChange={setRecipe}
             />
             <section className="ts-card">
-              <div className="ts-card-head"><h2>Render Test</h2></div>
+              <div className="ts-card-head"><h2>Тестовый рендер</h2></div>
               <RenderPanel
                 projectId={projectId}
                 job={job}

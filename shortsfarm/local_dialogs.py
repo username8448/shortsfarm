@@ -11,6 +11,9 @@ from pathlib import Path
 UNAVAILABLE_MESSAGE = (
     "Локальный выбор папки недоступен. Укажите путь вручную."
 )
+UNAVAILABLE_FILE_MESSAGE = (
+    "Локальный выбор файла недоступен. Укажите путь вручную."
+)
 
 
 class LocalDialogUnavailable(RuntimeError):
@@ -37,7 +40,7 @@ def _has_gui_session() -> bool:
     return True
 
 
-def _pick_with_tkinter(title: str) -> str | None:
+def _pick_directory_with_tkinter(title: str) -> str | None:
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -53,6 +56,33 @@ def _pick_with_tkinter(title: str) -> str | None:
             parent=root,
             title=title,
             mustexist=True,
+        )
+    except (OSError, RuntimeError, tk.TclError) as exc:
+        raise _DialogBackendUnavailable from exc
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except (OSError, RuntimeError, tk.TclError):
+                pass
+    return _normalize_selected_path(selected)
+
+
+def _pick_file_with_tkinter(title: str) -> str | None:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise _DialogBackendUnavailable from exc
+
+    root = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.update_idletasks()
+        selected = filedialog.askopenfilename(
+            parent=root,
+            title=title,
         )
     except (OSError, RuntimeError, tk.TclError) as exc:
         raise _DialogBackendUnavailable from exc
@@ -142,3 +172,61 @@ def pick_directory_dialog(
             pass
 
     raise LocalDialogUnavailable(UNAVAILABLE_MESSAGE)
+
+
+def pick_file_dialog(
+    title: str = "Выберите файл",
+) -> str | None:
+    """Open a local file picker and return an absolute selected path."""
+    if not _has_gui_session():
+        raise LocalDialogUnavailable(UNAVAILABLE_FILE_MESSAGE)
+
+    try:
+        return _pick_file_with_tkinter(title)
+    except _DialogBackendUnavailable:
+        pass
+
+    zenity = shutil.which("zenity")
+    if zenity:
+        try:
+            return _pick_with_command([
+                zenity,
+                "--file-selection",
+                f"--title={title}",
+            ])
+        except _DialogBackendUnavailable:
+            pass
+
+    kdialog = shutil.which("kdialog")
+    if kdialog:
+        try:
+            return _pick_with_command([
+                kdialog,
+                "--title",
+                title,
+                "--getopenfilename",
+                str(Path.home()),
+            ])
+        except _DialogBackendUnavailable:
+            pass
+
+    yad = shutil.which("yad")
+    if yad:
+        try:
+            return _pick_with_command(
+                [
+                    yad,
+                    "--file",
+                    f"--title={title}",
+                    f"--filename={Path.home()}/",
+                ],
+                cancel_codes=(1, 252),
+            )
+        except _DialogBackendUnavailable:
+            pass
+
+    raise LocalDialogUnavailable(UNAVAILABLE_FILE_MESSAGE)
+
+
+# Backward-compatible internal alias used by older tests/extensions.
+_pick_with_tkinter = _pick_directory_with_tkinter

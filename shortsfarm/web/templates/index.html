@@ -117,7 +117,7 @@
             <div class="toggles"><label class="toggle-label"><input type="checkbox" id="overwrite"> Перезаписать</label></div>
             <details class="manual-path">
               <summary>Ручной путь / advanced</summary>
-              <div class="field"><label class="field-lbl" id="path-lbl">Путь</label><input id="split-path" type="text" placeholder="/home/user/videos/my_video.mp4" oninput="manualPathChanged()"></div>
+              <div class="field"><label class="field-lbl" id="path-lbl">Путь</label><div class="path-pick-row"><input id="split-path" type="text" placeholder="/home/user/videos/my_video.mp4" oninput="manualPathChanged()"><button class="btn-secondary" id="split-path-pick-btn" onclick="pickSplitPath()">Выбрать…</button></div></div>
             </details>
             <div id="split-error" class="err-line" style="display:none"></div>
             <div id="split-message" class="result-ok"><i class="ti ti-circle-check" style="color:var(--ok);font-size:20px;flex-shrink:0"></i><div class="result-ok-text" style="flex:1"><div class="t" id="split-msg-title">Готово</div><div class="s" id="split-msg-sub">—</div></div><button onclick="resetSplit()" class="btn-mini">Новый</button></div>
@@ -178,22 +178,22 @@
             </select>
           </div>
           <button class="btn-secondary" onclick="prepareSelectedWorkspaceItems()">Подготовить выбранные</button>
-          <div class="mono dim workspace-youtube-state">Подготовка создаёт отдельный файл в output/prepared.</div>
+          <div class="mono dim workspace-youtube-state">Подготовка создаёт отдельный файл в папке «Подготовленные».</div>
         </div>
         <div class="workspace-editing-panel">
           <div class="field mini-field">
-            <label class="field-lbl">Channel profile</label>
+            <label class="field-lbl">Профиль канала</label>
             <select id="workspace-editing-profile" onchange="onWorkspaceEditingProfileChange(this.value)"></select>
           </div>
           <div class="field mini-field">
-            <label class="field-lbl">Template override</label>
+            <label class="field-lbl">Переопределить шаблон</label>
             <select id="workspace-editing-template"></select>
           </div>
           <div class="field mini-field">
-            <label class="field-lbl">Reaction override</label>
+            <label class="field-lbl">Переопределить реакцию</label>
             <select id="workspace-editing-reaction"></select>
           </div>
-          <label class="toggle-label workspace-youtube-toggle"><input id="workspace-editing-force-new" type="checkbox"> Force new</label>
+          <label class="toggle-label workspace-youtube-toggle"><input id="workspace-editing-force-new" type="checkbox"> Создать заново</label>
           <button class="btn-secondary" id="workspace-editing-plan-btn" onclick="planSelectedWorkspaceEditing()">Добавить в очередь монтажа</button>
           <div id="workspace-editing-state" class="mono dim workspace-youtube-state"></div>
         </div>
@@ -211,10 +211,10 @@
             </select>
           </div>
           <div class="field mini-field short">
-            <label class="field-lbl">Category ID</label>
+            <label class="field-lbl">ID категории</label>
             <input id="workspace-youtube-category" type="text" value="22">
           </div>
-          <label class="toggle-label workspace-youtube-toggle"><input id="workspace-youtube-made-for-kids" type="checkbox"> Made for kids</label>
+          <label class="toggle-label workspace-youtube-toggle"><input id="workspace-youtube-made-for-kids" type="checkbox"> Для детей</label>
           <button class="btn-secondary" id="workspace-youtube-enqueue-btn" onclick="enqueueSelectedWorkspaceToYouTube(false)">Добавить выбранные в очередь YouTube</button>
           <button class="btn-primary" id="workspace-youtube-upload-btn" onclick="enqueueSelectedWorkspaceToYouTube(true)">Загрузить выбранные сейчас</button>
           <div id="workspace-youtube-state" class="mono dim workspace-youtube-state"></div>
@@ -258,7 +258,7 @@
             <div id="publish-state"></div>
             <div class="form-body">
               <div class="field">
-                <label class="field-lbl">Google OAuth client</label>
+                <label class="field-lbl">Google OAuth-клиент</label>
                 <select id="publish-profile-select" onchange="onPublishProfileChange(this.value)"></select>
                 <div id="publish-profile-meta" class="settings-meta" style="margin-top:8px"></div>
               </div>
@@ -320,7 +320,7 @@
               </div>
 
               <div class="toggles">
-                <label class="toggle-label"><input id="publish-made-for-kids" type="checkbox"> Made for kids</label>
+                <label class="toggle-label"><input id="publish-made-for-kids" type="checkbox"> Для детей</label>
               </div>
 
               <div class="action-row">
@@ -340,9 +340,9 @@
               <button class="btn-mini" onclick="runPublishWorkerBatch(3)">Запустить 3</button>
               <button class="btn-secondary" onclick="runSelectedPublishJobs()">Запустить выбранные</button>
               <button class="btn-secondary" onclick="openPublishScheduleEditor()">Настроить расписание</button>
-              <button class="btn-mini" onclick="retryFailedPublishJobs()">Повторить failed</button>
-              <button class="btn-danger" onclick="cancelSelectedPublishJobs()">Отменить выбранные queued</button>
-              <button class="btn-mini" onclick="hideDonePublishJobs()">Очистить done из вида</button>
+              <button class="btn-mini" onclick="retryFailedPublishJobs()">Повторить ошибки</button>
+              <button class="btn-danger" onclick="cancelSelectedPublishJobs()">Отменить выбранные в очереди</button>
+              <button class="btn-mini" onclick="hideDonePublishJobs()">Скрыть завершённые</button>
             </div>
           </div>
           <div class="publish-queue-toolbar">
@@ -413,7 +413,7 @@
       <div id="editing-reactions" class="editing-tab on">
         <div class="editing-layout">
           <div class="box">
-            <div class="box-head"><span>Reaction assets</span><div class="row-actions"><input id="editing-reaction-search" class="compact-input" type="text" placeholder="Поиск" oninput="renderEditingReactions()"><button class="btn-secondary" onclick="newEditingReaction()">Добавить реакцию</button></div></div>
+            <div class="box-head"><span>Файлы реакций</span><div class="row-actions"><input id="editing-reaction-search" class="compact-input" type="text" placeholder="Поиск" oninput="renderEditingReactions()"><button class="btn-secondary" onclick="newEditingReaction()">Добавить реакцию</button></div></div>
             <div id="editing-reactions-list"></div>
           </div>
           <div class="editing-side">
@@ -421,10 +421,10 @@
               <div class="box-head"><span id="editing-reaction-title">Новая реакция</span></div>
               <div class="form-body">
                 <div class="field"><label class="field-lbl">Название</label><input id="editing-reaction-name" type="text"></div>
-                <div class="field"><label class="field-lbl">Путь к файлу</label><input id="editing-reaction-path" type="text" placeholder="/path/to/reaction.mp4"></div>
+                <div class="field"><label class="field-lbl">Путь к файлу</label><div class="path-pick-row"><input id="editing-reaction-path" type="text" placeholder="/path/to/reaction.mp4"><button class="btn-secondary" id="editing-reaction-path-pick-btn" onclick="pickEditingReactionFile()">Выбрать…</button></div></div>
                 <div class="field-grid">
                   <div class="field"><label class="field-lbl">Теги</label><input id="editing-reaction-tags" type="text"></div>
-                  <div class="field"><label class="field-lbl">Mood</label><input id="editing-reaction-mood" type="text"></div>
+                  <div class="field"><label class="field-lbl">Настроение</label><input id="editing-reaction-mood" type="text"></div>
                 </div>
                 <div class="field"><label class="field-lbl">Язык</label><input id="editing-reaction-language" type="text" placeholder="ru"></div>
                 <div class="toggles"><label class="toggle-label"><input id="editing-reaction-enabled" type="checkbox" checked> Активна</label></div>
@@ -434,10 +434,10 @@
             <div class="box">
               <div class="box-head">Импорт папки</div>
               <div class="form-body">
-                <div class="field"><label class="field-lbl">Папка</label><input id="editing-import-folder" type="text" placeholder="/path/to/reactions"></div>
+                <div class="field"><label class="field-lbl">Папка</label><div class="path-pick-row"><input id="editing-import-folder" type="text" placeholder="/path/to/reactions"><button class="btn-secondary" id="editing-import-folder-pick-btn" onclick="pickEditingImportFolder()">Выбрать папку…</button></div></div>
                 <div class="field-grid">
                   <div class="field"><label class="field-lbl">Теги</label><input id="editing-import-tags" type="text" value="reaction"></div>
-                  <div class="field"><label class="field-lbl">Mood</label><input id="editing-import-mood" type="text"></div>
+                  <div class="field"><label class="field-lbl">Настроение</label><input id="editing-import-mood" type="text"></div>
                 </div>
                 <div class="field"><label class="field-lbl">Язык</label><input id="editing-import-language" type="text" value="ru"></div>
                 <div class="toggles"><label class="toggle-label"><input id="editing-import-recursive" type="checkbox" checked> Включая вложенные папки</label></div>
@@ -452,25 +452,25 @@
       <div id="editing-pools" class="editing-tab">
         <div class="editing-layout">
           <div class="box">
-            <div class="box-head"><span>Пулы реакций</span><button class="btn-secondary" onclick="newEditingPool()">Создать pool</button></div>
+            <div class="box-head"><span>Пулы реакций</span><button class="btn-secondary" onclick="newEditingPool()">Создать пул</button></div>
             <div id="editing-pools-list"></div>
           </div>
           <div class="editing-side">
             <div class="box">
-              <div class="box-head"><span id="editing-pool-title">Новый pool</span></div>
+              <div class="box-head"><span id="editing-pool-title">Новый пул</span></div>
               <div class="form-body">
                 <div class="field"><label class="field-lbl">Название</label><input id="editing-pool-name" type="text"></div>
                 <div class="field"><label class="field-lbl">Описание</label><textarea id="editing-pool-description" rows="3"></textarea></div>
                 <div class="toggles"><label class="toggle-label"><input id="editing-pool-enabled" type="checkbox" checked> Активен</label></div>
-                <button class="btn-primary" onclick="saveEditingPool()">Сохранить pool</button>
+                <button class="btn-primary" onclick="saveEditingPool()">Сохранить пул</button>
               </div>
             </div>
             <div class="box">
-              <div class="box-head">Элементы pool</div>
+              <div class="box-head">Элементы пула</div>
               <div class="form-body">
                 <div class="field-grid">
-                  <div class="field"><label class="field-lbl">Reaction asset</label><select id="editing-pool-asset"></select></div>
-                  <div class="field"><label class="field-lbl">Weight</label><input id="editing-pool-weight" type="number" min="1" value="1"></div>
+                  <div class="field"><label class="field-lbl">Файл реакции</label><select id="editing-pool-asset"></select></div>
+                  <div class="field"><label class="field-lbl">Вес выбора</label><input id="editing-pool-weight" type="number" min="1" value="1"></div>
                 </div>
                 <button class="btn-secondary" id="editing-pool-add-item" onclick="addEditingPoolItem()">Добавить / обновить</button>
               </div>
@@ -483,7 +483,7 @@
       <div id="editing-templates" class="editing-tab">
         <div class="editing-layout">
           <div class="box">
-            <div class="box-head"><span>Edit templates</span><button class="btn-secondary" onclick="ensureEditingTemplates()">Создать стандартные шаблоны</button></div>
+            <div class="box-head"><span>Шаблоны монтажа</span><button class="btn-secondary" onclick="ensureEditingTemplates()">Создать стандартные шаблоны</button></div>
             <div id="editing-templates-list"></div>
           </div>
           <div class="box">
@@ -503,27 +503,27 @@
       <div id="editing-profiles" class="editing-tab">
         <div class="editing-layout">
           <div class="box">
-            <div class="box-head"><span>Профили каналов</span><button class="btn-secondary" onclick="newEditingProfile()">Создать profile</button></div>
+            <div class="box-head"><span>Профили каналов</span><button class="btn-secondary" onclick="newEditingProfile()">Создать профиль</button></div>
             <div id="editing-profiles-list"></div>
           </div>
           <div class="box">
-            <div class="box-head"><span id="editing-profile-title">Новый profile</span></div>
+            <div class="box-head"><span id="editing-profile-title">Новый профиль</span></div>
             <div class="form-body editing-wide-form">
               <div class="field"><label class="field-lbl">Название</label><input id="editing-profile-name" type="text"></div>
-              <div class="field"><label class="field-lbl">YouTube account</label><select id="editing-profile-account"></select></div>
+              <div class="field"><label class="field-lbl">YouTube аккаунт</label><select id="editing-profile-account"></select></div>
               <div class="field-grid">
-                <div class="field"><label class="field-lbl">Default template</label><select id="editing-profile-template"></select></div>
-                <div class="field"><label class="field-lbl">Reaction pool</label><select id="editing-profile-pool"></select></div>
+                <div class="field"><label class="field-lbl">Шаблон по умолчанию</label><select id="editing-profile-template"></select></div>
+                <div class="field"><label class="field-lbl">Пул реакций</label><select id="editing-profile-pool"></select></div>
               </div>
-              <div class="field"><label class="field-lbl">Title template</label><input id="editing-profile-title-template" type="text" placeholder="{title} #shorts"></div>
-              <div class="field"><label class="field-lbl">Description template</label><textarea id="editing-profile-description-template" rows="3"></textarea></div>
-              <div class="field"><label class="field-lbl">Tags template</label><input id="editing-profile-tags-template" type="text" placeholder="shorts,funny,reaction"></div>
+              <div class="field"><label class="field-lbl">Шаблон заголовка</label><input id="editing-profile-title-template" type="text" placeholder="{title} #shorts"></div>
+              <div class="field"><label class="field-lbl">Шаблон описания</label><textarea id="editing-profile-description-template" rows="3"></textarea></div>
+              <div class="field"><label class="field-lbl">Шаблон тегов</label><input id="editing-profile-tags-template" type="text" placeholder="shorts,funny,reaction"></div>
               <div class="field-grid">
-                <div class="field"><label class="field-lbl">Privacy</label><select id="editing-profile-privacy"><option value="">Не задано</option><option value="private">private</option><option value="unlisted">unlisted</option><option value="public">public</option></select></div>
-                <div class="field"><label class="field-lbl">Category ID</label><input id="editing-profile-category" type="text" value="22"></div>
+                <div class="field"><label class="field-lbl">Видимость</label><select id="editing-profile-privacy"><option value="">Не задано</option><option value="private">private · приватно</option><option value="unlisted">unlisted · по ссылке</option><option value="public">public · публично</option></select></div>
+                <div class="field"><label class="field-lbl">ID категории</label><input id="editing-profile-category" type="text" value="22"></div>
               </div>
               <div class="toggles"><label class="toggle-label"><input id="editing-profile-enabled" type="checkbox" checked> Активен</label></div>
-              <div class="action-row"><button class="btn-primary" onclick="saveEditingProfile()">Сохранить profile</button><button class="btn-danger" id="editing-profile-disable" style="display:none" onclick="disableEditingProfile()">Отключить</button></div>
+              <div class="action-row"><button class="btn-primary" onclick="saveEditingProfile()">Сохранить профиль</button><button class="btn-danger" id="editing-profile-disable" style="display:none" onclick="disableEditingProfile()">Отключить</button></div>
             </div>
           </div>
         </div>
@@ -538,21 +538,21 @@
               <button class="btn-mini" onclick="runEditingWorker(1)">Рендер 1</button>
               <button class="btn-mini" onclick="runEditingWorker(3)">Рендер 3</button>
               <button class="btn-primary" onclick="renderSelectedEditingJobs()">Рендер выбранных</button>
-              <button class="btn-secondary" onclick="retryFailedEditingJobs()">Повторить failed</button>
-              <button class="btn-danger" onclick="cancelSelectedEditingJobs()">Отменить selected</button>
+              <button class="btn-secondary" onclick="retryFailedEditingJobs()">Повторить ошибки</button>
+              <button class="btn-danger" onclick="cancelSelectedEditingJobs()">Отменить выбранные</button>
             </div>
           </div>
           <div class="tabs compact-tabs editing-jobs-tabs">
             <button class="tab on" data-edit-job-filter="all" onclick="filterEditingJobs(this,'all')">Все</button>
-            <button class="tab" data-edit-job-filter="queued" onclick="filterEditingJobs(this,'queued')">queued</button>
-            <button class="tab" data-edit-job-filter="rendering" onclick="filterEditingJobs(this,'rendering')">rendering</button>
-            <button class="tab" data-edit-job-filter="done" onclick="filterEditingJobs(this,'done')">done</button>
-            <button class="tab" data-edit-job-filter="failed" onclick="filterEditingJobs(this,'failed')">failed</button>
-            <button class="tab" data-edit-job-filter="cancelled" onclick="filterEditingJobs(this,'cancelled')">cancelled</button>
+            <button class="tab" data-edit-job-filter="queued" onclick="filterEditingJobs(this,'queued')">В очереди</button>
+            <button class="tab" data-edit-job-filter="rendering" onclick="filterEditingJobs(this,'rendering')">Рендерится</button>
+            <button class="tab" data-edit-job-filter="done" onclick="filterEditingJobs(this,'done')">Готово</button>
+            <button class="tab" data-edit-job-filter="failed" onclick="filterEditingJobs(this,'failed')">Ошибки</button>
+            <button class="tab" data-edit-job-filter="cancelled" onclick="filterEditingJobs(this,'cancelled')">Отменено</button>
             <label class="editing-review-filter">
-              <span>Review</span>
+              <span>Проверка</span>
               <select onchange="filterEditingJobsByReview(this.value)">
-                <option value="all">all</option>
+                <option value="all">Все</option>
                 <option value="pending">pending</option>
                 <option value="approved">approved</option>
                 <option value="rejected">rejected</option>
@@ -565,7 +565,7 @@
     </div>
 
     <div id="v-settings" class="v">
-      <div class="ph"><h1>Настройки</h1><p>рабочая папка ShortsFarm и OAuth client для YouTube-каналов</p></div>
+      <div class="ph"><h1>Настройки</h1><p>рабочая папка ShortsFarm и OAuth-клиент для YouTube-каналов</p></div>
       <div class="tabs">
         <button class="tab on" data-settings-tab="youtube-oauth" onclick="setSettingsTab('youtube-oauth', this)">YouTube OAuth</button>
         <button class="tab" data-settings-tab="workspace" onclick="setSettingsTab('workspace', this)">Workspace</button>
@@ -578,7 +578,7 @@
         <div class="settings-grid">
           <div class="box">
             <div class="box-head">
-              <span>OAuth Profiles</span>
+              <span>OAuth профили</span>
               <div class="row-actions">
                 <button class="btn-mini" onclick="loadSettingsView()">Обновить</button>
                 <button class="btn-secondary" onclick="startNewOAuthProfile()">Новый профиль</button>
@@ -589,7 +589,7 @@
 
           <div class="box">
             <div class="box-head">
-              <span id="settings-oauth-form-title">Импорт OAuth Client JSON</span>
+              <span id="settings-oauth-form-title">Импорт JSON OAuth-клиента</span>
               <div class="row-actions">
                 <button class="btn-mini" onclick="setOAuthManualMode('json')">JSON</button>
                 <button class="btn-mini" onclick="setOAuthManualMode('manual')">Ручной ввод</button>
@@ -598,8 +598,8 @@
             <div class="form-body settings-form">
               <div class="hint-box">
                 <ol style="padding-left:18px;line-height:1.6">
-                  <li>Создайте OAuth client в Google Cloud.</li>
-                  <li>Вставьте OAuth client JSON ниже.</li>
+                  <li>Создайте OAuth-клиент в Google Cloud.</li>
+                  <li>Вставьте JSON OAuth-клиента ниже.</li>
                   <li>После импорта перейдите к подключению YouTube-канала.</li>
                 </ol>
               </div>
@@ -610,18 +610,18 @@
               </div>
 
               <div id="settings-oauth-json-wrap" class="field">
-                <label class="field-lbl">OAuth Client JSON</label>
+                <label class="field-lbl">JSON OAuth-клиента</label>
                 <textarea id="settings-oauth-json" rows="8" placeholder='{"web":{"client_id":"...","client_secret":"...","redirect_uris":["http://127.0.0.1:8000/api/publish/youtube/oauth/callback"]}}'></textarea>
               </div>
 
               <div id="settings-oauth-manual-wrap" style="display:none">
                 <div class="field">
                   <label class="field-lbl">client_id</label>
-                  <input id="settings-oauth-client-id" type="text" placeholder="Google OAuth client_id">
+                  <input id="settings-oauth-client-id" type="text" placeholder="client_id из Google OAuth">
                 </div>
                 <div class="field">
                   <label class="field-lbl">client_secret</label>
-                  <input id="settings-oauth-client-secret" type="password" placeholder="Google OAuth client_secret">
+                  <input id="settings-oauth-client-secret" type="password" placeholder="client_secret из Google OAuth">
                 </div>
                 <div class="field">
                   <label class="field-lbl">Redirect URI</label>
@@ -634,7 +634,7 @@
               </div>
 
               <div class="action-row">
-                <button class="btn-primary" id="settings-oauth-save-btn" onclick="saveOAuthProfile()">Сохранить OAuth client</button>
+                <button class="btn-primary" id="settings-oauth-save-btn" onclick="saveOAuthProfile()">Сохранить OAuth-клиент</button>
                 <button class="btn-secondary" onclick="startNewOAuthProfile()">Очистить форму</button>
                 <button class="btn-danger" id="settings-oauth-delete-btn" style="display:none" onclick="deleteOAuthProfile()">Удалить профиль</button>
               </div>
@@ -650,7 +650,9 @@
           <div class="form-body settings-form">
             <div class="hint-box">
               Все операции раздела «Файлы» ограничены этой папкой. При сохранении
-              будут созданы sources, cuts, prepared, edits, ready и published.
+              будут созданы системные папки: Исходники (sources), Нарезки (cuts),
+              Подготовленные (prepared), Результаты монтажа (edits), Готовые (ready)
+              и Опубликованные (published).
             </div>
             <div class="field">
               <label class="field-lbl">workspace_root · абсолютный локальный путь</label>

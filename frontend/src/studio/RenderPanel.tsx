@@ -1,4 +1,5 @@
 import type {RenderJob} from '../api';
+import {statusLabel} from './labels';
 
 export const RenderPanel = ({
   projectId,
@@ -25,8 +26,8 @@ export const RenderPanel = ({
       </button>
     </div>
     <div className="status">
-      Project: {projectId ? `#${projectId}` : 'не сохранён'}
-      {job ? <> · Render #{job.id}: <strong>{job.status}</strong></> : null}
+      Проект: {projectId ? `#${projectId}` : 'не сохранён'}
+      {job ? <> · Рендер #{job.id}: <strong>{statusLabel(job.status)}</strong></> : null}
     </div>
     {job?.error ? <div className="error">{job.error}</div> : null}
     {renderDisabled && disabledReason

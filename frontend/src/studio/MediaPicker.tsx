@@ -1,4 +1,5 @@
 import type {MediaItem, MediaSection} from '../api';
+import {folderSectionLabel, workspacePathLabel} from './labels';
 
 export const MediaPicker = ({
   sections,
@@ -12,15 +13,15 @@ export const MediaPicker = ({
   allowedSections?: string[];
 }) => (
   <>
-    <h2>Media</h2>
+    <h2>Медиа</h2>
     {sections.map((section) => (
       <section
         className={`media-section ${section.kind === 'edited' ? 'edited-results' : ''}`}
         key={section.key}
       >
         <h3>
-          {section.label}
-          {section.kind === 'edited' ? <span className="edited-badge">result</span> : null}
+          {section.label || folderSectionLabel(section.key)}
+          {section.kind === 'edited' ? <span className="edited-badge">результат</span> : null}
         </h3>
         {section.items.length ? section.items.map((item) => (
           <button
@@ -32,9 +33,9 @@ export const MediaPicker = ({
             onClick={() => onSelect(item)}
           >
             <span>{item.name}</span>
-            <small>{item.workspace_path}</small>
+            <small title={item.workspace_path}>{workspacePathLabel(item.workspace_path)}</small>
             {allowedSections && !allowedSections.includes(section.key)
-              ? <em>Не разрешено slot schema</em>
+              ? <em>Не разрешено схемой слота</em>
               : null}
           </button>
         )) : <div className="empty-note">Видео не найдены</div>}

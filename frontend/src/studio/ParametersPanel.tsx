@@ -1,17 +1,16 @@
 import type {Recipe} from './recipe';
 import {
+  fitLabel,
+  groupLabel,
+  parameterLabel,
+  parameterTypeLabel,
+} from './labels';
+import {
   parameterValue,
   setRecipeParameter,
   type ParameterDefinition,
   type TemplateDefinition,
 } from './template';
-
-const groupLabels: Record<string, string> = {
-  layout: 'Layout parameters',
-  audio: 'Audio parameters',
-  text: 'Text parameters',
-  automation: 'Automation defaults',
-};
 
 const ParameterInput = ({
   definition,
@@ -28,7 +27,9 @@ const ParameterInput = ({
   if (definition.type === 'select') {
     return (
       <select value={String(value)} onChange={(event) => onChange(event.target.value)}>
-        {(definition.values || []).map((option) => <option key={option}>{option}</option>)}
+        {(definition.values || []).map((option) => (
+          <option key={option} value={option}>{fitLabel(option)}</option>
+        ))}
       </select>
     );
   }
@@ -81,24 +82,25 @@ export const ParametersPanel = ({
   return (
     <section className="ts-card parameters-card">
       <div className="ts-card-head">
-        <div><h2>Parameters</h2><p>Automation default и текущее test-значение разделены.</p></div>
+        <div><h2>Параметры</h2><p>Стандартное значение шаблона и текущее тестовое значение разделены.</p></div>
       </div>
       {Object.entries(groups).map(([group, entries]) => (
         <div className="parameter-group" key={group}>
-          <h3>{groupLabels[group] || group}</h3>
+          <h3>{groupLabel(group)}</h3>
           {entries.map(([key, parameter]) => (
             <div className="parameter-row" key={key}>
               <div className="parameter-meta">
-                <strong>{key}</strong>
+                <strong>{parameterLabel(key)}</strong>
+                <code>{key}</code>
                 <small>
-                  {parameter.type}
-                  {parameter.min !== undefined ? ` · min ${parameter.min}` : ''}
-                  {parameter.max !== undefined ? ` · max ${parameter.max}` : ''}
-                  {parameter.values ? ` · ${parameter.values.join(' / ')}` : ''}
+                  {parameterTypeLabel(parameter.type)}
+                  {parameter.min !== undefined ? ` · минимум ${parameter.min}` : ''}
+                  {parameter.max !== undefined ? ` · максимум ${parameter.max}` : ''}
+                  {parameter.values ? ` · ${parameter.values.map(fitLabel).join(' / ')}` : ''}
                 </small>
               </div>
               <label>
-                <span>Default</span>
+                <span>По умолчанию</span>
                 <ParameterInput
                   definition={parameter}
                   value={parameter.default}
@@ -106,7 +108,7 @@ export const ParametersPanel = ({
                 />
               </label>
               <label>
-                <span>Test value</span>
+                <span>Тестовое значение</span>
                 <ParameterInput
                   definition={parameter}
                   value={parameterValue(recipe, key)}

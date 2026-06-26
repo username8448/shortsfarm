@@ -119,6 +119,51 @@ def test_workspace_pick_directory_creates_layout(tmp_path, monkeypatch):
     assert all((selected / name).is_dir() for name in SYSTEM_FOLDERS)
 
 
+def test_local_dialog_pick_file_returns_selected_path(tmp_path, monkeypatch):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalDialogPickRequest
+
+    selected = tmp_path / "reaction.mp4"
+    monkeypatch.setattr(api, "pick_file_dialog", lambda title: str(selected))
+
+    data = api.local_dialog_pick(
+        LocalDialogPickRequest(kind="file", title="Выберите reaction")
+    )
+
+    assert data == {"selected": True, "path": str(selected)}
+
+
+def test_local_dialog_pick_directory_cancel(monkeypatch):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalDialogPickRequest
+
+    monkeypatch.setattr(api, "pick_directory_dialog", lambda title: None)
+
+    data = api.local_dialog_pick(LocalDialogPickRequest(kind="directory"))
+
+    assert data == {"selected": False, "path": None}
+
+
+def test_local_dialog_pick_unavailable_returns_http_409(monkeypatch):
+    from shortsfarm.local_dialogs import (
+        UNAVAILABLE_FILE_MESSAGE,
+        LocalDialogUnavailable,
+    )
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalDialogPickRequest
+
+    def unavailable(title):
+        raise LocalDialogUnavailable(UNAVAILABLE_FILE_MESSAGE)
+
+    monkeypatch.setattr(api, "pick_file_dialog", unavailable)
+
+    with pytest.raises(HTTPException) as exc:
+        api.local_dialog_pick(LocalDialogPickRequest(kind="file"))
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["message"] == UNAVAILABLE_FILE_MESSAGE
+
+
 def test_manual_workspace_settings_still_work(tmp_path):
     from shortsfarm.web import api
     from shortsfarm.web.schemas import WorkspaceRootRequest

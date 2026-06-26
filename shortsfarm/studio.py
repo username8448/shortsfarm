@@ -17,10 +17,10 @@ from .workspace_fs import get_workspace_root, resolve_workspace_path
 STUDIO_TEMPLATE_KEY = "reaction_top_25"
 STUDIO_RENDERER = "remotion"
 STUDIO_MEDIA_SECTIONS = (
-    ("sources", "Sources", "source"),
-    ("cuts", "Cuts", "cut"),
-    ("prepared", "Prepared", "prepared"),
-    ("edits", "Edited results", "edited"),
+    ("sources", "Исходники", "source"),
+    ("cuts", "Нарезки", "cut"),
+    ("prepared", "Подготовленные", "prepared"),
+    ("edits", "Результаты монтажа", "edited"),
 )
 _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 

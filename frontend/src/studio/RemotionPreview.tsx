@@ -6,7 +6,7 @@ import type {ResolvedRecipe} from './recipe';
 export const RemotionPreview = ({recipe}: {recipe: ResolvedRecipe | null}) => {
   const inputProps = useMemo(() => recipe, [recipe]);
   if (!inputProps) {
-    return <div className="preview-empty">Выберите main sample</div>;
+    return <div className="preview-empty">Выберите основное тестовое видео</div>;
   }
   return (
     <div className="preview-frame">
@@ -22,7 +22,7 @@ export const RemotionPreview = ({recipe}: {recipe: ResolvedRecipe | null}) => {
         style={{width: '100%', aspectRatio: '9 / 16'}}
       />
       {!inputProps.media.reaction.url
-        ? <div className="slot-warning">Reaction не выбран · main-only preview</div>
+        ? <div className="slot-warning">Реакция не выбрана · предпросмотр только основного видео</div>
         : null}
     </div>
   );

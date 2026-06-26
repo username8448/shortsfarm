@@ -1,4 +1,10 @@
 import type {TemplateDefinition} from './template';
+import {
+  folderSectionLabel,
+  slotLabel,
+  slotPropertyLabel,
+  slotValueLabel,
+} from './labels';
 
 export const SlotsPanel = ({
   definition,
@@ -27,13 +33,14 @@ export const SlotsPanel = ({
   };
   return (
     <section className="ts-card">
-      <div className="ts-card-head"><h2>Slots</h2></div>
+      <div className="ts-card-head"><h2>Входные слоты</h2></div>
       <div className="slot-list">
         {Object.entries(definition.slots).map(([key, slot]) => (
           <article className="slot-card" key={key}>
             <div className="slot-title">
-              <strong>{key}</strong>
-              <span className="ts-badge">{slot.type}</span>
+              <strong>{slotLabel(key)}</strong>
+              <code>{key}</code>
+              <span className="ts-badge">{slotValueLabel(slot.type)}</span>
             </div>
             <label className="ts-check">
               <input
@@ -41,11 +48,11 @@ export const SlotsPanel = ({
                 checked={slot.required}
                 onChange={(event) => updateSlot(key, {required: event.target.checked})}
               />
-              Required input
+              Обязательный вход
             </label>
             {slot.allowed_sections ? (
               <div className="slot-options">
-                <span>Allowed sections</span>
+                <span>Разрешённые разделы</span>
                 {['sources', 'cuts', 'prepared'].map((section) => (
                   <label className="ts-check" key={section}>
                     <input
@@ -53,14 +60,20 @@ export const SlotsPanel = ({
                       checked={slot.allowed_sections?.includes(section)}
                       onChange={() => toggleSection(key, section)}
                     />
-                    {section}
+                    {folderSectionLabel(section)}
                   </label>
                 ))}
               </div>
             ) : null}
-            {slot.duration_policy ? <p>Duration: <b>{slot.duration_policy}</b></p> : null}
-            {slot.source ? <p>Source: <b>{slot.source}</b></p> : null}
-            {slot.playback ? <p>Playback: <b>{slot.playback}</b></p> : null}
+            {slot.duration_policy ? (
+              <p>{slotPropertyLabel('duration_policy')}: <b>{slotValueLabel(slot.duration_policy)}</b></p>
+            ) : null}
+            {slot.source ? (
+              <p>{slotPropertyLabel('source')}: <b>{slotValueLabel(slot.source)}</b></p>
+            ) : null}
+            {slot.playback ? (
+              <p>{slotPropertyLabel('playback')}: <b>{slotValueLabel(slot.playback)}</b></p>
+            ) : null}
           </article>
         ))}
       </div>

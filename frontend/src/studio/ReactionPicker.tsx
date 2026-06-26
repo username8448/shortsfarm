@@ -10,7 +10,7 @@ export const ReactionPicker = ({
   onChange: (id: number | null) => void;
 }) => (
   <label className="control">
-    <span>Reaction</span>
+    <span>Reaction-видео</span>
     <select
       value={value ?? ''}
       onChange={(event) => onChange(event.target.value ? Number(event.target.value) : null)}

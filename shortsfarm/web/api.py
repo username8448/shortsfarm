@@ -37,7 +37,11 @@ from ..edit_renderer import (
     run_edit_queue_once,
 )
 from ..ffmpeg_tools import probe_duration, require_binary
-from ..local_dialogs import LocalDialogUnavailable, pick_directory_dialog
+from ..local_dialogs import (
+    LocalDialogUnavailable,
+    pick_directory_dialog,
+    pick_file_dialog,
+)
 from ..mpv_session import require_mpv
 from ..publish_youtube import (
     parse_tags,
@@ -86,6 +90,7 @@ from .schemas import (
     FileMoveRequest,
     FileRegisterSourceRequest,
     FileRenameRequest,
+    LocalDialogPickRequest,
     OpenMpvRequest,
     PublishJobRetryRequest,
     PublishJobRunRequest,
@@ -1011,6 +1016,26 @@ def workspace_settings_pick_directory() -> dict[str, Any]:
         raise _fail(exc, status_code=409)
     except PermissionError as exc:
         raise _fail(exc, status_code=403)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/local-dialogs/pick")
+def local_dialog_pick(req: LocalDialogPickRequest) -> dict[str, Any]:
+    try:
+        _init()
+        kind = str(req.kind or "").strip().lower()
+        if kind == "file":
+            selected_path = pick_file_dialog(req.title or "Выберите файл")
+        elif kind in {"directory", "folder"}:
+            selected_path = pick_directory_dialog(req.title or "Выберите папку")
+        else:
+            raise ValueError("kind должен быть file или directory.")
+        if selected_path is None:
+            return {"selected": False, "path": None}
+        return {"selected": True, "path": selected_path}
+    except LocalDialogUnavailable as exc:
+        raise _fail(exc, status_code=409)
     except Exception as exc:
         raise _fail(exc)
 

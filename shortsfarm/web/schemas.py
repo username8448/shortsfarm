@@ -28,6 +28,11 @@ class WorkspaceRootRequest(BaseModel):
     workspace_root: str
 
 
+class LocalDialogPickRequest(BaseModel):
+    kind: str = "file"  # file | directory
+    title: str | None = None
+
+
 class FileFolderCreateRequest(BaseModel):
     parent_path: str = ""
     name: str

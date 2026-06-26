@@ -312,6 +312,8 @@ button:disabled { opacity: .4; cursor: not-allowed; }
   border: 1px solid transparent; background: transparent;
   color: var(--mid); font: 600 11px var(--mono); text-align: left;
 }
+.files-side-link span { flex: 1; min-width: 0; }
+.files-side-link small { font-size: 10px; font-weight: 500; }
 .files-side-link:hover,
 .files-side-link.on {
   color: var(--acc); border-color: var(--acc-br); background: var(--acc-bg);
@@ -363,6 +365,13 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 }
 .manual-path summary { cursor: pointer; color: var(--mid); font-size: 11px; font-weight: 600; }
 .manual-path[open] summary { margin-bottom: 8px; color: var(--acc); }
+.path-pick-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.path-pick-row input { flex: 1; min-width: 0; }
+.path-pick-row button { flex-shrink: 0; white-space: nowrap; }
 .action-row { margin-top: 4px; }
 .action-row .btn-primary, .action-row .btn-secondary { min-width: 142px; text-align: center; }
 .err-line { white-space: pre-wrap; }

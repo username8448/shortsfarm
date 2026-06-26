@@ -183,7 +183,7 @@ def test_media_picker_sections_mark_edited_results(tmp_path, monkeypatch):
     assert [item["key"] for item in sections] == [
         "sources", "cuts", "prepared", "edits",
     ]
-    assert sections[-1]["label"] == "Edited results"
+    assert sections[-1]["label"] == "Результаты монтажа"
     assert sections[-1]["kind"] == "edited"
     assert sections[-1]["items"][0]["kind"] == "edited"
 

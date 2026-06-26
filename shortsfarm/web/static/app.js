@@ -91,6 +91,65 @@ function shortPath(value) {
   const text = String(value);
   return text.length > 58 ? '…' + text.slice(-57) : text;
 }
+const WORKSPACE_SYSTEM_FOLDERS = ['sources','cuts','prepared','edits','ready','published'];
+const WORKSPACE_FOLDER_LABELS = {
+  sources: 'Исходники',
+  cuts: 'Нарезки',
+  prepared: 'Подготовленные',
+  edits: 'Результаты монтажа',
+  ready: 'Готовые',
+  published: 'Опубликованные',
+};
+const WORKSPACE_KIND_LABELS = {
+  system: 'системная папка',
+  custom: 'папка',
+  collection: 'коллекция',
+  project: 'проект',
+  file: 'файл',
+  video: 'видео',
+  image: 'изображение',
+  other: 'файл',
+};
+function workspaceFolderLabel(pathOrName, fallback = '') {
+  const raw = String(pathOrName || fallback || '');
+  const first = raw.split('/').filter(Boolean)[0] || raw;
+  return WORKSPACE_FOLDER_LABELS[first] || fallback || raw;
+}
+function workspaceDisplayPath(path) {
+  const raw = String(path || '');
+  if (!raw) return '';
+  const parts = raw.split('/').filter(Boolean);
+  if (!parts.length) return raw;
+  const [first, ...rest] = parts;
+  return [WORKSPACE_FOLDER_LABELS[first] || first, ...rest].join('/');
+}
+function workspaceKindLabel(kind) {
+  return WORKSPACE_KIND_LABELS[String(kind || '').toLowerCase()] || kind || 'файл';
+}
+function fileNameFromPath(value) {
+  const name = String(value || '').split(/[\\/]/).filter(Boolean).pop() || '';
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+async function pickLocalPath({kind='file', title='Выберите файл', buttonId='', errorId=''}) {
+  const button = buttonId ? document.getElementById(buttonId) : null;
+  if (button) button.disabled = true;
+  try {
+    const data = await api.post('/api/local-dialogs/pick', {kind, title});
+    return data?.selected ? (data.path || '') : '';
+  } catch (err) {
+    const message = err.message || (
+      kind === 'file'
+        ? 'Локальный выбор файла недоступен. Укажите путь вручную.'
+        : 'Локальный выбор папки недоступен. Укажите путь вручную.'
+    );
+    showToast(message, 'err');
+    if (errorId) showInlineError(errorId, message);
+    return '';
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
 function formatFileSize(bytes) {
   if (bytes === null || bytes === undefined) return '—';
   const value = Number(bytes);
@@ -370,15 +429,14 @@ function renderManagedFiles() {
   const sidebar = document.getElementById('files-sidebar');
   const crumbs = document.getElementById('files-breadcrumbs');
   const list = document.getElementById('files-list');
-  const systemFolders = ['sources','cuts','prepared','edits','ready','published'];
   if (sidebar) {
-    sidebar.innerHTML = `<div class="field-lbl">Workspace</div>${systemFolders.map(name => {
+    sidebar.innerHTML = `<div class="field-lbl">Рабочая папка</div>${WORKSPACE_SYSTEM_FOLDERS.map(name => {
       const active = data.path === name || data.path.startsWith(name + '/');
-      return `<button class="files-side-link${active ? ' on' : ''}" onclick="loadManagedFiles('${name}')"><i class="ti ti-folder"></i><span>${name}</span></button>`;
+      return `<button class="files-side-link${active ? ' on' : ''}" onclick="loadManagedFiles('${name}')"><i class="ti ti-folder"></i><span>${workspaceFolderLabel(name)}</span><small class="mono dim">${name}</small></button>`;
     }).join('')}`;
   }
   if (crumbs) {
-    crumbs.innerHTML = `<button class="crumb" onclick="loadManagedFiles('')">workspace</button>${(data.breadcrumbs || []).map(item => `<span class="mono dim">/</span><button class="crumb" data-path="${esc(item.path)}" onclick="loadManagedFiles(this.dataset.path)">${esc(item.name)}</button>`).join('')}`;
+    crumbs.innerHTML = `<button class="crumb" onclick="loadManagedFiles('')">Рабочая папка</button>${(data.breadcrumbs || []).map(item => `<span class="mono dim">/</span><button class="crumb" data-path="${esc(item.path)}" onclick="loadManagedFiles(this.dataset.path)">${esc(workspaceFolderLabel(item.path, item.name))}</button>`).join('')}`;
   }
   if (!list) return;
   const items = data.items || [];
@@ -388,9 +446,11 @@ function renderManagedFiles() {
   }
   list.innerHTML = `<table class="tbl files-table"><thead><tr><th>Тип</th><th>Имя</th><th>Размер</th><th>Изменён</th><th>Действия</th></tr></thead><tbody>${items.map(item => {
     const folder = item.type === 'folder';
-    const system = folder && !item.path.includes('/') && ['sources','cuts','prepared','edits','ready','published'].includes(item.path);
+    const system = folder && !item.path.includes('/') && WORKSPACE_SYSTEM_FOLDERS.includes(item.path);
     const icon = folder ? 'ti-folder' : item.media_type === 'video' ? 'ti-video' : item.media_type === 'image' ? 'ti-photo' : 'ti-file';
-    const type = folder ? item.kind : item.media_type;
+    const type = folder ? workspaceKindLabel(item.kind) : workspaceKindLabel(item.media_type);
+    const displayName = system ? workspaceFolderLabel(item.path, item.name) : (item.display_name || item.name);
+    const displayPath = workspaceDisplayPath(item.path);
     const open = folder
       ? `<button class="btn-mini" data-path="${esc(item.path)}" onclick="loadManagedFiles(this.dataset.path)">Открыть</button>`
       : '';
@@ -398,7 +458,7 @@ function renderManagedFiles() {
       ? `<button class="btn-mini" data-path="${esc(item.path)}" onclick="openManagedFileInStudio(this.dataset.path)">Открыть в Нарезке</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="registerManagedSource(this.dataset.path)">Добавить как исходник</button>`
       : '';
     const mutations = system ? '' : `<button class="btn-mini" data-path="${esc(item.path)}" data-name="${esc(item.name)}" onclick="renameManagedItem(this.dataset.path,this.dataset.name)">Переименовать</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="moveManagedItem(this.dataset.path)">Переместить</button><button class="btn-danger" data-path="${esc(item.path)}" data-folder="${folder ? '1' : '0'}" onclick="deleteManagedItem(this.dataset.path,this.dataset.folder==='1')">Удалить</button>`;
-    return `<tr><td><span class="workspace-type ${folder ? 'segment' : 'clip'}"><i class="ti ${icon}"></i>&nbsp;${esc(type || 'file')}</span></td><td><div class="mono txt">${esc(item.display_name || item.name)}</div><div class="mono dim">${esc(item.path)}</div>${folder ? `<div class="mono dim">${Number(item.children_count || 0)} объектов</div>` : ''}</td><td class="mono mid">${folder ? '—' : esc(formatFileSize(item.size))}</td><td class="mono dim">${esc(formatMtime(item.modified_at))}</td><td><div class="row-actions">${open}${videoActions}${mutations}</div></td></tr>`;
+    return `<tr><td><span class="workspace-type ${folder ? 'segment' : 'clip'}"><i class="ti ${icon}"></i>&nbsp;${esc(type || 'файл')}</span></td><td><div class="mono txt">${esc(displayName)}</div><div class="mono dim" title="${esc(item.path)}">${esc(displayPath)}</div>${folder ? `<div class="mono dim">${Number(item.children_count || 0)} объектов</div>` : ''}</td><td class="mono mid">${folder ? '—' : esc(formatFileSize(item.size))}</td><td class="mono dim">${esc(formatMtime(item.modified_at))}</td><td><div class="row-actions">${open}${videoActions}${mutations}</div></td></tr>`;
   }).join('')}</tbody></table>`;
 }
 
@@ -444,8 +504,20 @@ async function renameManagedItem(path, currentName) {
 }
 
 async function moveManagedItem(path) {
-  const target = prompt('Целевая папка относительно workspace_root:', managedFilesState.currentPath || '');
-  if (target === null) return;
+  hideInlineError('files-error');
+  const picked = await pickLocalPath({
+    kind: 'directory',
+    title: 'Выберите целевую папку внутри workspace',
+    errorId: 'files-error',
+  });
+  if (!picked) return;
+  let target = '';
+  try {
+    target = workspaceRelativeFromAbsolute(picked);
+  } catch (err) {
+    showInlineError('files-error', err.message || 'Выберите папку внутри workspace_root.');
+    return;
+  }
   try {
     await api.post('/api/files/move', {source_path: path, target_folder: target});
     showToast('Workspace item перемещён');
@@ -453,6 +525,17 @@ async function moveManagedItem(path) {
   } catch (err) {
     showInlineError('files-error', err.message || 'Не удалось переместить item');
   }
+}
+
+function workspaceRelativeFromAbsolute(path) {
+  const root = String(managedFilesState.workspaceRoot || '').replace(/\/+$/, '');
+  const selected = String(path || '').replace(/\/+$/, '');
+  if (!root) throw new Error('workspace_root не настроен.');
+  if (selected === root) return '';
+  if (!selected.startsWith(root + '/')) {
+    throw new Error('Выберите папку внутри текущего workspace_root.');
+  }
+  return selected.slice(root.length + 1);
 }
 
 async function deleteManagedItem(path, folder = false) {
@@ -473,7 +556,12 @@ async function deleteManagedItem(path, folder = false) {
 }
 
 async function importManagedSource() {
-  const sourcePath = prompt('Абсолютный путь к внешнему видеофайлу:');
+  hideInlineError('files-error');
+  const sourcePath = await pickLocalPath({
+    kind: 'file',
+    title: 'Выберите видео для импорта в Исходники',
+    errorId: 'files-error',
+  });
   if (!sourcePath) return;
   const current = managedFilesState.currentPath || '';
   const target = current === 'sources' || current.startsWith('sources/')
@@ -744,6 +832,26 @@ function manualPathChanged() {
   updateActionButtons();
 }
 
+async function pickSplitPath() {
+  hideInlineError('split-error');
+  const isFolder = splitMode === 'folder';
+  const path = await pickLocalPath({
+    kind: isFolder ? 'directory' : 'file',
+    title: isFolder ? 'Выберите папку для нарезки' : 'Выберите видео для нарезки',
+    buttonId: 'split-path-pick-btn',
+    errorId: 'split-error',
+  });
+  if (!path) return;
+  const input = document.getElementById('split-path');
+  if (input) input.value = path;
+  if (isFolder) {
+    await openFolder(path, {silent: true});
+    manualPathChanged();
+    return;
+  }
+  await selectVideo(path);
+}
+
 function getManualPath() {
   return document.getElementById('split-path')?.value.trim() || '';
 }
@@ -776,7 +884,7 @@ function renderSelection() {
     return;
   }
   if (manual) {
-    el.innerHTML = `<div class="selection-card-body"><div class="selection-title">Ручной путь</div><div class="selection-name" title="${esc(manual)}">${esc(shortPath(manual))}</div><div class="selection-meta mono">Advanced fallback без проверки файловым браузером</div></div>`;
+    el.innerHTML = `<div class="selection-card-body"><div class="selection-title">Ручной путь</div><div class="selection-name" title="${esc(manual)}">${esc(shortPath(manual))}</div><div class="selection-meta mono">Резервный ручной ввод без проверки файловым браузером</div></div>`;
     return;
   }
   el.innerHTML = '<div class="empty">Выберите видео для нарезки</div>';
@@ -1154,7 +1262,7 @@ function renderWorkspaceEditingControls() {
   const profiles = getActiveEditingProfiles();
   syncWorkspaceEditingSelection();
   if (!profiles.length) {
-    profileSelect.innerHTML = '<option value="">Нет channel profiles</option>';
+    profileSelect.innerHTML = '<option value="">Нет профилей каналов</option>';
     profileSelect.disabled = true;
   } else {
     profileSelect.disabled = workspaceEditingState.busy;
@@ -1164,17 +1272,17 @@ function renderWorkspaceEditingControls() {
   }
 
   const currentTemplate = templateSelect.value;
-  templateSelect.innerHTML = `<option value="">Из channel profile</option>${(editingTemplates || []).filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
+  templateSelect.innerHTML = `<option value="">Из профиля канала</option>${(editingTemplates || []).filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
   if (currentTemplate && Array.from(templateSelect.options).some(option => option.value === currentTemplate)) templateSelect.value = currentTemplate;
 
   const currentReaction = reactionSelect.value;
-  reactionSelect.innerHTML = `<option value="">Из reaction pool / без реакции</option>${(editingReactions || []).filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}${item.file_exists ? '' : ' · missing'}</option>`).join('')}`;
+  reactionSelect.innerHTML = `<option value="">Из пула реакций / без реакции</option>${(editingReactions || []).filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}${item.file_exists ? '' : ' · файл отсутствует'}</option>`).join('')}`;
   if (currentReaction && Array.from(reactionSelect.options).some(option => option.value === currentReaction)) reactionSelect.value = currentReaction;
 
   const selectedCount = selectedWorkspaceKeys.size;
   planBtn.disabled = workspaceEditingState.busy || !workspaceEditingState.selectedProfileId || selectedCount === 0;
   stateEl.textContent = profiles.length
-    ? `Выбрано workspace items: ${selectedCount}. Job создаётся без запуска рендера.`
+    ? `Выбрано элементов workspace: ${selectedCount}. Задача создаётся без запуска рендера.`
     : 'Создайте профиль канала в разделе «Монтаж».';
 }
 
@@ -1186,11 +1294,11 @@ function workspaceEditingSummary(data) {
 async function planSelectedWorkspaceEditing() {
   const itemKeys = Array.from(selectedWorkspaceKeys);
   if (!itemKeys.length) {
-    showToast('Сначала выберите workspace items', 'err');
+    showToast('Сначала выберите элементы workspace', 'err');
     return;
   }
   if (!workspaceEditingState.selectedProfileId) {
-    showToast('Сначала выберите channel profile', 'err');
+    showToast('Сначала выберите профиль канала', 'err');
     return;
   }
   workspaceEditingState.busy = true;
@@ -1588,7 +1696,7 @@ function renderWorkspaceDetail() {
     && Boolean(item.publish_job_id)
     && Boolean(item.publish_youtube_video_id || item.publish_youtube_url);
   const publishPanel = item.publish_job_id
-    ? `<div class="missing-panel publish-panel">${badge(item.publish_job_status || 'queued')}<div><b>Publish job #${esc(item.publish_job_id)}</b><p>${item.publish_youtube_url ? `<a class="link-video mono txt" href="${esc(item.publish_youtube_url)}" target="_blank" rel="noopener noreferrer">Открыть YouTube</a>` : 'YouTube URL пока нет.'}${item.publish_error ? `<br><span class="err">${esc(shortErrorText(item.publish_error))}</span>` : ''}</p></div></div>`
+    ? `<div class="missing-panel publish-panel">${badge(item.publish_job_status || 'queued')}<div><b>Задача публикации #${esc(item.publish_job_id)}</b><p>${item.publish_youtube_url ? `<a class="link-video mono txt" href="${esc(item.publish_youtube_url)}" target="_blank" rel="noopener noreferrer">Открыть YouTube</a>` : 'YouTube URL пока нет.'}${item.publish_error ? `<br><span class="err">${esc(shortErrorText(item.publish_error))}</span>` : ''}</p></div></div>`
     : '';
   const preparedPanel = `<div class="missing-panel publish-panel">${prepareBadge(item) || badge(item.prepare_status || 'none')}<div><b>Подготовленный файл</b><p>${item.prepared_path ? `<span title="${esc(item.prepared_path)}">${esc(shortPath(item.prepared_path))}</span>` : 'Файл ещё не подготовлен.'}${item.prepare_error ? `<br><span class="err">${esc(shortErrorText(item.prepare_error))}</span>` : ''}</p></div></div>`;
   el.innerHTML = `<div class="workspace-detail-body">
@@ -1823,14 +1931,14 @@ function renderPublishStatePanel() {
   const selectedProfile = getSelectedProfile();
 
   if (!profiles.length) {
-    el.innerHTML = `<div class="setup-panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${badge('error')}<span class="mono txt">OAuth client не настроен</span></div><p>Создайте OAuth client в Google Cloud, затем импортируйте JSON в настройках. После этого можно подключить YouTube-канал.</p><div class="action-row"><button class="btn-secondary" onclick="openYouTubeSettings()">Открыть настройки YouTube OAuth</button></div></div>`;
+    el.innerHTML = `<div class="setup-panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${badge('error')}<span class="mono txt">OAuth-клиент не настроен</span></div><p>Создайте OAuth-клиент в Google Cloud, затем импортируйте JSON в настройках. После этого можно подключить YouTube-канал.</p><div class="action-row"><button class="btn-secondary" onclick="openYouTubeSettings()">Открыть настройки YouTube OAuth</button></div></div>`;
     return;
   }
 
   if (!lastYoutubeAccounts.length) {
     const source = selectedProfile ? ` · ${oauthProfileSourceLabel(selectedProfile)}` : '';
     const hint = publishState.onboardingHint ? `<p class="err">${esc(publishState.onboardingHint)}</p>` : '';
-    el.innerHTML = `<div class="setup-panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${badge('active')}<span class="mono txt">OAuth client готов${esc(source)}</span></div><p>Выберите OAuth client и нажмите «Подключить канал», чтобы открыть Google Consent Screen.</p>${hint}</div>`;
+    el.innerHTML = `<div class="setup-panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${badge('active')}<span class="mono txt">OAuth-клиент готов${esc(source)}</span></div><p>Выберите OAuth-клиент и нажмите «Подключить канал», чтобы открыть Google Consent Screen.</p>${hint}</div>`;
     return;
   }
 
@@ -1846,17 +1954,17 @@ function renderPublishAccountsPanel() {
   if (!lastYoutubeAccounts.length) {
     const text = profiles.length
       ? 'Нажмите «Подключить канал», чтобы добавить YouTube-канал через Google OAuth.'
-      : 'Сначала добавьте OAuth client в настройках YouTube OAuth.';
+      : 'Сначала добавьте OAuth-клиент в настройках YouTube OAuth.';
     stateEl.innerHTML = `<div class="setup-panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${badge(profiles.length ? 'active' : 'error')}<span class="mono txt">YouTube-каналы ещё не подключены</span></div><p>${esc(text)}</p></div>`;
     listEl.innerHTML = '<div class="empty">Подключённых YouTube-каналов пока нет.</div>';
     return;
   }
 
   stateEl.innerHTML = `<div class="setup-panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${badge('active')}<span class="mono txt">Подключённые каналы</span></div><p>Здесь можно проверить подключённые каналы и отключить лишние.</p></div>`;
-  listEl.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Аккаунт</th><th>Канал</th><th>Google OAuth client</th><th>Статус</th><th>Подключён</th><th>Обновлён</th><th>Действие</th></tr></thead><tbody>${lastYoutubeAccounts.map(account => {
+  listEl.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Аккаунт</th><th>Канал</th><th>Google OAuth-клиент</th><th>Статус</th><th>Подключён</th><th>Обновлён</th><th>Действие</th></tr></thead><tbody>${lastYoutubeAccounts.map(account => {
     const displayName = account.display_name || account.channel_title || 'YouTube аккаунт';
     const channel = account.channel_title || account.channel_id || '—';
-    const profile = account.profile_name || (account.oauth_profile_id ? `Profile #${account.oauth_profile_id}` : 'default');
+    const profile = account.profile_name || (account.oauth_profile_id ? `Профиль #${account.oauth_profile_id}` : 'по умолчанию');
     const error = account.error ? `<div class="mono err">${esc(account.error)}</div>` : '';
     const disabled = account.status === 'disconnected';
     return `<tr><td class="mono dim">#${account.id}</td><td><div class="mono txt">${esc(displayName)}</div>${account.account_email ? `<div class="mono dim">${esc(account.account_email)}</div>` : ''}${error}</td><td><div class="mono mid">${esc(channel)}</div>${account.channel_id ? `<div class="mono dim">${esc(account.channel_id)}</div>` : ''}</td><td class="mono dim">${esc(profile)}</td><td>${badge(account.status)}</td><td class="mono dim">${esc(formatMtime(account.created_at))}</td><td class="mono dim">${esc(formatMtime(account.updated_at))}</td><td><button class="btn-danger" ${disabled ? 'disabled' : ''} onclick="disconnectYouTubeAccount(${Number(account.id)})">Отключить</button></td></tr>`;
@@ -1869,18 +1977,18 @@ function renderPublishProfileSelect() {
   if (!select) return;
   const profiles = getActiveOAuthProfiles();
   if (!profiles.length) {
-    select.innerHTML = '<option value="">OAuth client не найден</option>';
+    select.innerHTML = '<option value="">OAuth-клиент не найден</option>';
     select.disabled = true;
-    if (meta) meta.innerHTML = '<div>Создайте OAuth client в Google Cloud и импортируйте JSON в настройках.</div>';
+    if (meta) meta.innerHTML = '<div>Создайте OAuth-клиент в Google Cloud и импортируйте JSON в настройках.</div>';
     return;
   }
   select.disabled = false;
   select.innerHTML = profiles.map(profile => {
     const suffix = [
-      profile.is_default ? 'default' : '',
+      profile.is_default ? 'по умолчанию' : '',
       oauthProfileSourceLabel(profile),
     ].filter(Boolean).join(' · ');
-    return `<option value="${Number(profile.id)}"${Number(profile.id) === Number(publishState.selectedProfileId) ? ' selected' : ''}>${esc(profile.name || `Profile #${profile.id}`)}${suffix ? ` · ${esc(suffix)}` : ''}</option>`;
+    return `<option value="${Number(profile.id)}"${Number(profile.id) === Number(publishState.selectedProfileId) ? ' selected' : ''}>${esc(profile.name || `Профиль #${profile.id}`)}${suffix ? ` · ${esc(suffix)}` : ''}</option>`;
   }).join('');
   const selected = getSelectedProfile();
   if (meta && selected) {
@@ -1898,7 +2006,7 @@ function renderPublishAccountSelect() {
   if (!accounts.length) {
     select.innerHTML = '<option value="">Нет подключённых каналов</option>';
     select.disabled = true;
-    if (meta) meta.innerHTML = '<div>Подключите канал через выбранный OAuth client.</div>';
+    if (meta) meta.innerHTML = '<div>Подключите канал через выбранный OAuth-клиент.</div>';
     return;
   }
   select.disabled = false;
@@ -2044,8 +2152,8 @@ function renderPublishScheduleCell(job) {
   const group = job.schedule_group_name
     ? `<button class="link-video mono" onclick="openPublishScheduleEditor(${Number(job.schedule_group_id)})">${esc(job.schedule_group_name)}</button>`
     : '';
-  const publish = job.publish_at ? `<div class="mono dim">publish: ${esc(formatMoscowDate(job.publish_at))}</div>` : '';
-  return `<div>${group}<div><span class="schedule-state ${esc(job.schedule_state)}">${esc(job.schedule_state)}</span></div><div class="mono txt">upload: ${esc(formatMoscowDate(job.upload_at))}</div>${publish}<div class="mono dim">${esc(formatScheduleCountdown(job.seconds_until_upload))}</div></div>`;
+  const publish = job.publish_at ? `<div class="mono dim">публикация: ${esc(formatMoscowDate(job.publish_at))}</div>` : '';
+  return `<div>${group}<div><span class="schedule-state ${esc(job.schedule_state)}">${esc(ruStatus(job.schedule_state))}</span></div><div class="mono txt">загрузка: ${esc(formatMoscowDate(job.upload_at))}</div>${publish}<div class="mono dim">${esc(formatScheduleCountdown(job.seconds_until_upload))}</div></div>`;
 }
 function renderPublishJobsTable() {
   const el = document.getElementById('publish-jobs');
@@ -2057,18 +2165,18 @@ function renderPublishJobsTable() {
     el.innerHTML = '<div class="empty">Публикаций пока нет. Выберите канал и добавьте клип в очередь.</div>';
     return;
   }
-  el.innerHTML = `<div class="workspace-selected-line mono dim" data-publish-selected-count></div><table class="tbl publish-jobs-table"><thead><tr><th></th><th>Job</th><th>Status</th><th>Title</th><th>Channel</th><th>Schedule</th><th>Privacy</th><th>File</th><th>Created</th><th>Attempts</th><th>Error</th><th>YouTube</th><th>Action</th></tr></thead><tbody>${rows.map(job => {
+  el.innerHTML = `<div class="workspace-selected-line mono dim" data-publish-selected-count></div><table class="tbl publish-jobs-table"><thead><tr><th></th><th>Задача</th><th>Статус</th><th>Название</th><th>Канал</th><th>Расписание</th><th>Видимость</th><th>Файл</th><th>Создано</th><th>Попытки</th><th>Ошибка</th><th>YouTube</th><th>Действие</th></tr></thead><tbody>${rows.map(job => {
     const selected = selectedPublishJobIds.has(Number(job.id));
     const youtubeLink = job.youtube_url ? `<a class="btn-mini" href="${esc(job.youtube_url)}" target="_blank" rel="noopener noreferrer">Открыть YouTube</a>` : '—';
     const clipPath = job.clip_output_path || job.video_source_path || '';
     const profile = job.profile_name ? `<div class="mono dim">${esc(job.profile_name)}</div>` : '';
     const err = job.error ? `<button class="link-video err mono" title="${esc(job.error)}" onclick="showPublishJobError(${Number(job.id)})">${esc(shortErrorText(job.error))}</button><button class="btn-mini" onclick="copyPublishJobError(${Number(job.id)})">Копировать</button>` : '—';
     const actions = [];
-    if (job.can_retry) actions.push(`<button class="btn-mini" onclick="retryPublishJob(${Number(job.id)})">Retry</button>`);
-    if (job.can_run) actions.push(`<button class="btn-mini" onclick="runPublishJob(${Number(job.id)})">Run now</button>`);
-    else if (job.can_force_run) actions.push(`<button class="btn-mini" onclick="runPublishJob(${Number(job.id)}, true)">Force run</button>`);
+    if (job.can_retry) actions.push(`<button class="btn-mini" onclick="retryPublishJob(${Number(job.id)})">Повторить</button>`);
+    if (job.can_run) actions.push(`<button class="btn-mini" onclick="runPublishJob(${Number(job.id)})">Запустить сейчас</button>`);
+    else if (job.can_force_run) actions.push(`<button class="btn-mini" onclick="runPublishJob(${Number(job.id)}, true)">Запустить принудительно</button>`);
     if (job.schedule_state === 'overdue' && job.schedule_group_id) actions.push(`<button class="btn-secondary" onclick="approvePublishScheduleGroup(${Number(job.schedule_group_id)})">Разрешить</button>`);
-    if (job.can_cancel) actions.push(`<button class="btn-danger" onclick="cancelPublishJob(${Number(job.id)})">Cancel</button>`);
+    if (job.can_cancel) actions.push(`<button class="btn-danger" onclick="cancelPublishJob(${Number(job.id)})">Отменить</button>`);
     actions.push(mpvButton(clipPath, 'MPV'));
     return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="togglePublishJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td>${badge(job.status)}</td><td class="mono mid ov" title="${esc(job.title || '')}">${esc(job.title || '—')}</td><td><div class="mono txt">${esc(job.channel_title || job.account_display_name || '—')}</div>${profile}</td><td>${renderPublishScheduleCell(job)}</td><td class="mono dim">${esc(job.privacy_status || 'private')}<div>${esc(job.publish_mode || 'private')}</div></td><td class="mono dim ov" title="${esc(clipPath)}">${esc(shortPath(clipPath || '—'))}</td><td class="mono dim">${esc(formatMtime(job.created_at))}</td><td class="mono txt">${esc(job.attempt_count || 0)}</td><td><div class="row-actions">${err}</div></td><td>${youtubeLink}</td><td><div class="row-actions">${actions.join('')}</div></td></tr>`;
   }).join('')}</tbody></table>`;
@@ -2173,7 +2281,7 @@ function openPublishScheduleEditor(groupId = null) {
     ? (group.jobs || []).filter(job => job.status === 'queued')
     : selectedPublishJobList().filter(job => job.status === 'queued');
   if (!jobs.length) {
-    showToast('Выберите queued jobs для расписания', 'err');
+    showToast('Выберите задачи в очереди для расписания', 'err');
     return;
   }
   editingPublishScheduleGroupId = group ? Number(group.id) : null;
@@ -2243,7 +2351,7 @@ function renderSchedulePreview() {
   const jobs = scheduleEditorJobs();
   const uploads = expandSchedulePreview(scheduleSpecBody('upload'), jobs);
   const publishes = expandSchedulePreview(scheduleSpecBody('publish'), jobs);
-  el.innerHTML = `<div class="schedule-preview-table"><table class="tbl compact"><thead><tr><th>Job</th><th>Видео</th><th>Начало upload</th><th>Публикация</th></tr></thead><tbody>${jobs.map((job, index) => `<tr><td class="mono">#${job.id}</td><td class="mono ov">${esc(job.title || '—')}</td><td class="mono">${esc(formatMoscowDate(uploads[index]))}</td><td class="mono">${esc(formatMoscowDate(publishes[index]))}</td></tr>`).join('')}</tbody></table></div>`;
+  el.innerHTML = `<div class="schedule-preview-table"><table class="tbl compact"><thead><tr><th>Задача</th><th>Видео</th><th>Начало загрузки</th><th>Публикация</th></tr></thead><tbody>${jobs.map((job, index) => `<tr><td class="mono">#${job.id}</td><td class="mono ov">${esc(job.title || '—')}</td><td class="mono">${esc(formatMoscowDate(uploads[index]))}</td><td class="mono">${esc(formatMoscowDate(publishes[index]))}</td></tr>`).join('')}</tbody></table></div>`;
 }
 async function savePublishScheduleGroup() {
   const body = {
@@ -2279,11 +2387,11 @@ async function removeEditingScheduleGroup() {
   }
 }
 async function approvePublishScheduleGroup(groupId) {
-  if (!confirm('Разрешить запуск всех просроченных queued jobs этой группы?')) return;
+  if (!confirm('Разрешить запуск всех просроченных задач в очереди этой группы?')) return;
   try {
     const data = await api.post(`/api/publish/schedule-groups/${groupId}/approve-overdue`, {});
     await refreshPublishJobs();
-    showToast(`Разрешено просроченных jobs: ${data.approved || 0}`);
+    showToast(`Разрешено просроченных задач: ${data.approved || 0}`);
   } catch (err) {
     renderPublishError(err.message || 'Не удалось разрешить просроченные задачи');
   }
@@ -2307,7 +2415,7 @@ async function runPublishWorkerBatch(limit = null) {
   renderPublishError('');
   try {
     const data = await api.post('/api/publish/worker/run-once', {limit: batchLimit});
-    showToast(`Обработано publish jobs: ${data.processed || 0}`);
+    showToast(`Обработано задач публикации: ${data.processed || 0}`);
     await refreshPublishJobs();
   } catch (err) {
     renderPublishError(`Не удалось обработать очередь публикации:\n${err.message || err}`);
@@ -2317,7 +2425,7 @@ async function runPublishWorkerBatch(limit = null) {
 async function runSelectedPublishJobs() {
   const jobs = selectedPublishJobList().filter(job => job.can_force_run);
   if (!jobs.length) {
-    showToast('Среди выбранных нет jobs для запуска', 'err');
+    showToast('Среди выбранных нет задач для запуска', 'err');
     return;
   }
   const force = jobs.some(job => job.schedule_state === 'waiting' || job.schedule_state === 'overdue');
@@ -2332,7 +2440,7 @@ async function runSelectedPublishJobs() {
     showToast(`Запущено: ${data.summary?.processed || 0} · ошибок: ${data.summary?.errors || 0}`);
     await refreshPublishJobs();
   } catch (err) {
-    renderPublishError(`Не удалось запустить выбранные jobs:\n${err.message || err}`);
+    renderPublishError(`Не удалось запустить выбранные задачи:\n${err.message || err}`);
   }
 }
 
@@ -2340,7 +2448,7 @@ async function retryFailedPublishJobs() {
   const selected = selectedPublishJobList().filter(job => job.status === 'failed' || job.status === 'cancelled');
   const jobs = selected.length ? selected : getVisiblePublishJobs().filter(job => job.status === 'failed');
   if (!jobs.length) {
-    showToast('Failed jobs не найдены', 'err');
+    showToast('Ошибочные задачи не найдены', 'err');
     return;
   }
   renderPublishError('');
@@ -2349,17 +2457,17 @@ async function retryFailedPublishJobs() {
     showToast(`Возвращено в очередь: ${data.summary?.updated || 0} · пропущено: ${data.summary?.skipped || 0}`);
     await refreshPublishJobs();
   } catch (err) {
-    renderPublishError(`Не удалось повторить failed jobs:\n${err.message || err}`);
+    renderPublishError(`Не удалось повторить ошибочные задачи:\n${err.message || err}`);
   }
 }
 
 async function cancelSelectedPublishJobs() {
   const jobs = selectedPublishJobList().filter(job => job.status === 'queued' || job.status === 'failed');
   if (!jobs.length) {
-    showToast('Среди выбранных нет queued/failed jobs', 'err');
+    showToast('Среди выбранных нет задач в очереди или с ошибкой', 'err');
     return;
   }
-  if (!confirm(`Отменить выбранные publish jobs: ${jobs.length}?`)) return;
+  if (!confirm(`Отменить выбранные задачи публикации: ${jobs.length}?`)) return;
   renderPublishError('');
   try {
     const data = await api.post('/api/publish/jobs/bulk-cancel', {job_ids: jobs.map(job => Number(job.id))});
@@ -2375,13 +2483,13 @@ function hideDonePublishJobs() {
     if (job.status === 'done') hiddenDonePublishJobIds.add(Number(job.id));
   }
   renderPublishJobsTable();
-  showToast('Done jobs скрыты из вида');
+  showToast('Завершённые задачи скрыты из вида');
 }
 
 async function startYouTubeConnect() {
   const selectedProfile = getSelectedProfile();
   if (!selectedProfile) {
-    const message = 'OAuth client не найден. Создайте OAuth Profile в настройках.';
+    const message = 'OAuth-клиент не найден. Создайте OAuth профиль в настройках.';
     publishState.onboardingHint = message;
     renderPublishView();
     renderPublishError(message);
@@ -2474,7 +2582,7 @@ async function loadWorkspaceSettings(options = {}) {
     if (status) {
       const folders = Object.keys(data.layout || {});
       status.textContent = data.workspace_root
-        ? `${data.exists ? 'Workspace доступен' : 'Папка отсутствует'} · ${folders.length} системных папок`
+        ? `${data.exists ? 'Workspace доступен' : 'Папка отсутствует'} · ${folders.map(name => workspaceFolderLabel(name)).join(', ')}`
         : 'workspace_root пока не настроен';
     }
     return data;
@@ -2534,8 +2642,8 @@ function setOAuthManualMode(mode) {
   const saveBtn = document.getElementById('settings-oauth-save-btn');
   if (jsonWrap) jsonWrap.style.display = oauthManualMode === 'json' ? 'block' : 'none';
   if (manualWrap) manualWrap.style.display = oauthManualMode === 'manual' ? 'block' : 'none';
-  if (title) title.textContent = editingOAuthProfileId ? 'Редактирование OAuth Profile' : (oauthManualMode === 'json' ? 'Импорт OAuth Client JSON' : 'Ручной OAuth client');
-  if (saveBtn) saveBtn.textContent = editingOAuthProfileId ? 'Сохранить OAuth Profile' : 'Сохранить OAuth client';
+  if (title) title.textContent = editingOAuthProfileId ? 'Редактирование OAuth профиля' : (oauthManualMode === 'json' ? 'Импорт JSON OAuth-клиента' : 'Ручной OAuth-клиент');
+  if (saveBtn) saveBtn.textContent = editingOAuthProfileId ? 'Сохранить OAuth профиль' : 'Сохранить OAuth-клиент';
 }
 
 function startNewOAuthProfile() {
@@ -2600,18 +2708,18 @@ function renderOAuthProfilesSettings() {
   if (!el) return;
   const rows = lastYoutubeProfiles || [];
   if (!rows.length) {
-    el.innerHTML = '<div class="empty">OAuth Profiles пока нет. Импортируйте OAuth Client JSON или заполните client_id/client_secret вручную.</div>';
+    el.innerHTML = '<div class="empty">OAuth профилей пока нет. Импортируйте JSON OAuth-клиента или заполните client_id/client_secret вручную.</div>';
     return;
   }
   el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Название</th><th>Источник</th><th>Redirect URI</th><th>Статус</th><th>Действие</th></tr></thead><tbody>${rows.map(profile => {
-    const secret = profile.client_secret_set ? 'secret ok' : 'secret missing';
-    const mode = `${oauthProfileSourceLabel(profile)}${profile.is_default ? ' · default' : ''}`;
+    const secret = profile.client_secret_set ? 'client_secret сохранён' : 'client_secret не задан';
+    const mode = `${oauthProfileSourceLabel(profile)}${profile.is_default ? ' · по умолчанию' : ''}`;
     const actions = [
-      `<button class="btn-mini" onclick="editOAuthProfile(${Number(profile.id)})">Edit</button>`,
-      profile.is_default ? '' : `<button class="btn-mini" onclick="setDefaultOAuthProfile(${Number(profile.id)})">Default</button>`,
-      isEnvOAuthProfile(profile) ? '' : `<button class="btn-danger" onclick="deleteOAuthProfile(${Number(profile.id)})">Delete</button>`,
+      `<button class="btn-mini" onclick="editOAuthProfile(${Number(profile.id)})">Редактировать</button>`,
+      profile.is_default ? '' : `<button class="btn-mini" onclick="setDefaultOAuthProfile(${Number(profile.id)})">По умолчанию</button>`,
+      isEnvOAuthProfile(profile) ? '' : `<button class="btn-danger" onclick="deleteOAuthProfile(${Number(profile.id)})">Удалить</button>`,
     ].filter(Boolean).join('');
-    return `<tr><td class="mono dim">#${profile.id}</td><td><div class="mono txt">${esc(profile.name || `Profile #${profile.id}`)}</div><div class="mono dim">${esc(profile.client_id || '')}</div></td><td class="mono dim">${esc(mode)} · ${esc(secret)}</td><td class="mono dim ov">${esc(profile.redirect_uri || '—')}</td><td>${badge(profile.status || 'active')}</td><td><div class="row-actions">${actions}</div></td></tr>`;
+    return `<tr><td class="mono dim">#${profile.id}</td><td><div class="mono txt">${esc(profile.name || `Профиль #${profile.id}`)}</div><div class="mono dim">${esc(profile.client_id || '')}</div></td><td class="mono dim">${esc(mode)} · ${esc(secret)}</td><td class="mono dim ov">${esc(profile.redirect_uri || '—')}</td><td>${badge(profile.status || 'active')}</td><td><div class="row-actions">${actions}</div></td></tr>`;
   }).join('')}</tbody></table>`;
 }
 
@@ -2645,7 +2753,7 @@ async function saveOAuthProfile() {
     if (editingOAuthProfileId) {
       const profile = settingsProfileById(editingOAuthProfileId);
       const payload = {
-        name: name || profile?.name || `Profile #${editingOAuthProfileId}`,
+        name: name || profile?.name || `Профиль #${editingOAuthProfileId}`,
         redirect_uri: redirectUri,
         status: profile?.status || 'active',
       };
@@ -2675,12 +2783,12 @@ async function saveOAuthProfile() {
       });
     }
     const profile = data?.profile;
-    showSettingsOk(`OAuth Profile сохранён${profile?.id ? `: #${profile.id}` : ''}`);
+    showSettingsOk(`OAuth профиль сохранён${profile?.id ? `: #${profile.id}` : ''}`);
     editingOAuthProfileId = profile?.id ? Number(profile.id) : editingOAuthProfileId;
     await loadSettingsView({silent: true});
     if (editingOAuthProfileId) editOAuthProfile(editingOAuthProfileId);
   } catch (err) {
-    showSettingsError(err.message || 'Не удалось сохранить OAuth Profile');
+    showSettingsError(err.message || 'Не удалось сохранить OAuth профиль');
   }
 }
 
@@ -2688,24 +2796,24 @@ async function setDefaultOAuthProfile(profileId) {
   showSettingsError('');
   try {
     await api.post(`/api/publish/youtube/oauth-profiles/${Number(profileId)}/set-default`, {});
-    showSettingsOk(`OAuth Profile #${profileId} выбран по умолчанию`);
+    showSettingsOk(`OAuth профиль #${profileId} выбран по умолчанию`);
     await loadSettingsView({silent: true});
   } catch (err) {
-    showSettingsError(err.message || 'Не удалось назначить OAuth Profile по умолчанию');
+    showSettingsError(err.message || 'Не удалось назначить OAuth профиль по умолчанию');
   }
 }
 
 async function deleteOAuthProfile(profileId = editingOAuthProfileId) {
   if (!profileId) return;
-  if (!confirm(`Удалить OAuth Profile #${profileId}?`)) return;
+  if (!confirm(`Удалить OAuth профиль #${profileId}?`)) return;
   showSettingsError('');
   try {
     await api.del(`/api/publish/youtube/oauth-profiles/${Number(profileId)}`);
-    showSettingsOk(`OAuth Profile #${profileId} удалён`);
+    showSettingsOk(`OAuth профиль #${profileId} удалён`);
     if (Number(editingOAuthProfileId) === Number(profileId)) startNewOAuthProfile();
     await loadSettingsView({silent: true});
   } catch (err) {
-    showSettingsError(err.message || 'Не удалось удалить OAuth Profile');
+    showSettingsError(err.message || 'Не удалось удалить OAuth профиль');
   }
 }
 
@@ -2813,10 +2921,10 @@ async function retryPublishJob(jobId) {
   renderPublishError('');
   try {
     await api.post(`/api/publish/jobs/${jobId}/retry`, {});
-    showToast(`Publish job #${jobId} возвращён в очередь`);
+    showToast(`Задача публикации #${jobId} возвращена в очередь`);
     await refreshPublishJobs();
   } catch (err) {
-    renderPublishError(`Не удалось повторить job #${jobId}:\n${err.message || err}`);
+    renderPublishError(`Не удалось повторить задачу #${jobId}:\n${err.message || err}`);
   }
 }
 
@@ -2824,10 +2932,10 @@ async function cancelPublishJob(jobId) {
   renderPublishError('');
   try {
     await api.post(`/api/publish/jobs/${jobId}/cancel`, {});
-    showToast(`Publish job #${jobId} отменён`);
+    showToast(`Задача публикации #${jobId} отменена`);
     await refreshPublishJobs();
   } catch (err) {
-    renderPublishError(`Не удалось отменить job #${jobId}:\n${err.message || err}`);
+    renderPublishError(`Не удалось отменить задачу #${jobId}:\n${err.message || err}`);
   }
 }
 
@@ -2836,10 +2944,10 @@ async function runPublishJob(jobId, force = false) {
   renderPublishError('');
   try {
     await api.post(`/api/publish/jobs/${jobId}/run`, {force});
-    showToast(`Publish job #${jobId} выполнен`);
+    showToast(`Задача публикации #${jobId} выполнена`);
     await refreshPublishJobs();
   } catch (err) {
-    renderPublishError(`Не удалось запустить job #${jobId}:\n${err.message || err}`);
+    renderPublishError(`Не удалось запустить задачу #${jobId}:\n${err.message || err}`);
   }
 }
 
@@ -2847,7 +2955,7 @@ async function runPublishWorkerOnce() {
   renderPublishError('');
   try {
     const data = await api.post('/api/publish/worker/run-once', {limit: 3});
-    showToast(`Обработано publish jobs: ${data.processed || 0}`);
+    showToast(`Обработано задач публикации: ${data.processed || 0}`);
     await refreshPublishJobs();
   } catch (err) {
     renderPublishError(`Не удалось обработать очередь публикации:\n${err.message || err}`);
@@ -2935,7 +3043,7 @@ function renderEditingReactions() {
   const query = document.getElementById('editing-reaction-search')?.value.trim().toLowerCase() || '';
   const rows = editingReactions.filter(item => !query || ['name','tags','mood','language','file_path'].some(field => String(item[field] || '').toLowerCase().includes(query)));
   if (!rows.length) {
-    el.innerHTML = '<div class="empty">Reaction assets пока нет.</div>';
+    el.innerHTML = '<div class="empty">Файлы реакций пока не добавлены.</div>';
     return;
   }
   el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Название / файл</th><th>Теги</th><th>Состояние</th></tr></thead><tbody>${rows.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingReactionId) ? 'active' : ''}" onclick="selectEditingReaction(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><span class="editing-path mono dim" title="${esc(item.file_path)}">${esc(shortPath(item.file_path))}</span></td><td class="mono dim">${esc(item.tags || '—')}<br>${esc([item.mood,item.language].filter(Boolean).join(' · ') || '')}</td><td><div class="status-stack">${badge(item.enabled ? 'active' : 'disabled')}${badge(item.file_exists ? 'ok' : 'error')}</div></td></tr>`).join('')}</tbody></table>`;
@@ -2965,6 +3073,23 @@ function selectEditingReaction(assetId) {
   document.getElementById('editing-reaction-enabled').checked = Boolean(item.enabled);
   document.getElementById('editing-reaction-disable').style.display = item.enabled ? 'inline-flex' : 'none';
   renderEditingReactions();
+}
+
+async function pickEditingReactionFile() {
+  editingError('');
+  const path = await pickLocalPath({
+    kind: 'file',
+    title: 'Выберите reaction-видео',
+    buttonId: 'editing-reaction-path-pick-btn',
+    errorId: 'editing-error',
+  });
+  if (!path) return;
+  const pathInput = document.getElementById('editing-reaction-path');
+  if (pathInput) pathInput.value = path;
+  const nameInput = document.getElementById('editing-reaction-name');
+  if (nameInput && !nameInput.value.trim()) {
+    nameInput.value = fileNameFromPath(path);
+  }
 }
 
 async function saveEditingReaction() {
@@ -3003,6 +3128,19 @@ async function disableEditingReaction() {
   }
 }
 
+async function pickEditingImportFolder() {
+  editingError('');
+  const path = await pickLocalPath({
+    kind: 'directory',
+    title: 'Выберите папку с reaction-видео',
+    buttonId: 'editing-import-folder-pick-btn',
+    errorId: 'editing-error',
+  });
+  if (!path) return;
+  const input = document.getElementById('editing-import-folder');
+  if (input) input.value = path;
+}
+
 async function importEditingReactions() {
   editingError('');
   try {
@@ -3028,13 +3166,13 @@ function renderEditingPools() {
     el.innerHTML = '<div class="empty">Пулы реакций пока не созданы.</div>';
     return;
   }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Название</th><th>Items</th><th>Статус</th></tr></thead><tbody>${editingPools.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingPoolId) ? 'active' : ''}" onclick="selectEditingPool(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.description || '')}</div></td><td class="mono txt">${item.item_count || 0}</td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
+  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Название</th><th>Элементы</th><th>Статус</th></tr></thead><tbody>${editingPools.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingPoolId) ? 'active' : ''}" onclick="selectEditingPool(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.description || '')}</div></td><td class="mono txt">${item.item_count || 0}</td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
 }
 
 function newEditingPool() {
   editingPoolId = null;
   editingPoolItems = [];
-  document.getElementById('editing-pool-title').textContent = 'Новый pool';
+  document.getElementById('editing-pool-title').textContent = 'Новый пул';
   document.getElementById('editing-pool-name').value = '';
   document.getElementById('editing-pool-description').value = '';
   document.getElementById('editing-pool-enabled').checked = true;
@@ -3046,7 +3184,7 @@ async function selectEditingPool(poolId) {
   const item = editingPools.find(row => Number(row.id) === Number(poolId));
   if (!item) return;
   editingPoolId = Number(item.id);
-  document.getElementById('editing-pool-title').textContent = `Pool #${item.id}`;
+  document.getElementById('editing-pool-title').textContent = `Пул #${item.id}`;
   document.getElementById('editing-pool-name').value = item.name || '';
   document.getElementById('editing-pool-description').value = item.description || '';
   document.getElementById('editing-pool-enabled').checked = Boolean(item.enabled);
@@ -3061,7 +3199,7 @@ async function loadEditingPoolItems(poolId, silent = false) {
     renderEditingPoolItems();
   } catch (err) {
     editingPoolItems = [];
-    if (!silent) editingError(err.message || 'Не удалось загрузить элементы pool');
+    if (!silent) editingError(err.message || 'Не удалось загрузить элементы пула');
   }
 }
 
@@ -3077,23 +3215,23 @@ async function saveEditingPool() {
       ? await api.patch(`/api/editing/reaction-pools/${editingPoolId}`, body)
       : await api.post('/api/editing/reaction-pools', body);
     editingPoolId = Number(data.item.id);
-    showToast('Pool сохранён');
+    showToast('Пул сохранён');
     await loadEditingView({silent: true});
     await selectEditingPool(editingPoolId);
   } catch (err) {
-    editingError(err.message || 'Не удалось сохранить pool');
+    editingError(err.message || 'Не удалось сохранить пул');
   }
 }
 
 function renderEditingSelects() {
   const assetSelect = document.getElementById('editing-pool-asset');
-  if (assetSelect) assetSelect.innerHTML = `<option value="">Выберите reaction asset</option>${editingReactions.filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}${item.file_exists ? '' : ' · missing'}</option>`).join('')}`;
+  if (assetSelect) assetSelect.innerHTML = `<option value="">Выберите файл реакции</option>${editingReactions.filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}${item.file_exists ? '' : ' · файл отсутствует'}</option>`).join('')}`;
   const accountSelect = document.getElementById('editing-profile-account');
-  if (accountSelect) accountSelect.innerHTML = `<option value="">Без YouTube account</option>${editingAccounts.filter(item => item.status === 'active').map(item => `<option value="${item.id}">${esc(item.channel_title || item.display_name || `Account #${item.id}`)}</option>`).join('')}`;
+  if (accountSelect) accountSelect.innerHTML = `<option value="">Без YouTube аккаунта</option>${editingAccounts.filter(item => item.status === 'active').map(item => `<option value="${item.id}">${esc(item.channel_title || item.display_name || `Аккаунт #${item.id}`)}</option>`).join('')}`;
   const templateSelect = document.getElementById('editing-profile-template');
-  if (templateSelect) templateSelect.innerHTML = `<option value="">Без default template</option>${editingTemplates.map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
+  if (templateSelect) templateSelect.innerHTML = `<option value="">Без шаблона по умолчанию</option>${editingTemplates.map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
   const poolSelect = document.getElementById('editing-profile-pool');
-  if (poolSelect) poolSelect.innerHTML = `<option value="">Без reaction pool</option>${editingPools.map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
+  if (poolSelect) poolSelect.innerHTML = `<option value="">Без пула реакций</option>${editingPools.map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
 }
 
 function renderEditingPoolItems() {
@@ -3102,21 +3240,21 @@ function renderEditingPoolItems() {
   if (addBtn) addBtn.disabled = !editingPoolId;
   if (!el) return;
   if (!editingPoolId) {
-    el.innerHTML = '<div class="empty">Сначала выберите или создайте pool.</div>';
+    el.innerHTML = '<div class="empty">Сначала выберите или создайте пул.</div>';
     return;
   }
   if (!editingPoolItems.length) {
-    el.innerHTML = '<div class="empty">В этом pool пока нет реакций.</div>';
+    el.innerHTML = '<div class="empty">В этом пуле пока нет реакций.</div>';
     return;
   }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>Reaction</th><th>Weight</th><th>Файл</th><th></th></tr></thead><tbody>${editingPoolItems.map(item => `<tr><td><div class="mono txt">${esc(item.asset_name)}</div><div class="mono dim">${esc(item.tags || '')}</div></td><td class="mono txt">${item.weight}</td><td>${badge(item.file_exists ? 'ok' : 'error')}</td><td><button class="btn-danger" onclick="removeEditingPoolItem(${Number(item.reaction_asset_id)})">Удалить</button></td></tr>`).join('')}</tbody></table>`;
+  el.innerHTML = `<table class="tbl"><thead><tr><th>Реакция</th><th>Вес</th><th>Файл</th><th></th></tr></thead><tbody>${editingPoolItems.map(item => `<tr><td><div class="mono txt">${esc(item.asset_name)}</div><div class="mono dim">${esc(item.tags || '')}</div></td><td class="mono txt">${item.weight}</td><td>${badge(item.file_exists ? 'ok' : 'error')}</td><td><button class="btn-danger" onclick="removeEditingPoolItem(${Number(item.reaction_asset_id)})">Удалить</button></td></tr>`).join('')}</tbody></table>`;
 }
 
 async function addEditingPoolItem() {
   if (!editingPoolId) return;
   const assetId = editingOptionalId(document.getElementById('editing-pool-asset')?.value);
   if (!assetId) {
-    editingError('Выберите reaction asset.');
+    editingError('Выберите файл реакции.');
     return;
   }
   try {
@@ -3125,10 +3263,10 @@ async function addEditingPoolItem() {
       weight: Number(document.getElementById('editing-pool-weight')?.value) || 1,
     });
     editingPoolItems = data.items || [];
-    showToast('Reaction добавлена в pool');
+    showToast('Реакция добавлена в пул');
     await loadEditingView({silent: true});
   } catch (err) {
-    editingError(err.message || 'Не удалось добавить reaction в pool');
+    editingError(err.message || 'Не удалось добавить реакцию в пул');
   }
 }
 
@@ -3136,10 +3274,10 @@ async function removeEditingPoolItem(assetId) {
   if (!editingPoolId) return;
   try {
     await api.del(`/api/editing/reaction-pools/${editingPoolId}/items/${Number(assetId)}`);
-    showToast('Reaction удалена из pool');
+    showToast('Реакция удалена из пула');
     await loadEditingView({silent: true});
   } catch (err) {
-    editingError(err.message || 'Не удалось удалить reaction из pool');
+    editingError(err.message || 'Не удалось удалить реакцию из пула');
   }
 }
 
@@ -3216,12 +3354,12 @@ function renderEditingProfiles() {
     el.innerHTML = '<div class="empty">Профилей каналов пока нет.</div>';
     return;
   }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Профиль / канал</th><th>Template / pool</th><th>Статус</th></tr></thead><tbody>${editingProfiles.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingProfileId) ? 'active' : ''}" onclick="selectEditingProfile(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.youtube_channel_title || item.youtube_display_name || 'без YouTube account')}</div></td><td><div class="mono dim">${esc(item.default_template_name || 'без template')}</div><div class="mono dim">${esc(item.reaction_pool_name || 'без pool')}</div></td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
+  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Профиль / канал</th><th>Шаблон / пул</th><th>Статус</th></tr></thead><tbody>${editingProfiles.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingProfileId) ? 'active' : ''}" onclick="selectEditingProfile(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.youtube_channel_title || item.youtube_display_name || 'без YouTube аккаунта')}</div></td><td><div class="mono dim">${esc(item.default_template_name || 'без шаблона')}</div><div class="mono dim">${esc(item.reaction_pool_name || 'без пула')}</div></td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
 }
 
 function newEditingProfile() {
   editingProfileId = null;
-  document.getElementById('editing-profile-title').textContent = 'Новый profile';
+  document.getElementById('editing-profile-title').textContent = 'Новый профиль';
   ['editing-profile-name','editing-profile-title-template','editing-profile-description-template','editing-profile-tags-template'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
@@ -3239,7 +3377,7 @@ function selectEditingProfile(profileId) {
   const item = editingProfiles.find(row => Number(row.id) === Number(profileId));
   if (!item) return;
   editingProfileId = Number(item.id);
-  document.getElementById('editing-profile-title').textContent = `Profile #${item.id}`;
+  document.getElementById('editing-profile-title').textContent = `Профиль #${item.id}`;
   document.getElementById('editing-profile-name').value = item.name || '';
   document.getElementById('editing-profile-account').value = item.youtube_account_id || '';
   document.getElementById('editing-profile-template').value = item.default_template_id || '';
@@ -3278,7 +3416,7 @@ async function saveEditingProfile() {
     await loadEditingView({silent: true});
     selectEditingProfile(editingProfileId);
   } catch (err) {
-    editingError(err.message || 'Не удалось сохранить profile');
+    editingError(err.message || 'Не удалось сохранить профиль');
   }
 }
 
@@ -3286,11 +3424,11 @@ async function disableEditingProfile() {
   if (!editingProfileId) return;
   try {
     await api.post(`/api/editing/channel-profiles/${editingProfileId}/disable`, {});
-    showToast('Profile отключён');
+    showToast('Профиль отключён');
     await loadEditingView({silent: true});
     selectEditingProfile(editingProfileId);
   } catch (err) {
-    editingError(err.message || 'Не удалось отключить profile');
+    editingError(err.message || 'Не удалось отключить профиль');
   }
 }
 
@@ -3340,7 +3478,7 @@ function toggleAllVisibleEditingJobs(checked) {
 function renderEditingJobSelectionState() {
   document.querySelectorAll('[data-editing-selected-count]').forEach(el => {
     el.textContent = selectedEditingJobIds.size
-      ? `Выбрано edit jobs: ${selectedEditingJobIds.size}`
+      ? `Выбрано задач монтажа: ${selectedEditingJobIds.size}`
       : '';
   });
 }
@@ -3360,11 +3498,11 @@ function renderEditingJobs() {
       .filter(id => editingJobs.some(job => Number(job.id) === Number(id)))
   );
   if (!rows.length) {
-    el.innerHTML = '<div class="empty">Edit jobs в этом фильтре пока нет.</div>';
+    el.innerHTML = '<div class="empty">В этом фильтре пока нет задач монтажа.</div>';
     return;
   }
   const allVisibleSelected = rows.every(job => selectedEditingJobIds.has(Number(job.id)));
-  el.innerHTML = `<div class="workspace-selected-line mono dim" data-editing-selected-count></div><div style="overflow:auto"><table class="tbl editing-jobs-table"><thead><tr><th><input type="checkbox" ${allVisibleSelected ? 'checked' : ''} onchange="toggleAllVisibleEditingJobs(this.checked)"></th><th>#</th><th>Workspace</th><th>Profile</th><th>Template</th><th>Reaction</th><th>Статус</th><th>Review</th><th>Output</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>${rows.map(job => {
+  el.innerHTML = `<div class="workspace-selected-line mono dim" data-editing-selected-count></div><div style="overflow:auto"><table class="tbl editing-jobs-table"><thead><tr><th><input type="checkbox" ${allVisibleSelected ? 'checked' : ''} onchange="toggleAllVisibleEditingJobs(this.checked)"></th><th>#</th><th>Workspace</th><th>Профиль</th><th>Шаблон</th><th>Реакция</th><th>Статус</th><th>Проверка</th><th>Результат</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>${rows.map(job => {
     const selected = selectedEditingJobIds.has(Number(job.id));
     const canCancel = ['queued','failed'].includes(job.status);
     const canRetry = ['failed','cancelled'].includes(job.status);
@@ -3377,15 +3515,15 @@ function renderEditingJobs() {
       : '';
     const review = job.review_status || 'pending';
     const doneActions = isDone
-      ? `<button class="btn-mini${previewOpen ? ' on' : ''}" onclick="toggleEditingJobPreview(${Number(job.id)})">${previewOpen ? 'Скрыть preview' : 'Показать preview'}</button><button class="btn-mini" onclick="openEditingJobResult(${Number(job.id)})">Открыть результат</button><button class="btn-mini" onclick="openEditingJobMpv(${Number(job.id)})">Открыть в mpv</button><button class="btn-mini" onclick="openEditingJobFolder(${Number(job.id)})">Открыть папку</button><button class="btn-primary" onclick="setEditingJobReview(${Number(job.id)}, 'approved')">Одобрить</button><button class="btn-danger" onclick="setEditingJobReview(${Number(job.id)}, 'rejected')">Отклонить</button>`
+      ? `<button class="btn-mini${previewOpen ? ' on' : ''}" onclick="toggleEditingJobPreview(${Number(job.id)})">${previewOpen ? 'Скрыть предпросмотр' : 'Показать предпросмотр'}</button><button class="btn-mini" onclick="openEditingJobResult(${Number(job.id)})">Открыть результат</button><button class="btn-mini" onclick="openEditingJobMpv(${Number(job.id)})">Открыть в mpv</button><button class="btn-mini" onclick="openEditingJobFolder(${Number(job.id)})">Открыть папку</button><button class="btn-primary" onclick="setEditingJobReview(${Number(job.id)}, 'approved')">Одобрить</button><button class="btn-danger" onclick="setEditingJobReview(${Number(job.id)}, 'rejected')">Отклонить</button>`
       : '';
     const reviewNote = job.review_note
       ? `<div class="mono dim ov" title="${esc(job.review_note)}">${esc(shortErrorText(job.review_note))}</div>`
       : '';
     const previewRow = previewOpen
-      ? `<tr class="editing-preview-row"><td colspan="11"><div class="editing-review-panel"><div class="editing-video-wrap"><video controls preload="metadata" src="/api/editing/jobs/${Number(job.id)}/media"></video></div><div class="editing-review-controls"><div class="selection-title">Ручная проверка результата</div><div class="mono dim">Render: ${badge(job.status)} · Review: ${badge(review)}</div><label class="field"><span class="field-lbl">Комментарий</span><textarea id="editing-review-note-${Number(job.id)}" rows="5" placeholder="Почему одобрено или что нужно переделать">${esc(job.review_note || '')}</textarea></label><div class="row-actions"><button class="btn-primary" onclick="setEditingJobReview(${Number(job.id)}, 'approved')">Одобрить</button><button class="btn-danger" onclick="setEditingJobReview(${Number(job.id)}, 'rejected')">Отклонить</button>${review !== 'pending' ? `<button class="btn-secondary" onclick="resetEditingJobReview(${Number(job.id)})">Сбросить review</button>` : ''}</div>${review === 'approved' ? '<div class="ok-line">Готов к публикации. Подключение к YouTube будет в следующем этапе.</div>' : ''}</div></div></td></tr>`
+      ? `<tr class="editing-preview-row"><td colspan="11"><div class="editing-review-panel"><div class="editing-video-wrap"><video controls preload="metadata" src="/api/editing/jobs/${Number(job.id)}/media"></video></div><div class="editing-review-controls"><div class="selection-title">Ручная проверка результата</div><div class="mono dim">Рендер: ${badge(job.status)} · Проверка: ${badge(review)}</div><label class="field"><span class="field-lbl">Комментарий</span><textarea id="editing-review-note-${Number(job.id)}" rows="5" placeholder="Почему одобрено или что нужно переделать">${esc(job.review_note || '')}</textarea></label><div class="row-actions"><button class="btn-primary" onclick="setEditingJobReview(${Number(job.id)}, 'approved')">Одобрить</button><button class="btn-danger" onclick="setEditingJobReview(${Number(job.id)}, 'rejected')">Отклонить</button>${review !== 'pending' ? `<button class="btn-secondary" onclick="resetEditingJobReview(${Number(job.id)})">Сбросить проверку</button>` : ''}</div>${review === 'approved' ? '<div class="ok-line">Готов к публикации. Подключение к YouTube будет в следующем этапе.</div>' : ''}</div></div></td></tr>`
       : '';
-    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="toggleEditingJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td class="mono txt">${esc(job.workspace_item_key)}</td><td class="mono mid">${esc(job.channel_profile_name || `#${job.channel_profile_id || '—'}`)}</td><td><div class="mono txt">${esc(job.template_name || `#${job.template_id || '—'}`)}</div><div class="mono dim">${esc(job.template_key || '')}</div></td><td class="mono mid">${esc(job.reaction_asset_name || 'без реакции')}</td><td>${badge(job.status)}</td><td>${badge(review)}${reviewNote}</td><td><span class="mono dim ov" title="${esc(job.output_path || '')}">${esc(shortPath(job.output_path || '—'))}</span>${finalPath}</td><td><span class="mono err ov" title="${esc(job.error || '')}">${esc(shortErrorText(job.error || ''))}</span></td><td><div class="row-actions">${doneActions}${canRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)})">Render</button>` : ''}${canForceRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)}, true)">Force render</button>` : ''}${canCancel ? `<button class="btn-danger" onclick="cancelEditingJob(${Number(job.id)})">Cancel</button>` : ''}${canRetry ? `<button class="btn-secondary" onclick="retryEditingJob(${Number(job.id)})">Retry</button>` : ''}</div></td></tr>${previewRow}`;
+    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="toggleEditingJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td class="mono txt">${esc(job.workspace_item_key)}</td><td class="mono mid">${esc(job.channel_profile_name || `#${job.channel_profile_id || '—'}`)}</td><td><div class="mono txt">${esc(job.template_name || `#${job.template_id || '—'}`)}</div><div class="mono dim">${esc(job.template_key || '')}</div></td><td class="mono mid">${esc(job.reaction_asset_name || 'без реакции')}</td><td>${badge(job.status)}</td><td>${badge(review)}${reviewNote}</td><td><span class="mono dim ov" title="${esc(job.output_path || '')}">${esc(shortPath(job.output_path || '—'))}</span>${finalPath}</td><td><span class="mono err ov" title="${esc(job.error || '')}">${esc(shortErrorText(job.error || ''))}</span></td><td><div class="row-actions">${doneActions}${canRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)})">Рендер</button>` : ''}${canForceRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)}, true)">Рендер заново</button>` : ''}${canCancel ? `<button class="btn-danger" onclick="cancelEditingJob(${Number(job.id)})">Отменить</button>` : ''}${canRetry ? `<button class="btn-secondary" onclick="retryEditingJob(${Number(job.id)})">Повторить</button>` : ''}</div></td></tr>${previewRow}`;
   }).join('')}</tbody></table></div>`;
   renderEditingJobSelectionState();
 }
@@ -3411,30 +3549,30 @@ async function loadEditingJobs(silent = false) {
 async function cancelEditingJob(jobId) {
   try {
     await api.post(`/api/editing/jobs/${Number(jobId)}/cancel`, {});
-    showToast(`Edit job #${jobId} отменён`);
+    showToast(`Задача монтажа #${jobId} отменена`);
     await loadEditingJobs();
   } catch (err) {
-    editingError(err.message || `Не удалось отменить edit job #${jobId}`);
+    editingError(err.message || `Не удалось отменить задачу монтажа #${jobId}`);
   }
 }
 
 async function retryEditingJob(jobId) {
   try {
     await api.post(`/api/editing/jobs/${Number(jobId)}/retry`, {});
-    showToast(`Edit job #${jobId} возвращён в очередь`);
+    showToast(`Задача монтажа #${jobId} возвращена в очередь`);
     await loadEditingJobs();
   } catch (err) {
-    editingError(err.message || `Не удалось повторить edit job #${jobId}`);
+    editingError(err.message || `Не удалось повторить задачу монтажа #${jobId}`);
   }
 }
 
 async function renderEditingJob(jobId, force = false) {
   try {
     await api.post(`/api/editing/jobs/${Number(jobId)}/render`, {force: Boolean(force)});
-    showToast(`Edit job #${jobId} отрендерен`);
+    showToast(`Задача монтажа #${jobId} отрендерена`);
     await loadEditingJobs(true);
   } catch (err) {
-    editingError(err.message || `Не удалось отрендерить edit job #${jobId}`);
+    editingError(err.message || `Не удалось отрендерить задачу монтажа #${jobId}`);
     await loadEditingJobs(true);
   }
 }
@@ -3453,9 +3591,9 @@ function openEditingJobResult(jobId) {
 async function openEditingJobMpv(jobId) {
   try {
     await api.post(`/api/editing/jobs/${Number(jobId)}/open`, {});
-    showToast(`Edit job #${jobId} открыт в mpv`);
+    showToast(`Задача монтажа #${jobId} открыта в mpv`);
   } catch (err) {
-    editingError(err.message || `Не удалось открыть edit job #${jobId} в mpv`);
+    editingError(err.message || `Не удалось открыть задачу монтажа #${jobId} в mpv`);
   }
 }
 
@@ -3464,7 +3602,7 @@ async function openEditingJobFolder(jobId) {
     const data = await api.get(`/api/editing/jobs/${Number(jobId)}/folder`);
     await goToOutputFolder(data.path);
   } catch (err) {
-    editingError(err.message || `Не удалось открыть папку edit job #${jobId}`);
+    editingError(err.message || `Не удалось открыть папку задачи монтажа #${jobId}`);
   }
 }
 
@@ -3476,22 +3614,22 @@ async function setEditingJobReview(jobId, reviewStatus) {
     });
     showToast(
       reviewStatus === 'approved'
-        ? `Edit job #${jobId} одобрен`
-        : `Edit job #${jobId} отклонён`
+        ? `Задача монтажа #${jobId} одобрена`
+        : `Задача монтажа #${jobId} отклонена`
     );
     await loadEditingJobs(true);
   } catch (err) {
-    editingError(err.message || `Не удалось изменить review edit job #${jobId}`);
+    editingError(err.message || `Не удалось изменить проверку задачи монтажа #${jobId}`);
   }
 }
 
 async function resetEditingJobReview(jobId) {
   try {
     await api.post(`/api/editing/jobs/${Number(jobId)}/reset-review`, {});
-    showToast(`Review edit job #${jobId} сброшен`);
+    showToast(`Проверка задачи монтажа #${jobId} сброшена`);
     await loadEditingJobs(true);
   } catch (err) {
-    editingError(err.message || `Не удалось сбросить review edit job #${jobId}`);
+    editingError(err.message || `Не удалось сбросить проверку задачи монтажа #${jobId}`);
   }
 }
 
@@ -3500,7 +3638,7 @@ async function runEditingWorker(limit) {
     const data = await api.post('/api/editing/worker/run-once', {limit: Number(limit)});
     const failed = (data.jobs || []).filter(job => job.status === 'failed').length;
     showToast(
-      `Обработано edit jobs: ${data.processed || 0}${failed ? `, ошибок: ${failed}` : ''}`,
+      `Обработано задач монтажа: ${data.processed || 0}${failed ? `, ошибок: ${failed}` : ''}`,
       failed ? 'err' : 'ok'
     );
     await loadEditingJobs(true);
@@ -3512,7 +3650,7 @@ async function runEditingWorker(limit) {
 async function renderSelectedEditingJobs() {
   const jobs = selectedEditingJobs();
   if (!jobs.length) {
-    editingError('Выберите edit jobs для рендера.');
+    editingError('Выберите задачи монтажа для рендера.');
     return;
   }
   try {
@@ -3527,7 +3665,7 @@ async function renderSelectedEditingJobs() {
     );
     await loadEditingJobs(true);
   } catch (err) {
-    editingError(err.message || 'Не удалось отрендерить выбранные edit jobs');
+    editingError(err.message || 'Не удалось отрендерить выбранные задачи монтажа');
   }
 }
 
@@ -3537,7 +3675,7 @@ async function retryFailedEditingJobs() {
     ? selected
     : getVisibleEditingJobs().filter(job => ['failed','cancelled'].includes(job.status));
   if (!jobs.length) {
-    editingError('Нет failed или cancelled edit jobs для повтора.');
+    editingError('Нет ошибочных или отменённых задач монтажа для повтора.');
     return;
   }
   const results = await Promise.allSettled(
@@ -3551,7 +3689,7 @@ async function retryFailedEditingJobs() {
 async function cancelSelectedEditingJobs() {
   const jobs = selectedEditingJobs().filter(job => ['queued','failed'].includes(job.status));
   if (!jobs.length) {
-    editingError('Выберите queued или failed edit jobs для отмены.');
+    editingError('Выберите задачи монтажа в очереди или с ошибкой для отмены.');
     return;
   }
   const results = await Promise.allSettled(

@@ -58,3 +58,37 @@ def test_yad_window_close_is_treated_as_cancel(monkeypatch):
     )
 
     assert result is None
+
+
+def test_pick_file_dialog_falls_back_to_zenity(tmp_path, monkeypatch):
+    import shortsfarm.local_dialogs as dialogs
+
+    selected = tmp_path / "reaction.mp4"
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(dialogs, "_has_gui_session", lambda: True)
+    monkeypatch.setattr(
+        dialogs,
+        "_pick_file_with_tkinter",
+        lambda title: (_ for _ in ()).throw(dialogs._DialogBackendUnavailable()),
+    )
+    monkeypatch.setattr(
+        dialogs.shutil,
+        "which",
+        lambda name: "/usr/bin/zenity" if name == "zenity" else None,
+    )
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"{selected}\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(dialogs.subprocess, "run", fake_run)
+
+    result = dialogs.pick_file_dialog("Выберите reaction")
+
+    assert result == str(selected.resolve())
+    assert commands[0][:2] == ["/usr/bin/zenity", "--file-selection"]
