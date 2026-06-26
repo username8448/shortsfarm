@@ -307,7 +307,7 @@ def test_render_rejects_test_context_without_required_reaction(
     assert "reaction" in exc.value.detail["message"].lower()
 
 
-def test_remotion_render_global_and_project_locks(tmp_path, monkeypatch):
+def test_remotion_queue_allows_many_queued_but_one_rendering(tmp_path, monkeypatch):
     from shortsfarm import db
 
     first_project, _main, asset_id = _project(tmp_path, monkeypatch)
@@ -321,11 +321,14 @@ def test_remotion_render_global_and_project_locks(tmp_path, monkeypatch):
     first_job = db.create_remotion_render_job(first_project)
     with pytest.raises(sqlite3.IntegrityError):
         db.create_remotion_render_job(first_project)
-    with pytest.raises(sqlite3.IntegrityError):
-        db.create_remotion_render_job(second_project)
+    second_job = db.create_remotion_render_job(second_project)
 
-    assert db.mark_remotion_render_job_failed(first_job, "done")
-    assert db.create_remotion_render_job(first_project) > first_job
+    claimed = db.claim_next_remotion_render_job()
+    assert claimed["id"] == first_job
+    assert db.claim_next_remotion_render_job() is None
+    assert db.mark_remotion_render_job_done(first_job, "done.mp4")
+    claimed = db.claim_next_remotion_render_job()
+    assert claimed["id"] == second_job
 
 
 def test_remotion_output_paths_are_managed_and_use_temp(tmp_path, monkeypatch):
@@ -399,11 +402,93 @@ def test_interrupted_remotion_jobs_are_recovered(tmp_path, monkeypatch):
 
     project_id, _main, _asset = _project(tmp_path, monkeypatch)
     job_id = db.create_remotion_render_job(project_id)
+    assert db.claim_remotion_render_job(job_id) is not None
 
     assert db.fail_interrupted_remotion_render_jobs() == 1
     job = db.get_remotion_render_job(job_id)
     assert job["status"] == "failed"
     assert "перезапуском backend" in job["error"]
+
+
+def test_apply_template_selected_creates_batch_projects_and_jobs(tmp_path, monkeypatch):
+    from shortsfarm import db
+    from shortsfarm.web import studio_api as api
+
+    root = _workspace(tmp_path)
+    first = root / "sources" / "one.mp4"
+    second = root / "cuts" / "two.mp4"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    asset_id, _ = _reaction(tmp_path)
+    monkeypatch.setattr("shortsfarm.studio.probe_duration", lambda path: 10.0)
+    template = api.studio_templates()["items"][0]
+
+    response = api.studio_template_apply(
+        template["id"],
+        api.StudioApplyRequest(
+            name="Selected batch",
+            source_mode="selected",
+            source_paths=["sources/one.mp4", "cuts/two.mp4"],
+            reaction_strategy="fixed_asset",
+            reaction_asset_id=asset_id,
+            parameter_values={"reaction_height": 600},
+            start=False,
+        ),
+        _request(),
+    )
+    payload = json.loads(response.body)
+
+    batch = payload["batch"]
+    assert batch["name"] == "Selected batch"
+    assert batch["total_items"] == 2
+    assert len(batch["items"]) == 2
+    assert len(payload["jobs"]) == 2
+    for item in batch["items"]:
+        job = db.get_remotion_render_job(item["render_job_id"])
+        project = db.get_studio_project(item["studio_project_id"])
+        assert job["status"] == "queued"
+        assert "/edits/" in job["output_path"]
+        assert "/reaction_top_25/" in job["output_path"]
+        assert json.loads(project["recipe_json"])["layout"]["reaction_height"] == 600
+
+
+def test_apply_template_folder_recursive_and_pipeline_run(tmp_path, monkeypatch):
+    from shortsfarm.web import studio_api as api
+
+    root = _workspace(tmp_path)
+    nested = root / "sources" / "show" / "nested"
+    nested.mkdir(parents=True)
+    (root / "sources" / "show" / "root.mp4").write_bytes(b"root")
+    (nested / "child.mp4").write_bytes(b"child")
+    asset_id, _ = _reaction(tmp_path)
+    monkeypatch.setattr("shortsfarm.studio.probe_duration", lambda path: 10.0)
+    monkeypatch.setattr(api, "start_remotion_render_queue", lambda base_url: None)
+    template = api.studio_templates()["items"][0]
+
+    pipeline = api.studio_pipeline_create(
+        api.StudioPipelineRequest(
+            name="Folder pipeline",
+            studio_template_id=template["id"],
+            source_mode="folder_recursive",
+            source_path="sources/show",
+            recursive=True,
+            reaction_strategy="fixed_asset",
+            reaction_asset_id=asset_id,
+            parameter_values={"top_text": "Hello"},
+        )
+    )["item"]
+    response = api.studio_pipeline_run(pipeline["id"], _request())
+    payload = json.loads(response.body)
+
+    assert payload["batch"]["source_mode"] == "folder_recursive"
+    assert payload["batch"]["total_items"] == 2
+    assert {
+        item["main_workspace_path"]
+        for item in payload["batch"]["items"]
+    } == {
+        "sources/show/root.mp4",
+        "sources/show/nested/child.mp4",
+    }
 
 
 def test_studio_route_shows_build_instructions_without_dist(tmp_path, monkeypatch):

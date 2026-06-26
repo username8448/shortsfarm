@@ -3779,6 +3779,39 @@ def create_remotion_render_job(
         return int(cur.lastrowid)
 
 
+def _normalize_json_object(value: Any, *, default: dict[str, Any] | None = None) -> str:
+    resolved = default if value is None else value
+    if resolved is None:
+        resolved = {}
+    if isinstance(resolved, dict):
+        return json.dumps(resolved, ensure_ascii=False)
+    if isinstance(resolved, str):
+        try:
+            parsed = json.loads(resolved)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"JSON object must be valid JSON: {exc.msg}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("JSON value must be an object.")
+        return resolved
+    raise ValueError("JSON value must be a dict or JSON string.")
+
+
+def _normalize_json_array(value: Any) -> str:
+    if value is None:
+        return "[]"
+    if isinstance(value, list):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"JSON array must be valid JSON: {exc.msg}") from exc
+        if not isinstance(parsed, list):
+            raise ValueError("JSON value must be an array.")
+        return value
+    raise ValueError("JSON value must be a list or JSON string.")
+
+
 def update_remotion_render_job_output(job_id: int, output_path: str) -> bool:
     with connect() as con:
         result = con.execute(
@@ -3796,13 +3829,92 @@ def get_remotion_render_job(job_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
+def _sync_remotion_render_batch_in_connection(
+    con: sqlite3.Connection,
+    batch_id: int,
+) -> None:
+    rows = con.execute(
+        """
+        SELECT status, COUNT(*) AS count
+        FROM remotion_render_batch_items
+        WHERE batch_id=?
+        GROUP BY status
+        """,
+        (int(batch_id),),
+    ).fetchall()
+    counts = {str(row["status"]): int(row["count"]) for row in rows}
+    total = sum(counts.values())
+    done = counts.get("done", 0)
+    failed = counts.get("failed", 0)
+    cancelled = counts.get("cancelled", 0)
+    rendering = counts.get("rendering", 0)
+    queued = counts.get("queued", 0)
+    now = now_utc()
+    if total == 0:
+        status = "draft"
+        finished_at = None
+    elif rendering:
+        status = "running"
+        finished_at = None
+    elif queued:
+        status = "queued"
+        finished_at = None
+    elif failed:
+        status = "failed"
+        finished_at = now
+    elif cancelled:
+        status = "cancelled"
+        finished_at = now
+    else:
+        status = "done"
+        finished_at = now
+    con.execute(
+        """
+        UPDATE remotion_render_batches
+        SET status=?,
+            total_items=?,
+            done_items=?,
+            failed_items=?,
+            finished_at=CASE WHEN ? IS NULL THEN finished_at ELSE COALESCE(finished_at, ?) END,
+            updated_at=?
+        WHERE id=?
+        """,
+        (
+            status,
+            total,
+            done,
+            failed,
+            finished_at,
+            finished_at,
+            now,
+            int(batch_id),
+        ),
+    )
+
+
+def sync_remotion_render_batch(batch_id: int) -> None:
+    with connect() as con:
+        _sync_remotion_render_batch_in_connection(con, int(batch_id))
+
+
+def _batch_id_for_render_job(
+    con: sqlite3.Connection,
+    job_id: int,
+) -> int | None:
+    row = con.execute(
+        "SELECT batch_id FROM remotion_render_batch_items WHERE render_job_id=?",
+        (int(job_id),),
+    ).fetchone()
+    return int(row["batch_id"]) if row is not None else None
+
+
 def get_active_remotion_render_job() -> sqlite3.Row | None:
     with connect() as con:
         return con.execute(
             """
             SELECT *
             FROM remotion_render_jobs
-            WHERE status IN ('queued', 'rendering')
+            WHERE status = 'rendering'
             ORDER BY id ASC
             LIMIT 1
             """
@@ -3817,6 +3929,11 @@ def claim_remotion_render_job(job_id: int) -> sqlite3.Row | None:
     con.execute("PRAGMA journal_mode = WAL")
     try:
         con.execute("BEGIN IMMEDIATE")
+        if con.execute(
+            "SELECT 1 FROM remotion_render_jobs WHERE status='rendering' LIMIT 1"
+        ).fetchone() is not None:
+            con.execute("COMMIT")
+            return None
         result = con.execute(
             """
             UPDATE remotion_render_jobs
@@ -3832,8 +3949,108 @@ def claim_remotion_render_job(job_id: int) -> sqlite3.Row | None:
             "SELECT * FROM remotion_render_jobs WHERE id=?",
             (int(job_id),),
         ).fetchone()
+        batch_id = _batch_id_for_render_job(con, int(job_id))
+        if batch_id is not None:
+            con.execute(
+                """
+                UPDATE remotion_render_batch_items
+                SET status='rendering', error=NULL, updated_at=?
+                WHERE render_job_id=?
+                """,
+                (now_utc(), int(job_id)),
+            )
+            con.execute(
+                """
+                UPDATE remotion_render_batches
+                SET status='running',
+                    started_at=COALESCE(started_at, ?),
+                    updated_at=?
+                WHERE id=?
+                """,
+                (now_utc(), now_utc(), batch_id),
+            )
         con.execute("COMMIT")
         return row
+    except Exception:
+        try:
+            con.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+    finally:
+        con.close()
+
+
+def claim_next_remotion_render_job() -> sqlite3.Row | None:
+    ensure_dirs()
+    con = sqlite3.connect(str(db_path()), isolation_level=None)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode = WAL")
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        if con.execute(
+            "SELECT 1 FROM remotion_render_jobs WHERE status='rendering' LIMIT 1"
+        ).fetchone() is not None:
+            con.execute("COMMIT")
+            return None
+        queued = con.execute(
+            """
+            SELECT id
+            FROM remotion_render_jobs
+            WHERE status='queued'
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+        if queued is None:
+            con.execute("COMMIT")
+            return None
+        job_id = int(queued["id"])
+        now = now_utc()
+        result = con.execute(
+            """
+            UPDATE remotion_render_jobs
+            SET status='rendering', started_at=?, finished_at=NULL, error=NULL
+            WHERE id=? AND status='queued'
+            """,
+            (now, job_id),
+        )
+        if result.rowcount == 0:
+            con.execute("COMMIT")
+            return None
+        row = con.execute(
+            "SELECT * FROM remotion_render_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        batch_id = _batch_id_for_render_job(con, job_id)
+        if batch_id is not None:
+            con.execute(
+                """
+                UPDATE remotion_render_batch_items
+                SET status='rendering', error=NULL, updated_at=?
+                WHERE render_job_id=?
+                """,
+                (now, job_id),
+            )
+            con.execute(
+                """
+                UPDATE remotion_render_batches
+                SET status='running',
+                    started_at=COALESCE(started_at, ?),
+                    updated_at=?
+                WHERE id=?
+                """,
+                (now, now, batch_id),
+            )
+        con.execute("COMMIT")
+        return row
+    except sqlite3.IntegrityError:
+        try:
+            con.execute("ROLLBACK")
+        except Exception:
+            pass
+        return None
     except Exception:
         try:
             con.execute("ROLLBACK")
@@ -3854,6 +4071,17 @@ def mark_remotion_render_job_done(job_id: int, output_path: str) -> bool:
             """,
             (output_path, now_utc(), int(job_id)),
         )
+        batch_id = _batch_id_for_render_job(con, int(job_id))
+        if batch_id is not None:
+            con.execute(
+                """
+                UPDATE remotion_render_batch_items
+                SET status='done', error=NULL, updated_at=?
+                WHERE render_job_id=?
+                """,
+                (now_utc(), int(job_id)),
+            )
+            _sync_remotion_render_batch_in_connection(con, batch_id)
         return result.rowcount > 0
 
 
@@ -3867,22 +4095,305 @@ def mark_remotion_render_job_failed(job_id: int, error: str) -> bool:
             """,
             (error, now_utc(), int(job_id)),
         )
+        batch_id = _batch_id_for_render_job(con, int(job_id))
+        if batch_id is not None:
+            con.execute(
+                """
+                UPDATE remotion_render_batch_items
+                SET status='failed', error=?, updated_at=?
+                WHERE render_job_id=?
+                """,
+                (error, now_utc(), int(job_id)),
+            )
+            _sync_remotion_render_batch_in_connection(con, batch_id)
+        return result.rowcount > 0
+
+
+def cancel_remotion_render_job(job_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE remotion_render_jobs
+            SET status='cancelled', finished_at=?
+            WHERE id=? AND status='queued'
+            """,
+            (now_utc(), int(job_id)),
+        )
+        batch_id = _batch_id_for_render_job(con, int(job_id))
+        if batch_id is not None and result.rowcount > 0:
+            con.execute(
+                """
+                UPDATE remotion_render_batch_items
+                SET status='cancelled', updated_at=?
+                WHERE render_job_id=?
+                """,
+                (now_utc(), int(job_id)),
+            )
+            _sync_remotion_render_batch_in_connection(con, batch_id)
         return result.rowcount > 0
 
 
 def fail_interrupted_remotion_render_jobs() -> int:
     with connect() as con:
+        affected_batches = {
+            int(row["batch_id"])
+            for row in con.execute(
+                """
+                SELECT DISTINCT rbi.batch_id
+                FROM remotion_render_batch_items rbi
+                JOIN remotion_render_jobs rrj ON rrj.id = rbi.render_job_id
+                WHERE rrj.status = 'rendering'
+                """
+            ).fetchall()
+        }
         result = con.execute(
             """
             UPDATE remotion_render_jobs
             SET status='failed',
                 error='Remotion render был прерван перезапуском backend.',
                 finished_at=?
-            WHERE status IN ('queued', 'rendering')
+            WHERE status = 'rendering'
             """,
             (now_utc(),),
         )
+        con.execute(
+            """
+            UPDATE remotion_render_batch_items
+            SET status='failed',
+                error='Remotion render был прерван перезапуском backend.',
+                updated_at=?
+            WHERE render_job_id IN (
+                SELECT id FROM remotion_render_jobs
+                WHERE error='Remotion render был прерван перезапуском backend.'
+            )
+            """,
+            (now_utc(),),
+        )
+        for batch_id in affected_batches:
+            _sync_remotion_render_batch_in_connection(con, batch_id)
         return int(result.rowcount)
+
+
+def create_remotion_render_batch(
+    *,
+    studio_template_id: int | None,
+    template_key: str,
+    name: str,
+    source_mode: str,
+    source_path: str | None = None,
+    reaction_strategy: str = "fixed_asset",
+    reaction_asset_id: int | None = None,
+    reaction_pool_id: int | None = None,
+    parameter_values_json: dict[str, Any] | str | None = None,
+) -> int:
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO remotion_render_batches
+                (studio_template_id, template_key, name, source_mode, source_path,
+                 reaction_strategy, reaction_asset_id, reaction_pool_id,
+                 parameter_values_json, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+            """,
+            (
+                studio_template_id,
+                template_key,
+                name,
+                source_mode,
+                source_path,
+                reaction_strategy,
+                reaction_asset_id,
+                reaction_pool_id,
+                _normalize_json_object(parameter_values_json),
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def create_remotion_render_batch_item(
+    *,
+    batch_id: int,
+    studio_project_id: int,
+    render_job_id: int,
+    main_workspace_path: str,
+) -> int:
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO remotion_render_batch_items
+                (batch_id, studio_project_id, render_job_id,
+                 main_workspace_path, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'queued', ?, ?)
+            """,
+            (
+                int(batch_id),
+                int(studio_project_id),
+                int(render_job_id),
+                main_workspace_path,
+                now,
+                now,
+            ),
+        )
+        _sync_remotion_render_batch_in_connection(con, int(batch_id))
+        return int(cur.lastrowid)
+
+
+def get_remotion_render_batch(batch_id: int) -> sqlite3.Row | None:
+    sync_remotion_render_batch(int(batch_id))
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM remotion_render_batches WHERE id=?",
+            (int(batch_id),),
+        ).fetchone()
+
+
+def list_remotion_render_batches(limit: int = 100) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM remotion_render_batches
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+
+
+def list_remotion_render_batch_items(batch_id: int) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT rbi.*,
+                   rrj.status AS render_status,
+                   rrj.output_path AS output_path,
+                   rrj.error AS render_error,
+                   rrj.started_at AS render_started_at,
+                   rrj.finished_at AS render_finished_at
+            FROM remotion_render_batch_items rbi
+            LEFT JOIN remotion_render_jobs rrj ON rrj.id = rbi.render_job_id
+            WHERE rbi.batch_id=?
+            ORDER BY rbi.id ASC
+            """,
+            (int(batch_id),),
+        ).fetchall()
+
+
+def cancel_remotion_render_batch(batch_id: int) -> int:
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT render_job_id
+            FROM remotion_render_batch_items
+            WHERE batch_id=? AND status='queued'
+            """,
+            (int(batch_id),),
+        ).fetchall()
+        job_ids = [int(row["render_job_id"]) for row in rows]
+        if not job_ids:
+            _sync_remotion_render_batch_in_connection(con, int(batch_id))
+            return 0
+        placeholders = ",".join("?" for _ in job_ids)
+        now = now_utc()
+        con.execute(
+            f"""
+            UPDATE remotion_render_jobs
+            SET status='cancelled', finished_at=?
+            WHERE id IN ({placeholders}) AND status='queued'
+            """,
+            [now, *job_ids],
+        )
+        con.execute(
+            f"""
+            UPDATE remotion_render_batch_items
+            SET status='cancelled', updated_at=?
+            WHERE render_job_id IN ({placeholders}) AND status='queued'
+            """,
+            [now, *job_ids],
+        )
+        _sync_remotion_render_batch_in_connection(con, int(batch_id))
+        return len(job_ids)
+
+
+def create_remotion_pipeline(
+    *,
+    name: str,
+    studio_template_id: int | None,
+    source_mode: str,
+    source_path: str | None = None,
+    source_paths_json: list[str] | str | None = None,
+    recursive: bool = False,
+    reaction_strategy: str = "fixed_asset",
+    reaction_asset_id: int | None = None,
+    reaction_pool_id: int | None = None,
+    parameter_values_json: dict[str, Any] | str | None = None,
+    output_policy_json: dict[str, Any] | str | None = None,
+    enabled: bool = True,
+) -> int:
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO remotion_pipelines
+                (name, studio_template_id, source_mode, source_path,
+                 source_paths_json, recursive, reaction_strategy,
+                 reaction_asset_id, reaction_pool_id, parameter_values_json,
+                 output_policy_json, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                studio_template_id,
+                source_mode,
+                source_path,
+                _normalize_json_array(source_paths_json),
+                1 if recursive else 0,
+                reaction_strategy,
+                reaction_asset_id,
+                reaction_pool_id,
+                _normalize_json_object(parameter_values_json),
+                _normalize_json_object(output_policy_json),
+                1 if enabled else 0,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def list_remotion_pipelines() -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM remotion_pipelines
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+
+def get_remotion_pipeline(pipeline_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM remotion_pipelines WHERE id=?",
+            (int(pipeline_id),),
+        ).fetchone()
+
+
+def update_remotion_pipeline_last_batch(pipeline_id: int, batch_id: int) -> None:
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE remotion_pipelines
+            SET last_batch_id=?, updated_at=?
+            WHERE id=?
+            """,
+            (int(batch_id), now_utc(), int(pipeline_id)),
+        )
 
 
 def create_studio_template(

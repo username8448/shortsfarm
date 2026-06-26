@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -248,6 +249,188 @@ def list_studio_media_items() -> list[dict[str, Any]]:
     return sections
 
 
+def list_studio_apply_sources() -> dict[str, Any]:
+    root = get_workspace_root()
+    if root is None:
+        raise ValueError("workspace_root не настроен.")
+    sections = list_studio_media_items()
+    folder_paths: set[str] = set()
+    for folder_name, _label, _kind in STUDIO_MEDIA_SECTIONS:
+        folder = root / folder_name
+        if folder.is_dir() and not folder.is_symlink():
+            folder_paths.add(folder_name)
+            for candidate in folder.rglob("*"):
+                if (
+                    candidate.is_symlink()
+                    or not candidate.is_file()
+                    or candidate.suffix.lower() not in VIDEO_EXTENSIONS
+                ):
+                    continue
+                try:
+                    relative_parent = candidate.parent.relative_to(root).as_posix()
+                except ValueError:
+                    continue
+                folder_paths.add(relative_parent)
+    return {
+        "sections": sections,
+        "folders": [
+            {"path": path, "name": path}
+            for path in sorted(folder_paths)
+        ],
+    }
+
+
+def _validate_workspace_folder(relative_path: str, allowed_sections: set[str]) -> Path:
+    text = str(relative_path or "").strip().strip("/")
+    if not text:
+        raise ValueError("Папка source не выбрана.")
+    candidate = PurePosixPath(text)
+    if candidate.is_absolute() or "\\" in text:
+        raise ValueError("Source folder должен быть относительным workspace path.")
+    if any(part in {"", ".", ".."} for part in candidate.parts):
+        raise ValueError("Path traversal в source folder запрещён.")
+    if not candidate.parts or candidate.parts[0] not in allowed_sections:
+        raise PermissionError(
+            "Source folder не разрешён схемой main slot этого template."
+        )
+    path = resolve_workspace_path(candidate.as_posix())
+    if path.is_symlink():
+        raise PermissionError("Symlink source folder запрещён.")
+    if not path.is_dir():
+        raise FileNotFoundError(f"Source folder не найден: {text}")
+    return path
+
+
+def collect_apply_media_paths(
+    *,
+    source_mode: str,
+    source_paths: list[str] | None = None,
+    source_path: str | None = None,
+    recursive: bool = False,
+    allowed_sections: list[str] | None = None,
+) -> list[str]:
+    root = get_workspace_root()
+    if root is None:
+        raise ValueError("workspace_root не настроен.")
+    allowed = set(allowed_sections or ["sources", "cuts", "prepared"])
+    mode = str(source_mode or "selected").strip().lower()
+    resolved: list[str] = []
+    if mode == "selected":
+        for raw in source_paths or []:
+            path = resolve_studio_media_path(raw)
+            relative = path.relative_to(root).as_posix()
+            first = relative.split("/", 1)[0]
+            if first not in allowed:
+                raise PermissionError(
+                    f"Файл {relative} не разрешён схемой main slot этого template."
+                )
+            resolved.append(relative)
+    elif mode in {"folder", "folder_recursive"}:
+        folder = _validate_workspace_folder(str(source_path or ""), allowed)
+        use_recursive = recursive or mode == "folder_recursive"
+        iterator = folder.rglob("*") if use_recursive else folder.glob("*")
+        for candidate in iterator:
+            if (
+                candidate.is_symlink()
+                or not candidate.is_file()
+                or candidate.suffix.lower() not in VIDEO_EXTENSIONS
+            ):
+                continue
+            relative = candidate.relative_to(root).as_posix()
+            try:
+                resolve_studio_media_path(relative)
+            except (ValueError, PermissionError, FileNotFoundError):
+                continue
+            resolved.append(relative)
+    else:
+        raise ValueError("source_mode должен быть selected, folder или folder_recursive.")
+    unique = list(dict.fromkeys(sorted(resolved)))
+    if not unique:
+        raise ValueError("Видео для batch не найдены.")
+    return unique
+
+
+def parameterized_recipe_from_template(
+    definition: dict[str, Any],
+    *,
+    main_workspace_path: str,
+    reaction_asset_id: int | None,
+    parameter_values: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    params = definition.get("parameters") or {}
+    overrides = parameter_values or {}
+
+    def value(key: str, fallback: Any) -> Any:
+        if key in overrides:
+            return overrides[key]
+        raw = params.get(key) or {}
+        if isinstance(raw, dict) and "default" in raw:
+            return raw["default"]
+        return fallback
+
+    return normalize_studio_recipe({
+        "version": 1,
+        "template": {"key": STUDIO_TEMPLATE_KEY, "renderer": STUDIO_RENDERER},
+        "canvas": {"width": 1080, "height": 1920, "fps": 30},
+        "media": {
+            "main": {"workspace_path": main_workspace_path},
+            "reaction": {"asset_id": reaction_asset_id},
+        },
+        "layout": {
+            "reaction_height": value("reaction_height", 480),
+            "main_fit": value("main_fit", "cover"),
+            "reaction_fit": value("reaction_fit", "cover"),
+            "background_color": value("background_color", "#000000"),
+        },
+        "audio": {
+            "main_volume": value("main_volume", 1),
+            "reaction_volume": value("reaction_volume", 0),
+            "mute_reaction": value("mute_reaction", True),
+        },
+        "overlays": {
+            "top_text": value("top_text", ""),
+            "bottom_text": value("bottom_text", ""),
+        },
+    })
+
+
+def choose_reaction_asset(
+    *,
+    reaction_strategy: str,
+    reaction_asset_id: int | None = None,
+    reaction_pool_id: int | None = None,
+) -> int:
+    strategy = str(reaction_strategy or "fixed_asset").strip().lower()
+    if strategy == "fixed_asset":
+        if reaction_asset_id is None:
+            raise ValueError("Выберите reaction asset.")
+        resolve_reaction_media_path(int(reaction_asset_id))
+        return int(reaction_asset_id)
+    if reaction_pool_id is None:
+        raise ValueError("Выберите reaction pool.")
+    candidates: list[tuple[int, int]] = []
+    for row in db.list_reaction_pool_items_with_assets(int(reaction_pool_id)):
+        if not bool(row["enabled"]) or not bool(row["asset_enabled"]):
+            continue
+        asset_id = int(row["reaction_asset_id"])
+        try:
+            resolve_reaction_media_path(asset_id)
+        except (ValueError, PermissionError, FileNotFoundError):
+            continue
+        candidates.append((asset_id, max(1, int(row["weight"] or 1))))
+    if not candidates:
+        raise ValueError("В выбранном reaction pool нет доступных reaction-файлов.")
+    if strategy == "pool_first":
+        return candidates[0][0]
+    if strategy == "pool_weighted":
+        return random.choices(
+            [item[0] for item in candidates],
+            weights=[item[1] for item in candidates],
+            k=1,
+        )[0]
+    raise ValueError("reaction_strategy должен быть fixed_asset, pool_first или pool_weighted.")
+
+
 def resolved_studio_recipe(
     recipe: dict[str, Any],
     *,
@@ -327,6 +510,25 @@ def build_remotion_output_paths(
         / safe_filename(subpath.stem)
         / f"remotion_project_{int(project_id)}"
     )
+    final_path = output_dir / f"render_job_{int(job_id)}.mp4"
+    temp_path = output_dir / f"render_job_{int(job_id)}.tmp.mp4"
+    return temp_path, final_path
+
+
+def build_batch_remotion_output_paths(
+    main_workspace_path: str,
+    template_key: str,
+    job_id: int,
+) -> tuple[Path, Path]:
+    main_path = resolve_studio_media_path(main_workspace_path)
+    root = get_workspace_root()
+    if root is None:
+        raise ValueError("workspace_root не настроен.")
+    relative = main_path.relative_to(root)
+    subpath = Path(*relative.parts[1:])
+    source_tree = subpath.with_suffix("")
+    safe_parts = [safe_filename(part) for part in source_tree.parts if part]
+    output_dir = root / "edits" / Path(*safe_parts) / safe_filename(template_key)
     final_path = output_dir / f"render_job_{int(job_id)}.mp4"
     temp_path = output_dir / f"render_job_{int(job_id)}.tmp.mp4"
     return temp_path, final_path

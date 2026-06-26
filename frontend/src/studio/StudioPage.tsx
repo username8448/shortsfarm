@@ -3,10 +3,14 @@ import {
   studioApi,
   type MediaItem,
   type MediaSection,
+  type ApplySourceFolder,
   type ReactionItem,
   type ReactionPool,
   type RenderJob,
+  type RenderBatch,
+  type RemotionPipeline,
 } from '../api';
+import {ApplyTemplatePanel} from './ApplyTemplatePanel';
 import {RemotionPreview} from './RemotionPreview';
 import {RenderPanel} from './RenderPanel';
 import {statusLabel} from './labels';
@@ -27,7 +31,7 @@ import {
   type TemplateStatus,
 } from './template';
 
-type StudioMode = 'templates' | 'builder' | 'test';
+type StudioMode = 'templates' | 'builder' | 'test' | 'apply';
 
 const cloneDefinition = (value: TemplateDefinition): TemplateDefinition =>
   JSON.parse(JSON.stringify(value)) as TemplateDefinition;
@@ -38,8 +42,12 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   const [selectedTemplate, setSelectedTemplate] = useState<AutomationTemplate | null>(null);
   const [definition, setDefinition] = useState<TemplateDefinition | null>(null);
   const [sections, setSections] = useState<MediaSection[]>([]);
+  const [folders, setFolders] = useState<ApplySourceFolder[]>([]);
   const [reactions, setReactions] = useState<ReactionItem[]>([]);
   const [pools, setPools] = useState<ReactionPool[]>([]);
+  const [batches, setBatches] = useState<RenderBatch[]>([]);
+  const [pipelines, setPipelines] = useState<RemotionPipeline[]>([]);
+  const [activeBatch, setActiveBatch] = useState<RenderBatch | null>(null);
   const [recipe, setRecipe] = useState<Recipe>(createDefaultRecipe);
   const [reactionPoolId, setReactionPoolId] = useState<number | null>(null);
   const [projectId, setProjectId] = useState<number | null>(null);
@@ -72,22 +80,45 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
     return data.items;
   };
 
+  const refreshBatches = async () => {
+    const data = await studioApi.renderBatches();
+    setBatches(data.items);
+    if (activeBatch) {
+      const latest = data.items.find((item) => item.id === activeBatch.id);
+      if (latest) setActiveBatch(latest);
+    }
+  };
+
+  const refreshPipelines = async () => {
+    const data = await studioApi.pipelines();
+    setPipelines(data.items);
+  };
+
   useEffect(() => {
     const load = async () => {
       try {
-        const [media, reactionData, poolData, templateData] = await Promise.all([
+        const [media, applySources, reactionData, poolData, templateData, batchData, pipelineData] = await Promise.all([
           studioApi.mediaItems(),
+          studioApi.applySources(),
           studioApi.reactions(),
           studioApi.reactionPools(),
           studioApi.templates(),
+          studioApi.renderBatches(),
+          studioApi.pipelines(),
         ]);
         setSections(media.sections);
+        setFolders(applySources.folders);
         setReactions(reactionData.items);
         setPools(poolData.items);
         setTemplates(templateData.items);
+        setBatches(batchData.items);
+        setPipelines(pipelineData.items);
 
         const projectIdFromUrl = Number(
           new URLSearchParams(window.location.search).get('project'),
+        );
+        const batchIdFromUrl = Number(
+          new URLSearchParams(window.location.search).get('batch'),
         );
         if (projectIdFromUrl > 0) {
           const project = await studioApi.project(projectIdFromUrl);
@@ -102,6 +133,16 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           setReactionPoolId(project.item.reaction_pool_id);
           setRecipe(project.item.recipe_json);
           setMode('test');
+        } else if (batchIdFromUrl > 0) {
+          const batch = await studioApi.renderBatch(batchIdFromUrl);
+          setActiveBatch(batch.batch);
+          if (templateData.items[0]) {
+            const template = templateData.items[0];
+            setSelectedTemplate(template);
+            setDefinition(cloneDefinition(template.definition));
+            setRecipe(recipeFromTemplate(template));
+          }
+          setMode('apply');
         } else if (templateData.items[0]) {
           const template = templateData.items[0];
           setSelectedTemplate(template);
@@ -114,6 +155,15 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
     };
     void load();
   }, []);
+
+  useEffect(() => {
+    const hasActiveBatch = batches.some((item) => ['queued', 'running'].includes(item.status));
+    if (!hasActiveBatch) return;
+    const timer = window.setInterval(() => {
+      void refreshBatches();
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [batches]);
 
   useEffect(() => {
     if (!job || !['queued', 'rendering'].includes(job.status)) return;
@@ -274,6 +324,15 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
     host.nav?.('editing', document.querySelector('[data-v="editing"]'));
   };
 
+  const handleBatchCreated = (batch: RenderBatch) => {
+    setActiveBatch(batch);
+    setBatches((current) => [batch, ...current.filter((item) => item.id !== batch.id)]);
+    const url = new URL(window.location.href);
+    url.searchParams.set('batch', String(batch.id));
+    url.searchParams.delete('project');
+    window.history.replaceState({}, '', url);
+  };
+
   const mainAllowedSections = (
     definition?.slots.main?.allowed_sections || ['sources', 'cuts', 'prepared']
   );
@@ -314,6 +373,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
         <button className={mode === 'templates' ? 'active' : ''} onClick={() => setMode('templates')}>Шаблоны</button>
         <button className={mode === 'builder' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('builder')}>Конструктор шаблона</button>
         <button className={mode === 'test' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('test')}>Тестовый рендер</button>
+        <button className={mode === 'apply' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('apply')}>Apply Template</button>
       </nav>
       {error ? <div className="ts-alert error">{error}</div> : null}
       {message ? <div className="ts-alert success">{message}</div> : null}
@@ -415,6 +475,23 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
             </section>
           </div>
         </div>
+      ) : null}
+
+      {mode === 'apply' && selectedTemplate && definition ? (
+        <ApplyTemplatePanel
+          template={selectedTemplate}
+          sections={sections}
+          folders={folders}
+          reactions={reactions}
+          pools={pools}
+          recipe={recipe}
+          onRecipeChange={setRecipe}
+          batches={activeBatch ? [activeBatch, ...batches.filter((item) => item.id !== activeBatch.id)] : batches}
+          pipelines={pipelines}
+          onBatchCreated={handleBatchCreated}
+          onRefreshBatches={refreshBatches}
+          onRefreshPipelines={refreshPipelines}
+        />
       ) : null}
     </div>
   );

@@ -24,6 +24,7 @@ FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 RENDER_SCRIPT = FRONTEND_ROOT / "scripts" / "render-remotion.mjs"
 _threads: dict[int, threading.Thread] = {}
 _threads_lock = threading.Lock()
+_queue_thread: threading.Thread | None = None
 
 
 def _required_node() -> str:
@@ -99,27 +100,46 @@ def _stderr_tail(stderr: str, limit: int = 80) -> str:
 
 
 def run_remotion_render_job(job_id: int, base_url: str) -> None:
+    job = db.claim_remotion_render_job(int(job_id))
+    if job is None:
+        return
+    _run_claimed_remotion_render_job(job, base_url)
+
+
+def _temp_path_for_final(final_path: Path) -> Path:
+    if final_path.name.endswith(".mp4"):
+        return final_path.with_name(final_path.name[:-4] + ".tmp.mp4")
+    return final_path.with_name(final_path.name + ".tmp")
+
+
+def _run_claimed_remotion_render_job(job: Any, base_url: str) -> None:
+    job_id = int(job["id"])
     temp_path: Path | None = None
     final_path: Path | None = None
     try:
-        job = db.claim_remotion_render_job(int(job_id))
-        if job is None:
-            return
         project = db.get_studio_project(int(job["studio_project_id"]))
         if project is None:
             raise FileNotFoundError("Studio project не найден.")
 
         recipe = normalize_studio_recipe(json.loads(str(project["recipe_json"])))
         resolved_recipe = resolved_studio_recipe(recipe, base_url=base_url)
-        temp_path, final_path = build_remotion_output_paths(
-            str(project["main_workspace_path"]),
-            int(project["id"]),
-            int(job_id),
-        )
+        raw_output = str(job["output_path"] or "").strip()
+        if raw_output:
+            final_path = Path(raw_output).expanduser()
+            temp_path = _temp_path_for_final(final_path)
+        else:
+            temp_path, final_path = build_remotion_output_paths(
+                str(project["main_workspace_path"]),
+                int(project["id"]),
+                job_id,
+            )
+            db.update_remotion_render_job_output(job_id, str(final_path))
         _ensure_inside_workspace_edits(temp_path)
         _ensure_inside_workspace_edits(final_path)
         temp_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path.unlink(missing_ok=True)
+        if final_path.exists():
+            raise RuntimeError(f"Remotion output уже существует: {final_path}")
 
         node = _required_node()
         _required_remotion_dependencies()
@@ -165,6 +185,34 @@ def run_remotion_render_job(job_id: int, base_url: str) -> None:
     finally:
         with _threads_lock:
             _threads.pop(int(job_id), None)
+
+
+def _run_remotion_queue(base_url: str) -> None:
+    global _queue_thread
+    try:
+        while True:
+            job = db.claim_next_remotion_render_job()
+            if job is None:
+                return
+            _run_claimed_remotion_render_job(job, base_url)
+    finally:
+        with _threads_lock:
+            _queue_thread = None
+
+
+def start_remotion_render_queue(base_url: str) -> None:
+    global _queue_thread
+    with _threads_lock:
+        if _queue_thread is not None and _queue_thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=_run_remotion_queue,
+            args=(str(base_url),),
+            name="remotion-render-queue",
+            daemon=True,
+        )
+        _queue_thread = thread
+        thread.start()
 
 
 def start_remotion_render_job(job_id: int, base_url: str) -> None:

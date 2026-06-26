@@ -12,11 +12,16 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel
 
 from .. import db
-from ..remotion_renderer import start_remotion_render_job
+from ..remotion_renderer import start_remotion_render_queue
 from ..studio import (
+    build_batch_remotion_output_paths,
     build_remotion_output_paths,
+    choose_reaction_asset,
+    collect_apply_media_paths,
+    list_studio_apply_sources,
     list_studio_media_items,
     normalize_studio_recipe,
+    parameterized_recipe_from_template,
     resolve_reaction_media_path,
     resolve_studio_media_path,
     resolved_studio_recipe,
@@ -48,6 +53,33 @@ class StudioTemplateRequest(BaseModel):
     definition: dict[str, Any]
 
 
+class StudioApplyRequest(BaseModel):
+    name: str | None = None
+    source_mode: str = "selected"
+    source_paths: list[str] = []
+    source_path: str | None = None
+    recursive: bool = False
+    reaction_strategy: str = "fixed_asset"
+    reaction_asset_id: int | None = None
+    reaction_pool_id: int | None = None
+    parameter_values: dict[str, Any] = {}
+    start: bool = True
+
+
+class StudioPipelineRequest(BaseModel):
+    name: str
+    studio_template_id: int
+    source_mode: str = "selected"
+    source_paths: list[str] = []
+    source_path: str | None = None
+    recursive: bool = False
+    reaction_strategy: str = "fixed_asset"
+    reaction_asset_id: int | None = None
+    reaction_pool_id: int | None = None
+    parameter_values: dict[str, Any] = {}
+    enabled: bool = True
+
+
 def _fail(exc: Exception, status_code: int = 400) -> HTTPException:
     return HTTPException(
         status_code=status_code,
@@ -66,6 +98,151 @@ def _project_columns(recipe: dict[str, Any]) -> tuple[str, str, int | None]:
         str(normalized["template"]["key"]),
         normalized["media"]["reaction"]["asset_id"],
     )
+
+
+def _row_dict(row: Any) -> dict[str, Any]:
+    return {key: row[key] for key in row.keys()}
+
+
+def _render_job_payload(row: Any) -> dict[str, Any]:
+    payload = _row_dict(row)
+    payload["media_url"] = (
+        f"/api/studio/render-jobs/{int(row['id'])}/media"
+        if str(row["status"]) == "done"
+        else None
+    )
+    return payload
+
+
+def _batch_payload(row: Any, *, include_items: bool = False) -> dict[str, Any]:
+    payload = _row_dict(row)
+    payload["parameter_values"] = json.loads(str(row["parameter_values_json"] or "{}"))
+    payload.pop("parameter_values_json", None)
+    if include_items:
+        items: list[dict[str, Any]] = []
+        for item in db.list_remotion_render_batch_items(int(row["id"])):
+            item_payload = _row_dict(item)
+            item_payload["media_url"] = (
+                f"/api/studio/render-jobs/{int(item['render_job_id'])}/media"
+                if str(item["render_status"]) == "done"
+                else None
+            )
+            items.append(item_payload)
+        payload["items"] = items
+    return payload
+
+
+def _pipeline_payload(row: Any) -> dict[str, Any]:
+    payload = _row_dict(row)
+    payload["source_paths"] = json.loads(str(row["source_paths_json"] or "[]"))
+    payload["parameter_values"] = json.loads(str(row["parameter_values_json"] or "{}"))
+    payload["output_policy"] = json.loads(str(row["output_policy_json"] or "{}"))
+    payload["enabled"] = bool(row["enabled"])
+    payload["recursive"] = bool(row["recursive"])
+    for key in ("source_paths_json", "parameter_values_json", "output_policy_json"):
+        payload.pop(key, None)
+    return payload
+
+
+def _template_for_apply(template_id: int) -> Any:
+    ensure_default_studio_template()
+    row = db.get_studio_template(int(template_id))
+    if row is None:
+        raise FileNotFoundError("Studio template не найден.")
+    definition = normalize_template_definition(json.loads(str(row["definition_json"])))
+    if definition["engine"] != "remotion" or definition["key"] != "reaction_top_25":
+        raise ValueError("Apply Template сейчас поддерживает только reaction_top_25/remotion.")
+    return row, definition
+
+
+def _create_apply_batch(
+    template_id: int,
+    req: StudioApplyRequest,
+    *,
+    request: Request,
+    source_mode_override: str | None = None,
+) -> dict[str, Any]:
+    template, definition = _template_for_apply(template_id)
+    allowed_sections = definition.get("slots", {}).get("main", {}).get(
+        "allowed_sections",
+        ["sources", "cuts", "prepared"],
+    )
+    source_mode = str(source_mode_override or req.source_mode or "selected")
+    if source_mode == "folder" and req.recursive:
+        batch_source_mode = "folder_recursive"
+    else:
+        batch_source_mode = source_mode
+    media_paths = collect_apply_media_paths(
+        source_mode=batch_source_mode,
+        source_paths=req.source_paths,
+        source_path=req.source_path,
+        recursive=req.recursive,
+        allowed_sections=allowed_sections,
+    )
+    name = str(req.name or "").strip() or f"{template['name']} batch"
+    batch_id = db.create_remotion_render_batch(
+        studio_template_id=int(template["id"]),
+        template_key=str(template["template_key"]),
+        name=name,
+        source_mode=batch_source_mode,
+        source_path=req.source_path,
+        reaction_strategy=req.reaction_strategy,
+        reaction_asset_id=req.reaction_asset_id,
+        reaction_pool_id=req.reaction_pool_id,
+        parameter_values_json=req.parameter_values,
+    )
+    created_jobs: list[dict[str, Any]] = []
+    for main_workspace_path in media_paths:
+        reaction_asset_id = choose_reaction_asset(
+            reaction_strategy=req.reaction_strategy,
+            reaction_asset_id=req.reaction_asset_id,
+            reaction_pool_id=req.reaction_pool_id,
+        )
+        recipe = parameterized_recipe_from_template(
+            definition,
+            main_workspace_path=main_workspace_path,
+            reaction_asset_id=reaction_asset_id,
+            parameter_values=req.parameter_values,
+        )
+        resolved_studio_recipe(
+            recipe,
+            base_url=_base_url(request),
+            require_reaction=True,
+        )
+        project_id = db.create_studio_project(
+            workspace_item_key=None,
+            main_workspace_path=main_workspace_path,
+            template_key=str(template["template_key"]),
+            reaction_asset_id=reaction_asset_id,
+            recipe_json=recipe,
+            studio_template_id=int(template["id"]),
+            reaction_pool_id=req.reaction_pool_id,
+        )
+        job_id = db.create_remotion_render_job(project_id)
+        _temp_path, final_path = build_batch_remotion_output_paths(
+            main_workspace_path,
+            str(template["template_key"]),
+            job_id,
+        )
+        db.update_remotion_render_job_output(job_id, str(final_path))
+        db.create_remotion_render_batch_item(
+            batch_id=batch_id,
+            studio_project_id=project_id,
+            render_job_id=job_id,
+            main_workspace_path=main_workspace_path,
+        )
+        job = db.get_remotion_render_job(job_id)
+        if job is not None:
+            created_jobs.append(_render_job_payload(job))
+    db.sync_remotion_render_batch(batch_id)
+    if req.start:
+        start_remotion_render_queue(_base_url(request))
+    batch = db.get_remotion_render_batch(batch_id)
+    assert batch is not None
+    return {
+        "batch": _batch_payload(batch, include_items=True),
+        "jobs": created_jobs,
+    }
 
 
 def _parse_byte_range(value: str, size: int) -> tuple[int, int]:
@@ -155,6 +332,19 @@ def studio_media_items() -> dict[str, Any]:
     try:
         db.init_db()
         return {"sections": list_studio_media_items()}
+    except PermissionError as exc:
+        raise _fail(exc, 403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, 404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/apply/sources")
+def studio_apply_sources() -> dict[str, Any]:
+    try:
+        db.init_db()
+        return list_studio_apply_sources()
     except PermissionError as exc:
         raise _fail(exc, 403)
     except FileNotFoundError as exc:
@@ -361,6 +551,148 @@ def studio_template_create_version(
         raise _fail(exc)
 
 
+@router.post("/templates/{template_id}/apply", status_code=202)
+def studio_template_apply(
+    template_id: int,
+    req: StudioApplyRequest,
+    request: Request,
+) -> JSONResponse:
+    try:
+        db.init_db()
+        return JSONResponse(
+            _create_apply_batch(template_id, req, request=request),
+            status_code=202,
+        )
+    except PermissionError as exc:
+        raise _fail(exc, 403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, 404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/render-batches")
+def studio_render_batches(limit: int = 100) -> dict[str, Any]:
+    db.init_db()
+    return {
+        "items": [
+            _batch_payload(row)
+            for row in db.list_remotion_render_batches(limit=limit)
+        ]
+    }
+
+
+@router.get("/render-batches/{batch_id}")
+def studio_render_batch(batch_id: int) -> dict[str, Any]:
+    db.init_db()
+    row = db.get_remotion_render_batch(batch_id)
+    if row is None:
+        raise _fail(FileNotFoundError("Render batch не найден."), 404)
+    return {"batch": _batch_payload(row, include_items=True)}
+
+
+@router.post("/render-batches/{batch_id}/start")
+def studio_render_batch_start(batch_id: int, request: Request) -> dict[str, Any]:
+    db.init_db()
+    row = db.get_remotion_render_batch(batch_id)
+    if row is None:
+        raise _fail(FileNotFoundError("Render batch не найден."), 404)
+    start_remotion_render_queue(_base_url(request))
+    updated = db.get_remotion_render_batch(batch_id)
+    assert updated is not None
+    return {"batch": _batch_payload(updated, include_items=True)}
+
+
+@router.post("/render-batches/{batch_id}/cancel")
+def studio_render_batch_cancel(batch_id: int) -> dict[str, Any]:
+    db.init_db()
+    row = db.get_remotion_render_batch(batch_id)
+    if row is None:
+        raise _fail(FileNotFoundError("Render batch не найден."), 404)
+    cancelled = db.cancel_remotion_render_batch(batch_id)
+    updated = db.get_remotion_render_batch(batch_id)
+    assert updated is not None
+    return {
+        "cancelled": cancelled,
+        "batch": _batch_payload(updated, include_items=True),
+    }
+
+
+@router.get("/pipelines")
+def studio_pipelines() -> dict[str, Any]:
+    db.init_db()
+    return {
+        "items": [
+            _pipeline_payload(row)
+            for row in db.list_remotion_pipelines()
+        ]
+    }
+
+
+@router.post("/pipelines")
+def studio_pipeline_create(req: StudioPipelineRequest) -> dict[str, Any]:
+    try:
+        db.init_db()
+        _template_for_apply(req.studio_template_id)
+        pipeline_id = db.create_remotion_pipeline(
+            name=req.name.strip(),
+            studio_template_id=req.studio_template_id,
+            source_mode=req.source_mode,
+            source_path=req.source_path,
+            source_paths_json=req.source_paths,
+            recursive=req.recursive,
+            reaction_strategy=req.reaction_strategy,
+            reaction_asset_id=req.reaction_asset_id,
+            reaction_pool_id=req.reaction_pool_id,
+            parameter_values_json=req.parameter_values,
+            output_policy_json={"folder": "workspace_root/edits"},
+            enabled=req.enabled,
+        )
+        row = db.get_remotion_pipeline(pipeline_id)
+        assert row is not None
+        return {"item": _pipeline_payload(row)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, 404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/pipelines/{pipeline_id}/run", status_code=202)
+def studio_pipeline_run(pipeline_id: int, request: Request) -> JSONResponse:
+    try:
+        db.init_db()
+        row = db.get_remotion_pipeline(pipeline_id)
+        if row is None:
+            raise FileNotFoundError("Pipeline не найден.")
+        payload = _pipeline_payload(row)
+        if not payload["enabled"]:
+            raise ValueError("Pipeline отключён.")
+        apply_req = StudioApplyRequest(
+            name=f"{payload['name']} run",
+            source_mode=payload["source_mode"],
+            source_paths=payload["source_paths"],
+            source_path=payload["source_path"],
+            recursive=payload["recursive"],
+            reaction_strategy=payload["reaction_strategy"],
+            reaction_asset_id=payload["reaction_asset_id"],
+            reaction_pool_id=payload["reaction_pool_id"],
+            parameter_values=payload["parameter_values"],
+            start=True,
+        )
+        result = _create_apply_batch(
+            int(payload["studio_template_id"]),
+            apply_req,
+            request=request,
+            source_mode_override=payload["source_mode"],
+        )
+        db.update_remotion_pipeline_last_batch(pipeline_id, int(result["batch"]["id"]))
+        return JSONResponse(result, status_code=202)
+    except FileNotFoundError as exc:
+        raise _fail(exc, 404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
 @router.post("/projects")
 def studio_project_create(
     req: StudioProjectRequest,
@@ -470,11 +802,11 @@ def studio_project_render(project_id: int, request: Request) -> JSONResponse:
             job_id,
         )
         db.update_remotion_render_job_output(job_id, str(final_path))
-        start_remotion_render_job(job_id, _base_url(request))
+        start_remotion_render_queue(_base_url(request))
         row = db.get_remotion_render_job(job_id)
         assert row is not None
         return JSONResponse(
-            {"job": {key: row[key] for key in row.keys()}},
+            {"job": _render_job_payload(row)},
             status_code=202,
         )
     except sqlite3.IntegrityError:
@@ -502,13 +834,7 @@ def studio_render_job(job_id: int) -> dict[str, Any]:
     row = db.get_remotion_render_job(job_id)
     if row is None:
         raise _fail(FileNotFoundError("Remotion render job не найден."), 404)
-    payload = {key: row[key] for key in row.keys()}
-    payload["media_url"] = (
-        f"/api/studio/render-jobs/{job_id}/media"
-        if str(row["status"]) == "done"
-        else None
-    )
-    return {"job": payload}
+    return {"job": _render_job_payload(row)}
 
 
 @router.get("/render-jobs/{job_id}/media")

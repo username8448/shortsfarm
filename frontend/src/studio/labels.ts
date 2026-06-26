@@ -8,6 +8,7 @@ export const statusLabel = (status: TemplateStatus | string): string => ({
   active: 'активен',
   archived: 'в архиве',
   queued: 'в очереди',
+  running: 'в работе',
   rendering: 'рендерится',
   done: 'готово',
   failed: 'ошибка',

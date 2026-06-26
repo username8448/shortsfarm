@@ -271,6 +271,43 @@ def test_studio_template_definition_schema_exists(tmp_data_dir):
     assert {"studio_template_id", "reaction_pool_id"} <= project_columns
 
 
+def test_remotion_batch_and_pipeline_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    with db.connect() as con:
+        con.execute("SELECT * FROM remotion_render_batches LIMIT 0")
+        con.execute("SELECT * FROM remotion_render_batch_items LIMIT 0")
+        con.execute("SELECT * FROM remotion_pipelines LIMIT 0")
+        batch_columns = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA table_info(remotion_render_batches)"
+            ).fetchall()
+        }
+        item_columns = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA table_info(remotion_render_batch_items)"
+            ).fetchall()
+        }
+        indexes = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA index_list(remotion_render_jobs)"
+            ).fetchall()
+        }
+
+    assert {
+        "studio_template_id", "template_key", "source_mode",
+        "reaction_strategy", "total_items", "done_items", "failed_items",
+    } <= batch_columns
+    assert {
+        "batch_id", "studio_project_id", "render_job_id",
+        "main_workspace_path", "status", "error",
+    } <= item_columns
+    assert "idx_remotion_render_jobs_one_active_global" in indexes
+
+
 def test_idempotent(tmp_data_dir):
     """Running migrations many times must not raise."""
     from shortsfarm.migrations import run_migrations
