@@ -3766,15 +3766,32 @@ def update_studio_project(
 def create_remotion_render_job(
     studio_project_id: int,
     output_path: str | None = None,
+    *,
+    renderer_engine: str = "ffmpeg_fast",
+    render_profile: str = "low_540p",
+    duration_limit_sec: float | None = None,
+    start_offset_sec: float = 0,
+    full_length: bool = False,
 ) -> int:
     with connect() as con:
         cur = con.execute(
             """
             INSERT INTO remotion_render_jobs
-                (studio_project_id, status, output_path, created_at)
-            VALUES (?, 'queued', ?, ?)
+                (studio_project_id, status, output_path, renderer_engine,
+                 render_profile, duration_limit_sec, start_offset_sec,
+                 full_length, created_at)
+            VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?)
             """,
-            (int(studio_project_id), output_path, now_utc()),
+            (
+                int(studio_project_id),
+                output_path,
+                renderer_engine,
+                render_profile,
+                duration_limit_sec,
+                float(start_offset_sec or 0),
+                1 if full_length else 0,
+                now_utc(),
+            ),
         )
         return int(cur.lastrowid)
 
@@ -3817,6 +3834,29 @@ def update_remotion_render_job_output(job_id: int, output_path: str) -> bool:
         result = con.execute(
             "UPDATE remotion_render_jobs SET output_path=? WHERE id=?",
             (output_path, int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def update_remotion_render_job_process(
+    job_id: int,
+    *,
+    worker_pid: int | None = None,
+    heartbeat: bool = True,
+) -> bool:
+    assignments = ["last_heartbeat_at=?"]
+    values: list[Any] = [now_utc()]
+    if worker_pid is not None:
+        assignments.extend(["worker_pid=?", "worker_started_at=COALESCE(worker_started_at, ?)"])
+        values.extend([int(worker_pid), now_utc()])
+    with connect() as con:
+        result = con.execute(
+            f"""
+            UPDATE remotion_render_jobs
+            SET {", ".join(assignments)}
+            WHERE id=? AND status='rendering'
+            """,
+            (*values, int(job_id)),
         )
         return result.rowcount > 0
 
@@ -3937,10 +3977,20 @@ def claim_remotion_render_job(job_id: int) -> sqlite3.Row | None:
         result = con.execute(
             """
             UPDATE remotion_render_jobs
-            SET status='rendering', started_at=?, finished_at=NULL, error=NULL
+            SET status='rendering',
+                started_at=?,
+                finished_at=NULL,
+                error=NULL,
+                worker_pid=NULL,
+                worker_started_at=?,
+                last_heartbeat_at=?,
+                stdout_tail=NULL,
+                stderr_tail=NULL,
+                returncode=NULL,
+                elapsed_sec=NULL
             WHERE id=? AND status='queued'
             """,
-            (now_utc(), int(job_id)),
+            (now_utc(), now_utc(), now_utc(), int(job_id)),
         )
         if result.rowcount == 0:
             con.execute("COMMIT")
@@ -4011,10 +4061,20 @@ def claim_next_remotion_render_job() -> sqlite3.Row | None:
         result = con.execute(
             """
             UPDATE remotion_render_jobs
-            SET status='rendering', started_at=?, finished_at=NULL, error=NULL
+            SET status='rendering',
+                started_at=?,
+                finished_at=NULL,
+                error=NULL,
+                worker_pid=NULL,
+                worker_started_at=?,
+                last_heartbeat_at=?,
+                stdout_tail=NULL,
+                stderr_tail=NULL,
+                returncode=NULL,
+                elapsed_sec=NULL
             WHERE id=? AND status='queued'
             """,
-            (now, job_id),
+            (now, now, now, job_id),
         )
         if result.rowcount == 0:
             con.execute("COMMIT")
@@ -4061,15 +4121,40 @@ def claim_next_remotion_render_job() -> sqlite3.Row | None:
         con.close()
 
 
-def mark_remotion_render_job_done(job_id: int, output_path: str) -> bool:
+def mark_remotion_render_job_done(
+    job_id: int,
+    output_path: str,
+    *,
+    stdout_tail: str | None = None,
+    stderr_tail: str | None = None,
+    returncode: int | None = 0,
+    elapsed_sec: float | None = None,
+) -> bool:
     with connect() as con:
         result = con.execute(
             """
             UPDATE remotion_render_jobs
-            SET status='done', output_path=?, error=NULL, finished_at=?
+            SET status='done',
+                output_path=?,
+                error=NULL,
+                finished_at=?,
+                last_heartbeat_at=?,
+                stdout_tail=?,
+                stderr_tail=?,
+                returncode=?,
+                elapsed_sec=?
             WHERE id=?
             """,
-            (output_path, now_utc(), int(job_id)),
+            (
+                output_path,
+                now_utc(),
+                now_utc(),
+                stdout_tail,
+                stderr_tail,
+                returncode,
+                elapsed_sec,
+                int(job_id),
+            ),
         )
         batch_id = _batch_id_for_render_job(con, int(job_id))
         if batch_id is not None:
@@ -4085,15 +4170,39 @@ def mark_remotion_render_job_done(job_id: int, output_path: str) -> bool:
         return result.rowcount > 0
 
 
-def mark_remotion_render_job_failed(job_id: int, error: str) -> bool:
+def mark_remotion_render_job_failed(
+    job_id: int,
+    error: str,
+    *,
+    stdout_tail: str | None = None,
+    stderr_tail: str | None = None,
+    returncode: int | None = None,
+    elapsed_sec: float | None = None,
+) -> bool:
     with connect() as con:
         result = con.execute(
             """
             UPDATE remotion_render_jobs
-            SET status='failed', error=?, finished_at=?
+            SET status='failed',
+                error=?,
+                finished_at=?,
+                last_heartbeat_at=?,
+                stdout_tail=COALESCE(?, stdout_tail),
+                stderr_tail=COALESCE(?, stderr_tail),
+                returncode=COALESCE(?, returncode),
+                elapsed_sec=COALESCE(?, elapsed_sec)
             WHERE id=?
             """,
-            (error, now_utc(), int(job_id)),
+            (
+                error,
+                now_utc(),
+                now_utc(),
+                stdout_tail,
+                stderr_tail,
+                returncode,
+                elapsed_sec,
+                int(job_id),
+            ),
         )
         batch_id = _batch_id_for_render_job(con, int(job_id))
         if batch_id is not None:
@@ -4131,6 +4240,86 @@ def cancel_remotion_render_job(job_id: int) -> bool:
             )
             _sync_remotion_render_batch_in_connection(con, batch_id)
         return result.rowcount > 0
+
+
+def retry_remotion_render_job(job_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE remotion_render_jobs
+            SET status='queued',
+                error=NULL,
+                started_at=NULL,
+                finished_at=NULL,
+                worker_pid=NULL,
+                worker_started_at=NULL,
+                last_heartbeat_at=NULL,
+                stdout_tail=NULL,
+                stderr_tail=NULL,
+                returncode=NULL,
+                elapsed_sec=NULL
+            WHERE id=? AND status IN ('failed', 'cancelled')
+            """,
+            (int(job_id),),
+        )
+        batch_id = _batch_id_for_render_job(con, int(job_id))
+        if batch_id is not None and result.rowcount > 0:
+            con.execute(
+                """
+                UPDATE remotion_render_batch_items
+                SET status='queued', error=NULL, updated_at=?
+                WHERE render_job_id=?
+                """,
+                (now_utc(), int(job_id)),
+            )
+            _sync_remotion_render_batch_in_connection(con, batch_id)
+        return result.rowcount > 0
+
+
+def retry_failed_remotion_render_batch(batch_id: int) -> int:
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT render_job_id
+            FROM remotion_render_batch_items
+            WHERE batch_id=? AND status IN ('failed', 'cancelled')
+            """,
+            (int(batch_id),),
+        ).fetchall()
+        job_ids = [int(row["render_job_id"]) for row in rows]
+        if not job_ids:
+            _sync_remotion_render_batch_in_connection(con, int(batch_id))
+            return 0
+        placeholders = ",".join("?" for _ in job_ids)
+        con.execute(
+            f"""
+            UPDATE remotion_render_jobs
+            SET status='queued',
+                error=NULL,
+                started_at=NULL,
+                finished_at=NULL,
+                worker_pid=NULL,
+                worker_started_at=NULL,
+                last_heartbeat_at=NULL,
+                stdout_tail=NULL,
+                stderr_tail=NULL,
+                returncode=NULL,
+                elapsed_sec=NULL
+            WHERE id IN ({placeholders}) AND status IN ('failed', 'cancelled')
+            """,
+            job_ids,
+        )
+        con.execute(
+            f"""
+            UPDATE remotion_render_batch_items
+            SET status='queued', error=NULL, updated_at=?
+            WHERE render_job_id IN ({placeholders})
+              AND status IN ('failed', 'cancelled')
+            """,
+            [now_utc(), *job_ids],
+        )
+        _sync_remotion_render_batch_in_connection(con, int(batch_id))
+        return len(job_ids)
 
 
 def fail_interrupted_remotion_render_jobs() -> int:
@@ -4185,6 +4374,11 @@ def create_remotion_render_batch(
     reaction_asset_id: int | None = None,
     reaction_pool_id: int | None = None,
     parameter_values_json: dict[str, Any] | str | None = None,
+    renderer_engine: str = "ffmpeg_fast",
+    render_profile: str = "low_540p",
+    duration_limit_sec: float | None = None,
+    start_offset_sec: float = 0,
+    full_length: bool = False,
 ) -> int:
     now = now_utc()
     with connect() as con:
@@ -4193,8 +4387,10 @@ def create_remotion_render_batch(
             INSERT INTO remotion_render_batches
                 (studio_template_id, template_key, name, source_mode, source_path,
                  reaction_strategy, reaction_asset_id, reaction_pool_id,
-                 parameter_values_json, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+                 parameter_values_json, renderer_engine, render_profile,
+                 duration_limit_sec, start_offset_sec, full_length,
+                 status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
             """,
             (
                 studio_template_id,
@@ -4206,6 +4402,11 @@ def create_remotion_render_batch(
                 reaction_asset_id,
                 reaction_pool_id,
                 _normalize_json_object(parameter_values_json),
+                renderer_engine,
+                render_profile,
+                duration_limit_sec,
+                float(start_offset_sec or 0),
+                1 if full_length else 0,
                 now,
                 now,
             ),
@@ -4273,7 +4474,16 @@ def list_remotion_render_batch_items(batch_id: int) -> list[sqlite3.Row]:
                    rrj.output_path AS output_path,
                    rrj.error AS render_error,
                    rrj.started_at AS render_started_at,
-                   rrj.finished_at AS render_finished_at
+                   rrj.finished_at AS render_finished_at,
+                   rrj.renderer_engine AS renderer_engine,
+                   rrj.render_profile AS render_profile,
+                   rrj.duration_limit_sec AS duration_limit_sec,
+                   rrj.start_offset_sec AS start_offset_sec,
+                   rrj.full_length AS full_length,
+                   rrj.stdout_tail AS stdout_tail,
+                   rrj.stderr_tail AS stderr_tail,
+                   rrj.returncode AS returncode,
+                   rrj.elapsed_sec AS elapsed_sec
             FROM remotion_render_batch_items rbi
             LEFT JOIN remotion_render_jobs rrj ON rrj.id = rbi.render_job_id
             WHERE rbi.batch_id=?
@@ -4333,6 +4543,11 @@ def create_remotion_pipeline(
     parameter_values_json: dict[str, Any] | str | None = None,
     output_policy_json: dict[str, Any] | str | None = None,
     enabled: bool = True,
+    renderer_engine: str = "ffmpeg_fast",
+    render_profile: str = "low_540p",
+    duration_limit_sec: float | None = None,
+    start_offset_sec: float = 0,
+    full_length: bool = False,
 ) -> int:
     now = now_utc()
     with connect() as con:
@@ -4342,8 +4557,10 @@ def create_remotion_pipeline(
                 (name, studio_template_id, source_mode, source_path,
                  source_paths_json, recursive, reaction_strategy,
                  reaction_asset_id, reaction_pool_id, parameter_values_json,
-                 output_policy_json, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 output_policy_json, enabled, renderer_engine, render_profile,
+                 duration_limit_sec, start_offset_sec, full_length,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
@@ -4358,6 +4575,11 @@ def create_remotion_pipeline(
                 _normalize_json_object(parameter_values_json),
                 _normalize_json_object(output_policy_json),
                 1 if enabled else 0,
+                renderer_engine,
+                render_profile,
+                duration_limit_sec,
+                float(start_offset_sec or 0),
+                1 if full_length else 0,
                 now,
                 now,
             ),

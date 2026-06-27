@@ -45,6 +45,10 @@ export const ReactionLayoutTemplate: React.FC<ResolvedRecipe> = (recipe) => {
   const pipHeight = clamp(height, 240, 620);
   const pipWidth = Math.round(pipHeight * 9 / 16);
   const pipMargin = 42;
+  const mainStartFrame = Math.max(
+    0,
+    Math.round((recipe.trim?.start_sec || 0) * recipe.canvas.fps),
+  );
   const mainInset =
     hasReaction && reaction_position === 'top'
       ? `${height}px 0 0 0`
@@ -57,6 +61,7 @@ export const ReactionLayoutTemplate: React.FC<ResolvedRecipe> = (recipe) => {
       <div style={{position: 'absolute', inset: mainInset}}>
         <Html5Video
           src={recipe.media.main.url}
+          startFrom={mainStartFrame}
           volume={recipe.audio.main_volume}
           style={{width: '100%', height: '100%', objectFit: main_fit}}
         />

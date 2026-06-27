@@ -5,7 +5,6 @@ import asyncio
 import json
 import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -290,6 +289,32 @@ def test_studio_project_allows_main_only_test_context(tmp_path, monkeypatch):
     assert "url" not in created["resolved_recipe_json"]["media"]["reaction"]
 
 
+def test_resolved_recipe_uses_render_profile_and_duration_trim(tmp_path, monkeypatch):
+    from shortsfarm.studio import resolved_studio_recipe
+
+    root = _workspace(tmp_path)
+    (root / "sources" / "long.mp4").write_bytes(b"long")
+    asset_id, _ = _reaction(tmp_path)
+    monkeypatch.setattr("shortsfarm.studio.probe_duration", lambda path: 300.0)
+
+    resolved = resolved_studio_recipe(
+        _recipe("sources/long.mp4", asset_id),
+        render_profile="low_540p",
+        duration_limit_sec=30,
+        start_offset_sec=10,
+    )
+
+    assert resolved["canvas"] == {"width": 540, "height": 960, "fps": 24}
+    assert resolved["trim"] == {
+        "start_sec": 10.0,
+        "duration_sec": 30.0,
+        "end_sec": 40.0,
+        "source_duration_sec": 300.0,
+        "full_length": False,
+    }
+    assert resolved["duration_in_frames"] == 720
+
+
 def test_render_rejects_test_context_without_required_reaction(
     tmp_path,
     monkeypatch,
@@ -361,29 +386,33 @@ def test_remotion_worker_atomically_finishes_valid_output(tmp_path, monkeypatch)
     import shortsfarm.remotion_renderer as renderer
 
     project_id, _main, _asset = _project(tmp_path, monkeypatch)
-    job_id = db.create_remotion_render_job(project_id)
+    job_id = db.create_remotion_render_job(project_id, renderer_engine="ffmpeg_fast")
     _temp, final = renderer.build_remotion_output_paths(
         "cuts/show/segment.mp4",
         project_id,
         job_id,
     )
     db.update_remotion_render_job_output(job_id, str(final))
-    monkeypatch.setattr(renderer, "_required_node", lambda: "/usr/bin/node")
-    monkeypatch.setattr(renderer, "_required_remotion_dependencies", lambda: None)
-    monkeypatch.setattr(renderer, "_required_browser", lambda: "/usr/bin/chromium")
     monkeypatch.setattr(renderer, "probe_duration", lambda path: 10.0)
 
-    def fake_run(command, **kwargs):
-        payload = json.loads(kwargs["input"])
-        Path(payload["outputPath"]).write_bytes(b"valid mp4")
-        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+    def fake_ffmpeg(job_id, normalized_recipe, resolved_recipe, temp_path):
+        Path(temp_path).write_bytes(b"valid mp4")
+        return renderer.ProcessResult(
+            returncode=0,
+            stdout_tail="ok",
+            stderr_tail="",
+            elapsed_sec=1.25,
+        )
 
-    monkeypatch.setattr(renderer.subprocess, "run", fake_run)
+    monkeypatch.setattr(renderer, "_run_ffmpeg_fast", fake_ffmpeg)
 
     renderer.run_remotion_render_job(job_id, "http://127.0.0.1:8000")
 
     job = db.get_remotion_render_job(job_id)
     assert job["status"] == "done"
+    assert job["renderer_engine"] == "ffmpeg_fast"
+    assert job["stdout_tail"] == "ok"
+    assert job["elapsed_sec"] == 1.25
     assert final.read_bytes() == b"valid mp4"
     assert not final.with_name(f"render_job_{job_id}.tmp.mp4").exists()
 
@@ -393,7 +422,7 @@ def test_remotion_worker_records_missing_node_without_crashing(tmp_path, monkeyp
     import shortsfarm.remotion_renderer as renderer
 
     project_id, _main, _asset = _project(tmp_path, monkeypatch)
-    job_id = db.create_remotion_render_job(project_id)
+    job_id = db.create_remotion_render_job(project_id, renderer_engine="remotion")
     monkeypatch.setattr(
         renderer,
         "_required_node",
@@ -418,6 +447,25 @@ def test_interrupted_remotion_jobs_are_recovered(tmp_path, monkeypatch):
     job = db.get_remotion_render_job(job_id)
     assert job["status"] == "failed"
     assert "перезапуском backend" in job["error"]
+
+
+def test_render_queue_status_and_recover_stale_job(tmp_path, monkeypatch):
+    from shortsfarm import db
+    from shortsfarm.web import studio_api as api
+
+    project_id, _main, _asset = _project(tmp_path, monkeypatch)
+    job_id = db.create_remotion_render_job(project_id)
+    assert db.claim_remotion_render_job(job_id) is not None
+
+    status = api.studio_render_queue_status()["queue"]
+    assert status["status"] == "stale"
+    assert status["current_job_id"] == job_id
+
+    recovered = api.studio_render_queue_recover()
+    assert recovered["recovered"] == 1
+    job = db.get_remotion_render_job(job_id)
+    assert job["status"] == "failed"
+    assert "Render queue recovery" in job["error"]
 
 
 def test_apply_template_selected_creates_batch_projects_and_jobs(tmp_path, monkeypatch):
@@ -453,6 +501,9 @@ def test_apply_template_selected_creates_batch_projects_and_jobs(tmp_path, monke
 
     batch = payload["batch"]
     assert batch["name"] == "Selected batch"
+    assert batch["renderer_engine"] == "ffmpeg_fast"
+    assert batch["render_profile"] == "low_540p"
+    assert batch["duration_limit_sec"] == 45
     assert batch["total_items"] == 2
     assert len(batch["items"]) == 2
     assert len(payload["jobs"]) == 2
@@ -460,6 +511,9 @@ def test_apply_template_selected_creates_batch_projects_and_jobs(tmp_path, monke
         job = db.get_remotion_render_job(item["render_job_id"])
         project = db.get_studio_project(item["studio_project_id"])
         assert job["status"] == "queued"
+        assert job["renderer_engine"] == "ffmpeg_fast"
+        assert job["render_profile"] == "low_540p"
+        assert job["duration_limit_sec"] == 45
         assert "/edits/" in job["output_path"]
         assert f"/{template['key']}/" in job["output_path"]
         assert json.loads(project["recipe_json"])["layout"]["reaction_height"] == 600
@@ -502,6 +556,62 @@ def test_apply_template_uses_selected_non_default_template(tmp_path, monkeypatch
     assert recipe["template"]["key"] == "reaction_bottom_25"
     assert recipe["layout"]["reaction_position"] == "bottom"
     assert "/reaction_bottom_25/" in job["output_path"]
+
+
+def test_render_job_and_batch_retry_failed(tmp_path, monkeypatch):
+    from shortsfarm import db
+    from shortsfarm.web import studio_api as api
+
+    project_id, _main, asset_id = _project(tmp_path, monkeypatch)
+    job_id = db.create_remotion_render_job(project_id)
+    db.mark_remotion_render_job_failed(
+        job_id,
+        "boom",
+        stdout_tail="out",
+        stderr_tail="err",
+        returncode=9,
+        elapsed_sec=2.0,
+    )
+    monkeypatch.setattr(
+        api,
+        "start_remotion_render_queue",
+        lambda base_url: {"started": True, "reason": "started"},
+    )
+
+    retried = api.studio_render_job_retry(job_id, _request())
+    job = db.get_remotion_render_job(job_id)
+
+    assert retried["retried"] is True
+    assert job["status"] == "queued"
+    assert job["error"] is None
+    assert job["stdout_tail"] is None
+
+    batch_id = db.create_remotion_render_batch(
+        studio_template_id=None,
+        template_key="reaction_top_25",
+        name="Retry batch",
+        source_mode="selected",
+    )
+    second_main = _main.parent / "second.mp4"
+    second_main.write_bytes(b"second")
+    second_project = db.create_studio_project(
+        main_workspace_path="cuts/show/second.mp4",
+        template_key="reaction_top_25",
+        reaction_asset_id=asset_id,
+        recipe_json=_recipe("cuts/show/second.mp4", asset_id),
+    )
+    second_job = db.create_remotion_render_job(second_project)
+    db.create_remotion_render_batch_item(
+        batch_id=batch_id,
+        studio_project_id=second_project,
+        render_job_id=second_job,
+        main_workspace_path="cuts/show/second.mp4",
+    )
+    db.mark_remotion_render_job_failed(second_job, "failed")
+
+    response = api.studio_render_batch_retry_failed(batch_id, _request())
+    assert response["retried"] == 1
+    assert db.get_remotion_render_job(second_job)["status"] == "queued"
 
 
 def test_apply_template_rejects_template_without_remotion_adapter(tmp_path):

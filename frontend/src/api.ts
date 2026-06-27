@@ -59,7 +59,46 @@ export type RenderJob = {
   status: 'queued' | 'rendering' | 'done' | 'failed' | 'cancelled';
   output_path: string | null;
   error: string | null;
+  renderer_engine: 'ffmpeg_fast' | 'remotion';
+  render_profile: string;
+  duration_limit_sec: number | null;
+  start_offset_sec: number;
+  full_length: boolean;
+  worker_pid?: number | null;
+  stdout_tail?: string | null;
+  stderr_tail?: string | null;
+  returncode?: number | null;
+  elapsed_sec?: number | null;
   media_url?: string | null;
+};
+
+export type RenderQueueStatus = {
+  status: 'idle' | 'running' | 'stale';
+  current_job_id: number | null;
+  worker_pid: number | null;
+  alive: boolean;
+  queued_count: number;
+  rendering_count: number;
+  failed_count: number;
+  last_error: string | null;
+};
+
+export type RenderQueueStart = {
+  started: boolean;
+  reason: string;
+  current_job_id?: number | null;
+};
+
+export type RenderProfile = {
+  key: string;
+  label: string;
+  width: number;
+  height: number;
+  fps: number;
+  crf: number;
+  preset: string;
+  max_duration_sec: number;
+  timeout_sec: number;
 };
 
 export type ApplySourceFolder = {
@@ -78,6 +117,15 @@ export type RenderBatchItem = {
   output_path?: string | null;
   render_status?: RenderJob['status'];
   render_error?: string | null;
+  renderer_engine?: RenderJob['renderer_engine'];
+  render_profile?: string;
+  duration_limit_sec?: number | null;
+  start_offset_sec?: number;
+  full_length?: boolean;
+  stdout_tail?: string | null;
+  stderr_tail?: string | null;
+  returncode?: number | null;
+  elapsed_sec?: number | null;
   media_url?: string | null;
 };
 
@@ -92,6 +140,11 @@ export type RenderBatch = {
   reaction_asset_id: number | null;
   reaction_pool_id: number | null;
   parameter_values: Record<string, unknown>;
+  renderer_engine: RenderJob['renderer_engine'];
+  render_profile: string;
+  duration_limit_sec: number | null;
+  start_offset_sec: number;
+  full_length: boolean;
   status: 'draft' | 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
   total_items: number;
   done_items: number;
@@ -116,6 +169,11 @@ export type RemotionPipeline = {
   reaction_asset_id: number | null;
   reaction_pool_id: number | null;
   parameter_values: Record<string, unknown>;
+  renderer_engine: RenderJob['renderer_engine'];
+  render_profile: string;
+  duration_limit_sec: number | null;
+  start_offset_sec: number;
+  full_length: boolean;
   output_policy: Record<string, unknown>;
   enabled: boolean;
   last_batch_id: number | null;
@@ -147,6 +205,12 @@ export const studioApi = {
   applySources: () => request<{sections: MediaSection[]; folders: ApplySourceFolder[]}>('/api/studio/apply/sources'),
   reactions: () => request<{items: ReactionItem[]}>('/api/studio/reactions'),
   reactionPools: () => request<{items: ReactionPool[]}>('/api/studio/reaction-pools'),
+  renderProfiles: () => request<{
+    default_engine: RenderJob['renderer_engine'];
+    default_profile: string;
+    engines: string[];
+    profiles: RenderProfile[];
+  }>('/api/studio/render-profiles'),
   templates: () => request<{items: AutomationTemplate[]}>('/api/studio/templates'),
   template: (id: number) => request<{item: AutomationTemplate}>(`/api/studio/templates/${id}`),
   updateTemplate: (
@@ -197,25 +261,38 @@ export const studioApi = {
       reaction_pool_id: reactionPoolId,
     }),
   }),
-  render: (id: number) => request<{job: RenderJob}>(`/api/studio/projects/${id}/render`, {
+  render: (id: number) => request<{job: RenderJob; queue?: RenderQueueStart}>(`/api/studio/projects/${id}/render`, {
     method: 'POST',
     body: '{}',
   }),
   renderJob: (id: number) => request<{job: RenderJob}>(`/api/studio/render-jobs/${id}`),
+  retryRenderJob: (id: number) => request<{job: RenderJob; retried: boolean; queue?: RenderQueueStart}>(`/api/studio/render-jobs/${id}/retry`, {
+    method: 'POST',
+    body: '{}',
+  }),
   applyTemplate: (
     id: number,
     body: Record<string, unknown>,
-  ) => request<{batch: RenderBatch; jobs: RenderJob[]}>(`/api/studio/templates/${id}/apply`, {
+  ) => request<{batch: RenderBatch; jobs: RenderJob[]; queue?: RenderQueueStart | null}>(`/api/studio/templates/${id}/apply`, {
     method: 'POST',
     body: JSON.stringify(body),
   }),
   renderBatches: () => request<{items: RenderBatch[]}>('/api/studio/render-batches'),
   renderBatch: (id: number) => request<{batch: RenderBatch}>(`/api/studio/render-batches/${id}`),
-  startBatch: (id: number) => request<{batch: RenderBatch}>(`/api/studio/render-batches/${id}/start`, {
+  startBatch: (id: number) => request<{batch: RenderBatch; queue: RenderQueueStart}>(`/api/studio/render-batches/${id}/start`, {
+    method: 'POST',
+    body: '{}',
+  }),
+  retryFailedBatch: (id: number) => request<{batch: RenderBatch; retried: number; queue?: RenderQueueStart | null}>(`/api/studio/render-batches/${id}/retry-failed`, {
     method: 'POST',
     body: '{}',
   }),
   cancelBatch: (id: number) => request<{batch: RenderBatch; cancelled: number}>(`/api/studio/render-batches/${id}/cancel`, {
+    method: 'POST',
+    body: '{}',
+  }),
+  queueStatus: () => request<{queue: RenderQueueStatus}>('/api/studio/render-queue/status'),
+  recoverQueue: () => request<{recovered: number; reason: string; queue: RenderQueueStatus}>('/api/studio/render-queue/recover', {
     method: 'POST',
     body: '{}',
   }),
@@ -224,7 +301,7 @@ export const studioApi = {
     method: 'POST',
     body: JSON.stringify(body),
   }),
-  runPipeline: (id: number) => request<{batch: RenderBatch; jobs: RenderJob[]}>(`/api/studio/pipelines/${id}/run`, {
+  runPipeline: (id: number) => request<{batch: RenderBatch; jobs: RenderJob[]; queue?: RenderQueueStart | null}>(`/api/studio/pipelines/${id}/run`, {
     method: 'POST',
     body: '{}',
   }),

@@ -24,6 +24,7 @@ const rendererOptions = {
   inputProps: payload.recipe,
   browserExecutable: payload.browserExecutable || undefined,
   chromiumOptions: {enableMultiProcessOnLinux: true},
+  concurrency: 1,
 };
 const composition = await selectComposition(rendererOptions);
 await renderMedia({
@@ -34,6 +35,7 @@ await renderMedia({
   inputProps: payload.recipe,
   browserExecutable: payload.browserExecutable || undefined,
   chromiumOptions: {enableMultiProcessOnLinux: true},
+  concurrency: 1,
   overwrite: true,
 });
 

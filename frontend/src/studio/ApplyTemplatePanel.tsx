@@ -6,6 +6,7 @@ import type {
   ReactionItem,
   ReactionPool,
   RemotionPipeline,
+  RenderJob,
   RenderBatch,
 } from '../api';
 import {studioApi} from '../api';
@@ -28,6 +29,7 @@ import type {Recipe} from './recipe';
 
 type SourceMode = 'selected' | 'folder' | 'folder_recursive';
 type ReactionStrategy = 'fixed_asset' | 'pool_first' | 'pool_weighted';
+type RendererEngine = RenderJob['renderer_engine'];
 
 const itemSection = (path: string) => path.split('/')[0] || '';
 
@@ -129,9 +131,13 @@ export const ApplyTemplatePanel = ({
     recipe.media.reaction.asset_id,
   );
   const [reactionPoolId, setReactionPoolId] = useState<number | null>(pools[0]?.id ?? null);
+  const [rendererEngine, setRendererEngine] = useState<RendererEngine>('ffmpeg_fast');
+  const [renderProfile, setRenderProfile] = useState('low_540p');
+  const [durationMode, setDurationMode] = useState('45');
   const [batchName, setBatchName] = useState(`${template.name} batch`);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [queueMessage, setQueueMessage] = useState('');
 
   const allowedSections = template.definition.slots.main?.allowed_sections || ['sources', 'cuts', 'prepared'];
   const mediaItems = sections
@@ -181,6 +187,11 @@ export const ApplyTemplatePanel = ({
     reaction_asset_id: reactionAssetId,
     reaction_pool_id: reactionPoolId,
     parameter_values: parameterValues(),
+    renderer_engine: rendererEngine,
+    render_profile: renderProfile,
+    duration_limit_sec: durationMode === 'full' ? null : Number(durationMode),
+    start_offset_sec: 0,
+    full_length: durationMode === 'full',
     start: true,
   });
 
@@ -190,6 +201,7 @@ export const ApplyTemplatePanel = ({
     try {
       const result = await studioApi.applyTemplate(template.id, requestBody());
       onBatchCreated(result.batch);
+      if (result.queue) setQueueMessage(`Очередь: ${result.queue.reason}`);
       await onRefreshBatches();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -222,6 +234,7 @@ export const ApplyTemplatePanel = ({
     try {
       const result = await studioApi.runPipeline(id);
       onBatchCreated(result.batch);
+      if (result.queue) setQueueMessage(`Очередь: ${result.queue.reason}`);
       await onRefreshBatches();
       await onRefreshPipelines();
     } catch (caught) {
@@ -232,12 +245,29 @@ export const ApplyTemplatePanel = ({
   };
 
   const startBatch = async (id: number) => {
-    await studioApi.startBatch(id);
+    const result = await studioApi.startBatch(id);
+    setQueueMessage(`Очередь: ${result.queue.reason}`);
     await onRefreshBatches();
   };
 
   const cancelBatch = async (id: number) => {
     await studioApi.cancelBatch(id);
+    await onRefreshBatches();
+  };
+
+  const retryFailedBatch = async (id: number) => {
+    const result = await studioApi.retryFailedBatch(id);
+    setQueueMessage(
+      result.queue
+        ? `Повторено: ${result.retried}. Очередь: ${result.queue.reason}`
+        : `Повторено: ${result.retried}`,
+    );
+    await onRefreshBatches();
+  };
+
+  const recoverQueue = async () => {
+    const result = await studioApi.recoverQueue();
+    setQueueMessage(`Восстановление: ${result.reason}. Статус: ${result.queue.status}`);
     await onRefreshBatches();
   };
 
@@ -349,11 +379,41 @@ export const ApplyTemplatePanel = ({
         <div className="ts-card-head">
           <div><h2>Batch preview</h2><p>Будет создано render jobs: {previewItems.length}</p></div>
         </div>
+        <label>
+          <span>Движок рендера</span>
+          <select value={rendererEngine} onChange={(event) => setRendererEngine(event.target.value as RendererEngine)}>
+            <option value="ffmpeg_fast">Быстрый FFmpeg</option>
+            <option value="remotion">Remotion</option>
+          </select>
+        </label>
+        <label>
+          <span>Качество рендера</span>
+          <select value={renderProfile} onChange={(event) => setRenderProfile(event.target.value)}>
+            <option value="draft_360p">Черновик 360p — очень быстро</option>
+            <option value="low_540p">Низкое 540p — для слабого ноутбука</option>
+            <option value="sd_720p">SD 720p</option>
+            <option value="hd_1080p">HD 1080p</option>
+          </select>
+        </label>
+        <label>
+          <span>Длительность</span>
+          <select value={durationMode} onChange={(event) => setDurationMode(event.target.value)}>
+            <option value="15">15 сек</option>
+            <option value="30">30 сек</option>
+            <option value="45">45 сек</option>
+            <option value="60">60 сек</option>
+            <option value="full">Полная длина — тяжело, использовать осторожно</option>
+          </select>
+        </label>
+        {durationMode === 'full' ? (
+          <div className="ts-alert error">Полная длина может быть очень тяжёлой для слабого ноутбука.</div>
+        ) : null}
         <div className="apply-preview">
           <div>Template: <b>{template.key}</b></div>
           <div>Источник: <b>{sourceMode === 'selected' ? 'выбранные видео' : workspacePathLabel(folderPath)}</b></div>
           <div>Reaction: <b>{reactionStrategy === 'fixed_asset' ? 'asset' : 'pool'}</b></div>
-          <div>Output: <b>workspace_root/edits/&lt;source path&gt;/{template.key}/render_job_*.mp4</b></div>
+          <div>Рендер: <b>{rendererEngine} · {renderProfile} · {durationMode === 'full' ? 'полная длина' : `${durationMode} сек`}</b></div>
+          <div>Вывод: <b>workspace_root/edits/&lt;source path&gt;/{template.key}/render_job_*.mp4</b></div>
         </div>
         <div className="apply-media-list compact">
           {previewItems.slice(0, 30).map((item) => (
@@ -367,7 +427,7 @@ export const ApplyTemplatePanel = ({
         </div>
         <div className="ts-row-actions">
           <button className="primary" disabled={busy || !supported || !previewItems.length} onClick={() => void createBatch()}>
-            Create render batch
+            Создать render batch
           </button>
           <button disabled={busy || !supported || !previewItems.length} onClick={() => void savePipeline()}>
             Сохранить pipeline
@@ -378,19 +438,46 @@ export const ApplyTemplatePanel = ({
       <section className="ts-card apply-panel apply-wide">
         <div className="ts-card-head">
           <div><h2>Batch progress</h2><p>Очередь допускает много queued jobs, но рендерит по одному.</p></div>
-          <button onClick={() => void onRefreshBatches()}>Обновить</button>
+          <div className="ts-row-actions">
+            <button onClick={() => void onRefreshBatches()}>Обновить</button>
+            <button onClick={() => void recoverQueue()}>Восстановить render queue</button>
+          </div>
         </div>
+        {queueMessage ? <div className="adapter-note">{queueMessage}</div> : null}
         <div className="batch-list">
           {batches.slice(0, 8).map((batch) => (
             <article className="batch-card" key={batch.id}>
               <div>
                 <strong>#{batch.id} {batch.name}</strong>
-                <small>{batch.template_key} · {statusLabel(batch.status)} · {batch.done_items}/{batch.total_items} готово · ошибок {batch.failed_items}</small>
+                <small>
+                  {batch.template_key} · {statusLabel(batch.status)} · {batch.renderer_engine} · {batch.render_profile}
+                  {' · '}
+                  {batch.full_length ? 'полная длина' : `${batch.duration_limit_sec || 'profile'} сек`}
+                  {' · '}
+                  {batch.done_items}/{batch.total_items} готово · ошибок {batch.failed_items}
+                </small>
               </div>
               <progress value={batch.done_items + batch.failed_items} max={Math.max(1, batch.total_items)} />
+              {batch.items?.length ? (
+                <div className="apply-media-list compact">
+                  {batch.items.slice(0, 8).map((item) => (
+                    <div className="apply-media-row" key={item.id}>
+                      <span>#{item.render_job_id} · {statusLabel(item.render_status || item.status)}</span>
+                      <small>
+                        {workspacePathLabel(item.main_workspace_path)}
+                        {item.elapsed_sec ? ` · ${Number(item.elapsed_sec).toFixed(1)}s` : ''}
+                        {item.output_path ? ` · ${item.output_path}` : ''}
+                        {item.render_error ? ` · ${item.render_error}` : ''}
+                        {item.stderr_tail ? ` · stderr: ${item.stderr_tail}` : ''}
+                      </small>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <div className="ts-row-actions">
                 {batch.status === 'queued' ? <button onClick={() => void startBatch(batch.id)}>Старт</button> : null}
                 {['queued', 'running'].includes(batch.status) ? <button onClick={() => void cancelBatch(batch.id)}>Отменить queued</button> : null}
+                {batch.failed_items > 0 ? <button onClick={() => void retryFailedBatch(batch.id)}>Повторить failed jobs</button> : null}
                 <button onClick={() => void onOpenBatch(batch.id)}>Открыть</button>
               </div>
             </article>

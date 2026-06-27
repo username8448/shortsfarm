@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from . import db
 from .ffmpeg_tools import probe_duration
+from .render_profiles import get_render_profile
 from .services import VIDEO_EXTENSIONS, safe_filename
 from .studio_templates import composition_id_for_definition, require_remotion_adapter
 from .workspace_fs import get_workspace_root, resolve_workspace_path
@@ -489,6 +490,10 @@ def resolved_studio_recipe(
     *,
     base_url: str = "",
     require_reaction: bool = True,
+    render_profile: str | None = None,
+    duration_limit_sec: float | None = None,
+    start_offset_sec: float = 0,
+    full_length: bool = False,
 ) -> dict[str, Any]:
     normalized = normalize_studio_recipe(recipe)
     main_path = resolve_studio_media_path(
@@ -502,9 +507,32 @@ def resolved_studio_recipe(
     if asset_id is None and require_reaction:
         raise ValueError("Выберите reaction asset.")
 
+    profile = get_render_profile(render_profile)
+    start_sec = max(0.0, float(start_offset_sec or 0))
+    if start_sec >= duration:
+        raise ValueError("start_offset_sec находится за пределами main media.")
+    available = max(0.001, duration - start_sec)
+    if full_length:
+        render_duration = available
+    else:
+        limit = (
+            float(duration_limit_sec)
+            if duration_limit_sec not in {None, ""}
+            else float(profile.max_duration_sec)
+        )
+        if limit <= 0:
+            raise ValueError("duration_limit_sec должен быть больше 0.")
+        render_duration = min(available, limit)
+    end_sec = start_sec + render_duration
+
     prefix = str(base_url or "").rstrip("/")
     main_relative = normalized["media"]["main"]["workspace_path"]
     resolved = json.loads(json.dumps(normalized, ensure_ascii=False))
+    resolved["canvas"] = {
+        "width": profile.width,
+        "height": profile.height,
+        "fps": profile.fps,
+    }
     resolved["media"]["main"].update({
         "url": (
             f"{prefix}/api/studio/media?path={quote(main_relative, safe='')}"
@@ -518,9 +546,17 @@ def resolved_studio_recipe(
             "url": f"{prefix}/api/studio/reaction-media/{asset_id}",
             "duration_sec": reaction_duration,
         })
+    resolved["trim"] = {
+        "start_sec": start_sec,
+        "duration_sec": render_duration,
+        "end_sec": end_sec,
+        "source_duration_sec": duration,
+        "full_length": bool(full_length),
+    }
+    resolved["render_profile"] = profile.payload()
     resolved["duration_in_frames"] = max(
         1,
-        int(round(duration * normalized["canvas"]["fps"])),
+        int(round(render_duration * profile.fps)),
     )
     return resolved
 

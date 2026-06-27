@@ -308,6 +308,41 @@ def test_remotion_batch_and_pipeline_schema_exists(tmp_data_dir):
     assert "idx_remotion_render_jobs_one_active_global" in indexes
 
 
+def test_studio_render_profile_diagnostics_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    db.init_db()
+    with db.connect() as con:
+        job_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(remotion_render_jobs)")
+        }
+        batch_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(remotion_render_batches)")
+        }
+        pipeline_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(remotion_pipelines)")
+        }
+
+    expected = {
+        "renderer_engine", "render_profile", "duration_limit_sec",
+        "start_offset_sec", "full_length", "worker_pid",
+        "worker_started_at", "last_heartbeat_at", "stdout_tail",
+        "stderr_tail", "returncode", "elapsed_sec",
+    }
+    assert expected <= job_columns
+    assert {
+        "renderer_engine", "render_profile", "duration_limit_sec",
+        "start_offset_sec", "full_length",
+    } <= batch_columns
+    assert {
+        "renderer_engine", "render_profile", "duration_limit_sec",
+        "start_offset_sec", "full_length",
+    } <= pipeline_columns
+
+
 def test_idempotent(tmp_data_dir):
     """Running migrations many times must not raise."""
     from shortsfarm.migrations import run_migrations

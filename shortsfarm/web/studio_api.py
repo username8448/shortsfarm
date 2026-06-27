@@ -12,7 +12,20 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel
 
 from .. import db
-from ..remotion_renderer import start_remotion_render_queue
+from ..remotion_renderer import (
+    recover_remotion_render_queue,
+    remotion_render_queue_status,
+    start_remotion_render_queue,
+)
+from ..render_profiles import (
+    DEFAULT_RENDER_ENGINE,
+    DEFAULT_RENDER_PROFILE,
+    get_render_profile,
+    normalize_duration_limit,
+    normalize_render_engine,
+    normalize_start_offset,
+    render_profiles_payload,
+)
 from ..studio import (
     build_batch_remotion_output_paths,
     build_remotion_output_paths,
@@ -64,6 +77,11 @@ class StudioApplyRequest(BaseModel):
     reaction_asset_id: int | None = None
     reaction_pool_id: int | None = None
     parameter_values: dict[str, Any] = {}
+    renderer_engine: str = DEFAULT_RENDER_ENGINE
+    render_profile: str = DEFAULT_RENDER_PROFILE
+    duration_limit_sec: float | None = None
+    start_offset_sec: float = 0
+    full_length: bool = False
     start: bool = True
 
 
@@ -78,6 +96,11 @@ class StudioPipelineRequest(BaseModel):
     reaction_asset_id: int | None = None
     reaction_pool_id: int | None = None
     parameter_values: dict[str, Any] = {}
+    renderer_engine: str = DEFAULT_RENDER_ENGINE
+    render_profile: str = DEFAULT_RENDER_PROFILE
+    duration_limit_sec: float | None = None
+    start_offset_sec: float = 0
+    full_length: bool = False
     enabled: bool = True
 
 
@@ -107,6 +130,7 @@ def _row_dict(row: Any) -> dict[str, Any]:
 
 def _render_job_payload(row: Any) -> dict[str, Any]:
     payload = _row_dict(row)
+    payload["full_length"] = bool(payload.get("full_length"))
     payload["media_url"] = (
         f"/api/studio/render-jobs/{int(row['id'])}/media"
         if str(row["status"]) == "done"
@@ -118,11 +142,13 @@ def _render_job_payload(row: Any) -> dict[str, Any]:
 def _batch_payload(row: Any, *, include_items: bool = False) -> dict[str, Any]:
     payload = _row_dict(row)
     payload["parameter_values"] = json.loads(str(row["parameter_values_json"] or "{}"))
+    payload["full_length"] = bool(payload.get("full_length"))
     payload.pop("parameter_values_json", None)
     if include_items:
         items: list[dict[str, Any]] = []
         for item in db.list_remotion_render_batch_items(int(row["id"])):
             item_payload = _row_dict(item)
+            item_payload["full_length"] = bool(item_payload.get("full_length"))
             item_payload["media_url"] = (
                 f"/api/studio/render-jobs/{int(item['render_job_id'])}/media"
                 if str(item["render_status"]) == "done"
@@ -140,6 +166,7 @@ def _pipeline_payload(row: Any) -> dict[str, Any]:
     payload["output_policy"] = json.loads(str(row["output_policy_json"] or "{}"))
     payload["enabled"] = bool(row["enabled"])
     payload["recursive"] = bool(row["recursive"])
+    payload["full_length"] = bool(row["full_length"])
     for key in ("source_paths_json", "parameter_values_json", "output_policy_json"):
         payload.pop(key, None)
     return payload
@@ -163,6 +190,14 @@ def _create_apply_batch(
     source_mode_override: str | None = None,
 ) -> dict[str, Any]:
     template, definition = _template_for_apply(template_id)
+    renderer_engine = normalize_render_engine(req.renderer_engine)
+    profile = get_render_profile(req.render_profile)
+    start_offset_sec = normalize_start_offset(req.start_offset_sec)
+    duration_limit_sec = normalize_duration_limit(
+        req.duration_limit_sec,
+        profile=profile,
+        full_length=req.full_length,
+    )
     allowed_sections = definition.get("slots", {}).get("main", {}).get(
         "allowed_sections",
         ["sources", "cuts", "prepared"],
@@ -190,6 +225,11 @@ def _create_apply_batch(
         reaction_asset_id=req.reaction_asset_id,
         reaction_pool_id=req.reaction_pool_id,
         parameter_values_json=req.parameter_values,
+        renderer_engine=renderer_engine,
+        render_profile=profile.key,
+        duration_limit_sec=duration_limit_sec,
+        start_offset_sec=start_offset_sec,
+        full_length=req.full_length,
     )
     created_jobs: list[dict[str, Any]] = []
     for main_workspace_path in media_paths:
@@ -208,6 +248,10 @@ def _create_apply_batch(
             recipe,
             base_url=_base_url(request),
             require_reaction=True,
+            render_profile=profile.key,
+            duration_limit_sec=duration_limit_sec,
+            start_offset_sec=start_offset_sec,
+            full_length=req.full_length,
         )
         project_id = db.create_studio_project(
             workspace_item_key=None,
@@ -218,7 +262,14 @@ def _create_apply_batch(
             studio_template_id=int(template["id"]),
             reaction_pool_id=req.reaction_pool_id,
         )
-        job_id = db.create_remotion_render_job(project_id)
+        job_id = db.create_remotion_render_job(
+            project_id,
+            renderer_engine=renderer_engine,
+            render_profile=profile.key,
+            duration_limit_sec=duration_limit_sec,
+            start_offset_sec=start_offset_sec,
+            full_length=req.full_length,
+        )
         _temp_path, final_path = build_batch_remotion_output_paths(
             main_workspace_path,
             str(template["template_key"]),
@@ -235,13 +286,15 @@ def _create_apply_batch(
         if job is not None:
             created_jobs.append(_render_job_payload(job))
     db.sync_remotion_render_batch(batch_id)
+    queue = None
     if req.start:
-        start_remotion_render_queue(_base_url(request))
+        queue = start_remotion_render_queue(_base_url(request))
     batch = db.get_remotion_render_batch(batch_id)
     assert batch is not None
     return {
         "batch": _batch_payload(batch, include_items=True),
         "jobs": created_jobs,
+        "queue": queue,
     }
 
 
@@ -427,6 +480,11 @@ def studio_reaction_media(asset_id: int, request: Request) -> Response:
         raise _fail(exc)
 
 
+@router.get("/render-profiles")
+def studio_render_profiles() -> dict[str, Any]:
+    return render_profiles_payload()
+
+
 @router.get("/templates")
 def studio_templates() -> dict[str, Any]:
     db.init_db()
@@ -597,10 +655,10 @@ def studio_render_batch_start(batch_id: int, request: Request) -> dict[str, Any]
     row = db.get_remotion_render_batch(batch_id)
     if row is None:
         raise _fail(FileNotFoundError("Render batch не найден."), 404)
-    start_remotion_render_queue(_base_url(request))
+    queue = start_remotion_render_queue(_base_url(request))
     updated = db.get_remotion_render_batch(batch_id)
     assert updated is not None
-    return {"batch": _batch_payload(updated, include_items=True)}
+    return {"batch": _batch_payload(updated, include_items=True), "queue": queue}
 
 
 @router.post("/render-batches/{batch_id}/cancel")
@@ -616,6 +674,35 @@ def studio_render_batch_cancel(batch_id: int) -> dict[str, Any]:
         "cancelled": cancelled,
         "batch": _batch_payload(updated, include_items=True),
     }
+
+
+@router.post("/render-batches/{batch_id}/retry-failed")
+def studio_render_batch_retry_failed(batch_id: int, request: Request) -> dict[str, Any]:
+    db.init_db()
+    row = db.get_remotion_render_batch(batch_id)
+    if row is None:
+        raise _fail(FileNotFoundError("Render batch не найден."), 404)
+    retried = db.retry_failed_remotion_render_batch(batch_id)
+    queue = start_remotion_render_queue(_base_url(request)) if retried else None
+    updated = db.get_remotion_render_batch(batch_id)
+    assert updated is not None
+    return {
+        "retried": retried,
+        "batch": _batch_payload(updated, include_items=True),
+        "queue": queue,
+    }
+
+
+@router.get("/render-queue/status")
+def studio_render_queue_status() -> dict[str, Any]:
+    db.init_db()
+    return {"queue": remotion_render_queue_status()}
+
+
+@router.post("/render-queue/recover")
+def studio_render_queue_recover() -> dict[str, Any]:
+    db.init_db()
+    return recover_remotion_render_queue()
 
 
 @router.get("/pipelines")
@@ -634,6 +721,14 @@ def studio_pipeline_create(req: StudioPipelineRequest) -> dict[str, Any]:
     try:
         db.init_db()
         _template_for_apply(req.studio_template_id)
+        renderer_engine = normalize_render_engine(req.renderer_engine)
+        profile = get_render_profile(req.render_profile)
+        start_offset_sec = normalize_start_offset(req.start_offset_sec)
+        duration_limit_sec = normalize_duration_limit(
+            req.duration_limit_sec,
+            profile=profile,
+            full_length=req.full_length,
+        )
         pipeline_id = db.create_remotion_pipeline(
             name=req.name.strip(),
             studio_template_id=req.studio_template_id,
@@ -647,6 +742,11 @@ def studio_pipeline_create(req: StudioPipelineRequest) -> dict[str, Any]:
             parameter_values_json=req.parameter_values,
             output_policy_json={"folder": "workspace_root/edits"},
             enabled=req.enabled,
+            renderer_engine=renderer_engine,
+            render_profile=profile.key,
+            duration_limit_sec=duration_limit_sec,
+            start_offset_sec=start_offset_sec,
+            full_length=req.full_length,
         )
         row = db.get_remotion_pipeline(pipeline_id)
         assert row is not None
@@ -677,6 +777,11 @@ def studio_pipeline_run(pipeline_id: int, request: Request) -> JSONResponse:
             reaction_asset_id=payload["reaction_asset_id"],
             reaction_pool_id=payload["reaction_pool_id"],
             parameter_values=payload["parameter_values"],
+            renderer_engine=payload["renderer_engine"],
+            render_profile=payload["render_profile"],
+            duration_limit_sec=payload["duration_limit_sec"],
+            start_offset_sec=payload["start_offset_sec"],
+            full_length=payload["full_length"],
             start=True,
         )
         result = _create_apply_batch(
@@ -802,11 +907,11 @@ def studio_project_render(project_id: int, request: Request) -> JSONResponse:
             job_id,
         )
         db.update_remotion_render_job_output(job_id, str(final_path))
-        start_remotion_render_queue(_base_url(request))
+        queue = start_remotion_render_queue(_base_url(request))
         row = db.get_remotion_render_job(job_id)
         assert row is not None
         return JSONResponse(
-            {"job": _render_job_payload(row)},
+            {"job": _render_job_payload(row), "queue": queue},
             status_code=202,
         )
     except sqlite3.IntegrityError:
@@ -835,6 +940,23 @@ def studio_render_job(job_id: int) -> dict[str, Any]:
     if row is None:
         raise _fail(FileNotFoundError("Remotion render job не найден."), 404)
     return {"job": _render_job_payload(row)}
+
+
+@router.post("/render-jobs/{job_id}/retry")
+def studio_render_job_retry(job_id: int, request: Request) -> dict[str, Any]:
+    db.init_db()
+    row = db.get_remotion_render_job(job_id)
+    if row is None:
+        raise _fail(FileNotFoundError("Remotion render job не найден."), 404)
+    retried = db.retry_remotion_render_job(job_id)
+    queue = start_remotion_render_queue(_base_url(request)) if retried else None
+    updated = db.get_remotion_render_job(job_id)
+    assert updated is not None
+    return {
+        "retried": retried,
+        "job": _render_job_payload(updated),
+        "queue": queue,
+    }
 
 
 @router.get("/render-jobs/{job_id}/media")

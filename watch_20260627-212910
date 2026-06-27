@@ -1,0 +1,35 @@
+  File "<stdin>", line 10                                                         
+    print(f"job={r[id]} {r[status]} exists={Path(out).exists() if out else False} 
+error={r[error] or }")                                                            
+                                                                                  
+                ^^                                                                
+SyntaxError: f-string: expecting '=', or '!', or ':', or '}'                      
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  
+                                                                                  

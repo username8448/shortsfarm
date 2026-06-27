@@ -40,6 +40,24 @@ export type ResolvedRecipe = Recipe & {
       duration_sec?: number | null;
     };
   };
+  trim?: {
+    start_sec: number;
+    duration_sec: number;
+    end_sec: number;
+    source_duration_sec: number;
+    full_length: boolean;
+  };
+  render_profile?: {
+    key: string;
+    label: string;
+    width: number;
+    height: number;
+    fps: number;
+    crf: number;
+    preset: string;
+    max_duration_sec: number;
+    timeout_sec: number;
+  };
   duration_in_frames: number;
 };
 
