@@ -12,10 +12,12 @@ import signal
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from queue import Empty, Queue
+from typing import Any, Callable
 
 from . import db
 from .ffmpeg_tools import probe_duration, require_binary
@@ -201,6 +203,266 @@ def _run_process(
         )
 
 
+def _pipe_reader(pipe: Any, queue: Queue[str]) -> None:
+    try:
+        for line in iter(pipe.readline, ""):
+            queue.put(str(line))
+    finally:
+        try:
+            pipe.close()
+        except Exception:
+            pass
+
+
+def _drain_lines(queue: Queue[str], target: deque[str]) -> list[str]:
+    lines: list[str] = []
+    while True:
+        try:
+            line = queue.get_nowait()
+        except Empty:
+            break
+        target.append(str(line).rstrip("\n"))
+        lines.append(str(line))
+    return lines
+
+
+def _parse_key_value_line(line: str) -> tuple[str, str] | None:
+    text = str(line or "").strip()
+    if "=" not in text:
+        return None
+    key, value = text.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+    return key, value.strip()
+
+
+def _parse_ffmpeg_timecode(value: str) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        hours, minutes, seconds = text.split(":", 2)
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_speed_multiplier(value: str | None) -> float | None:
+    text = str(value or "").strip().lower()
+    if not text or text in {"n/a", "nan"}:
+        return None
+    if text.endswith("x"):
+        text = text[:-1]
+    try:
+        speed = float(text)
+    except ValueError:
+        return None
+    return speed if speed > 0 else None
+
+
+def _ffmpeg_progress_payload(
+    values: dict[str, str],
+    *,
+    duration_sec: float,
+    total_frames: int | None = None,
+) -> dict[str, Any]:
+    out_time_sec: float | None = None
+    for key in ("out_time_us", "out_time_ms"):
+        if key in values:
+            try:
+                out_time_sec = float(values[key]) / 1_000_000
+                break
+            except (TypeError, ValueError):
+                pass
+    if out_time_sec is None and "out_time" in values:
+        out_time_sec = _parse_ffmpeg_timecode(values["out_time"])
+    if out_time_sec is None:
+        out_time_sec = 0.0
+    duration = max(0.001, float(duration_sec or 0.001))
+    percent = min(99.0, max(0.0, (float(out_time_sec) / duration) * 100))
+    speed_text = values.get("speed")
+    speed = _parse_speed_multiplier(speed_text)
+    eta_sec = (
+        max(0.0, (duration - float(out_time_sec)) / speed)
+        if speed
+        else None
+    )
+    current_frame: int | None = None
+    if values.get("frame"):
+        try:
+            current_frame = int(float(values["frame"]))
+        except (TypeError, ValueError):
+            current_frame = None
+    return {
+        "progress_percent": percent,
+        "progress_stage": "rendering",
+        "progress_message": f"Rendering {percent:.0f}%",
+        "current_frame": current_frame,
+        "total_frames": total_frames,
+        "out_time_sec": float(out_time_sec),
+        "speed": speed_text,
+        "eta_sec": eta_sec,
+    }
+
+
+def _make_ffmpeg_progress_handler(
+    job_id: int,
+    *,
+    duration_sec: float,
+    total_frames: int | None,
+) -> Callable[[str, bool], None]:
+    values: dict[str, str] = {}
+    last_update = 0.0
+
+    def handle(line: str, force: bool = False) -> None:
+        nonlocal last_update
+        parsed = _parse_key_value_line(line)
+        if parsed is not None:
+            key, value = parsed
+            values[key] = value
+        now = time.monotonic()
+        should_update = (
+            force
+            or parsed is not None and parsed[0] in {"out_time_us", "out_time_ms", "out_time", "progress"}
+        )
+        if not should_update or (now - last_update < 0.5 and not force):
+            return
+        payload = _ffmpeg_progress_payload(
+            values,
+            duration_sec=duration_sec,
+            total_frames=total_frames,
+        )
+        db.update_remotion_render_job_progress(job_id, **payload)
+        last_update = now
+
+    return handle
+
+
+def _make_remotion_progress_handler(job_id: int) -> Callable[[str, bool], None]:
+    last_update = 0.0
+
+    def handle(line: str, force: bool = False) -> None:
+        nonlocal last_update
+        try:
+            payload = json.loads(str(line or "").strip())
+        except json.JSONDecodeError:
+            return
+        if payload.get("type") != "progress":
+            return
+        now = time.monotonic()
+        if now - last_update < 0.5 and not force:
+            return
+        progress = float(payload.get("progress") or 0)
+        percent = min(99.0, max(0.0, progress * 100))
+        frame = payload.get("renderedFrames")
+        if frame is None:
+            frame = payload.get("encodedFrames")
+        total = payload.get("totalFrames")
+        db.update_remotion_render_job_progress(
+            job_id,
+            progress_percent=percent,
+            progress_stage="rendering",
+            progress_message="Remotion rendering",
+            current_frame=int(frame) if frame is not None else None,
+            total_frames=int(total) if total is not None else None,
+        )
+        last_update = now
+
+    return handle
+
+
+def _run_process_streaming_progress(
+    job_id: int,
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    input_text: str | None = None,
+    timeout_sec: int,
+    progress_handler: Callable[[str, bool], None] | None = None,
+) -> ProcessResult:
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        command,
+        cwd=str(cwd) if cwd else None,
+        stdin=subprocess.PIPE if input_text is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        start_new_session=True,
+    )
+    db.update_remotion_render_job_process(job_id, worker_pid=proc.pid)
+    if proc.stdin is not None and input_text is not None:
+        try:
+            proc.stdin.write(input_text)
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+
+    stdout_queue: Queue[str] = Queue()
+    stderr_queue: Queue[str] = Queue()
+    stdout_tail: deque[str] = deque(maxlen=80)
+    stderr_tail: deque[str] = deque(maxlen=80)
+    stdout_thread = threading.Thread(
+        target=_pipe_reader,
+        args=(proc.stdout, stdout_queue),
+        name=f"studio-render-{job_id}-stdout",
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_pipe_reader,
+        args=(proc.stderr, stderr_queue),
+        name=f"studio-render-{job_id}-stderr",
+        daemon=True,
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
+    timed_out = False
+    try:
+        while True:
+            for line in _drain_lines(stdout_queue, stdout_tail):
+                if progress_handler is not None:
+                    progress_handler(line, False)
+            _drain_lines(stderr_queue, stderr_tail)
+
+            if proc.poll() is not None:
+                if (
+                    stdout_queue.empty()
+                    and stderr_queue.empty()
+                    and not stdout_thread.is_alive()
+                    and not stderr_thread.is_alive()
+                ):
+                    break
+            if time.monotonic() - started > timeout_sec:
+                timed_out = True
+                _terminate_process_group(proc.pid)
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    _terminate_process_group(proc.pid)
+                break
+            time.sleep(0.05)
+    finally:
+        stdout_thread.join(timeout=1)
+        stderr_thread.join(timeout=1)
+        for line in _drain_lines(stdout_queue, stdout_tail):
+            if progress_handler is not None:
+                progress_handler(line, False)
+        _drain_lines(stderr_queue, stderr_tail)
+        if progress_handler is not None:
+            progress_handler("", True)
+
+    return ProcessResult(
+        returncode=proc.returncode,
+        stdout_tail="\n".join(stdout_tail).strip(),
+        stderr_tail="\n".join(stderr_tail).strip(),
+        elapsed_sec=time.monotonic() - started,
+        timed_out=timed_out,
+    )
+
+
 def _validate_and_finalize(
     job_id: int,
     temp_path: Path,
@@ -373,6 +635,9 @@ def _run_ffmpeg_fast(
         ffmpeg,
         "-hide_banner",
         "-y",
+        "-nostats",
+        "-progress",
+        "pipe:1",
         "-ss",
         f"{start:.3f}",
         "-i",
@@ -410,10 +675,23 @@ def _run_ffmpeg_fast(
         "-shortest",
         str(temp_path),
     ]
-    return _run_process(
+    total_frames = max(1, int(round(duration * profile.fps)))
+    db.update_remotion_render_job_progress(
+        job_id,
+        progress_percent=0,
+        progress_stage="rendering",
+        progress_message="FFmpeg rendering",
+        total_frames=total_frames,
+    )
+    return _run_process_streaming_progress(
         job_id,
         command,
         timeout_sec=profile.timeout_sec,
+        progress_handler=_make_ffmpeg_progress_handler(
+            job_id,
+            duration_sec=duration,
+            total_frames=total_frames,
+        ),
     )
 
 
@@ -432,12 +710,20 @@ def _run_remotion(
         "browserExecutable": browser,
         "renderProfile": profile.payload(),
     }
-    return _run_process(
+    db.update_remotion_render_job_progress(
+        job_id,
+        progress_percent=0,
+        progress_stage="rendering",
+        progress_message="Remotion rendering",
+        total_frames=int(resolved_recipe.get("duration_in_frames") or 0) or None,
+    )
+    return _run_process_streaming_progress(
         job_id,
         [node, str(RENDER_SCRIPT)],
         cwd=FRONTEND_ROOT,
         input_text=json.dumps(payload, ensure_ascii=False),
         timeout_sec=profile.timeout_sec,
+        progress_handler=_make_remotion_progress_handler(job_id),
     )
 
 

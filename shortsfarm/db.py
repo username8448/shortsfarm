@@ -3861,6 +3861,51 @@ def update_remotion_render_job_process(
         return result.rowcount > 0
 
 
+def update_remotion_render_job_progress(
+    job_id: int,
+    *,
+    progress_percent: float | None = None,
+    progress_stage: str | None = None,
+    progress_message: str | None = None,
+    current_frame: int | None = None,
+    total_frames: int | None = None,
+    out_time_sec: float | None = None,
+    speed: str | None = None,
+    eta_sec: float | None = None,
+    stdout_tail: str | None = None,
+    stderr_tail: str | None = None,
+) -> bool:
+    assignments: list[str] = ["last_heartbeat_at=?"]
+    values: list[Any] = [now_utc()]
+    fields: dict[str, Any] = {
+        "progress_percent": progress_percent,
+        "progress_stage": progress_stage,
+        "progress_message": progress_message,
+        "current_frame": current_frame,
+        "total_frames": total_frames,
+        "out_time_sec": out_time_sec,
+        "speed": speed,
+        "eta_sec": eta_sec,
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+    }
+    for name, value in fields.items():
+        if value is None:
+            continue
+        assignments.append(f"{name}=?")
+        values.append(value)
+    with connect() as con:
+        result = con.execute(
+            f"""
+            UPDATE remotion_render_jobs
+            SET {", ".join(assignments)}
+            WHERE id=?
+            """,
+            (*values, int(job_id)),
+        )
+        return result.rowcount > 0
+
+
 def get_remotion_render_job(job_id: int) -> sqlite3.Row | None:
     with connect() as con:
         return con.execute(
@@ -3987,7 +4032,17 @@ def claim_remotion_render_job(job_id: int) -> sqlite3.Row | None:
                 stdout_tail=NULL,
                 stderr_tail=NULL,
                 returncode=NULL,
-                elapsed_sec=NULL
+                elapsed_sec=NULL,
+                progress_percent=0,
+                progress_stage='starting',
+                progress_message='Render starting',
+                current_frame=NULL,
+                total_frames=NULL,
+                out_time_sec=NULL,
+                speed=NULL,
+                eta_sec=NULL,
+                output_size_bytes=NULL,
+                completed_message=NULL
             WHERE id=? AND status='queued'
             """,
             (now_utc(), now_utc(), now_utc(), int(job_id)),
@@ -4071,7 +4126,17 @@ def claim_next_remotion_render_job() -> sqlite3.Row | None:
                 stdout_tail=NULL,
                 stderr_tail=NULL,
                 returncode=NULL,
-                elapsed_sec=NULL
+                elapsed_sec=NULL,
+                progress_percent=0,
+                progress_stage='starting',
+                progress_message='Render starting',
+                current_frame=NULL,
+                total_frames=NULL,
+                out_time_sec=NULL,
+                speed=NULL,
+                eta_sec=NULL,
+                output_size_bytes=NULL,
+                completed_message=NULL
             WHERE id=? AND status='queued'
             """,
             (now, now, now, job_id),
@@ -4130,6 +4195,13 @@ def mark_remotion_render_job_done(
     returncode: int | None = 0,
     elapsed_sec: float | None = None,
 ) -> bool:
+    output_size_bytes: int | None = None
+    try:
+        output = Path(output_path).expanduser()
+        if output.is_file() and not output.is_symlink():
+            output_size_bytes = int(output.stat().st_size)
+    except OSError:
+        output_size_bytes = None
     with connect() as con:
         result = con.execute(
             """
@@ -4142,7 +4214,12 @@ def mark_remotion_render_job_done(
                 stdout_tail=?,
                 stderr_tail=?,
                 returncode=?,
-                elapsed_sec=?
+                elapsed_sec=?,
+                progress_percent=100,
+                progress_stage='done',
+                progress_message='Render completed',
+                output_size_bytes=?,
+                completed_message='Готово'
             WHERE id=?
             """,
             (
@@ -4153,6 +4230,7 @@ def mark_remotion_render_job_done(
                 stderr_tail,
                 returncode,
                 elapsed_sec,
+                output_size_bytes,
                 int(job_id),
             ),
         )
@@ -4190,7 +4268,9 @@ def mark_remotion_render_job_failed(
                 stdout_tail=COALESCE(?, stdout_tail),
                 stderr_tail=COALESCE(?, stderr_tail),
                 returncode=COALESCE(?, returncode),
-                elapsed_sec=COALESCE(?, elapsed_sec)
+                elapsed_sec=COALESCE(?, elapsed_sec),
+                progress_stage='failed',
+                progress_message=?
             WHERE id=?
             """,
             (
@@ -4201,6 +4281,7 @@ def mark_remotion_render_job_failed(
                 stderr_tail,
                 returncode,
                 elapsed_sec,
+                error,
                 int(job_id),
             ),
         )
@@ -4223,7 +4304,10 @@ def cancel_remotion_render_job(job_id: int) -> bool:
         result = con.execute(
             """
             UPDATE remotion_render_jobs
-            SET status='cancelled', finished_at=?
+            SET status='cancelled',
+                finished_at=?,
+                progress_stage='cancelled',
+                progress_message='Render cancelled'
             WHERE id=? AND status='queued'
             """,
             (now_utc(), int(job_id)),
@@ -4257,7 +4341,17 @@ def retry_remotion_render_job(job_id: int) -> bool:
                 stdout_tail=NULL,
                 stderr_tail=NULL,
                 returncode=NULL,
-                elapsed_sec=NULL
+                elapsed_sec=NULL,
+                progress_percent=0,
+                progress_stage=NULL,
+                progress_message=NULL,
+                current_frame=NULL,
+                total_frames=NULL,
+                out_time_sec=NULL,
+                speed=NULL,
+                eta_sec=NULL,
+                output_size_bytes=NULL,
+                completed_message=NULL
             WHERE id=? AND status IN ('failed', 'cancelled')
             """,
             (int(job_id),),
@@ -4304,7 +4398,17 @@ def retry_failed_remotion_render_batch(batch_id: int) -> int:
                 stdout_tail=NULL,
                 stderr_tail=NULL,
                 returncode=NULL,
-                elapsed_sec=NULL
+                elapsed_sec=NULL,
+                progress_percent=0,
+                progress_stage=NULL,
+                progress_message=NULL,
+                current_frame=NULL,
+                total_frames=NULL,
+                out_time_sec=NULL,
+                speed=NULL,
+                eta_sec=NULL,
+                output_size_bytes=NULL,
+                completed_message=NULL
             WHERE id IN ({placeholders}) AND status IN ('failed', 'cancelled')
             """,
             job_ids,
@@ -4340,7 +4444,9 @@ def fail_interrupted_remotion_render_jobs() -> int:
             UPDATE remotion_render_jobs
             SET status='failed',
                 error='Remotion render был прерван перезапуском backend.',
-                finished_at=?
+                finished_at=?,
+                progress_stage='failed',
+                progress_message='Remotion render был прерван перезапуском backend.'
             WHERE status = 'rendering'
             """,
             (now_utc(),),
@@ -4465,6 +4571,24 @@ def list_remotion_render_batches(limit: int = 100) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def list_completed_remotion_render_jobs(limit: int = 5) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT rrj.*,
+                   sp.template_key AS template_key,
+                   sp.main_workspace_path AS main_workspace_path,
+                   sp.studio_template_id AS studio_template_id
+            FROM remotion_render_jobs rrj
+            JOIN studio_projects sp ON sp.id = rrj.studio_project_id
+            WHERE rrj.status='done'
+            ORDER BY rrj.finished_at DESC, rrj.id DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+
+
 def list_remotion_render_batch_items(batch_id: int) -> list[sqlite3.Row]:
     with connect() as con:
         return con.execute(
@@ -4483,7 +4607,17 @@ def list_remotion_render_batch_items(batch_id: int) -> list[sqlite3.Row]:
                    rrj.stdout_tail AS stdout_tail,
                    rrj.stderr_tail AS stderr_tail,
                    rrj.returncode AS returncode,
-                   rrj.elapsed_sec AS elapsed_sec
+                   rrj.elapsed_sec AS elapsed_sec,
+                   rrj.progress_percent AS progress_percent,
+                   rrj.progress_stage AS progress_stage,
+                   rrj.progress_message AS progress_message,
+                   rrj.current_frame AS current_frame,
+                   rrj.total_frames AS total_frames,
+                   rrj.out_time_sec AS out_time_sec,
+                   rrj.speed AS speed,
+                   rrj.eta_sec AS eta_sec,
+                   rrj.output_size_bytes AS output_size_bytes,
+                   rrj.completed_message AS completed_message
             FROM remotion_render_batch_items rbi
             LEFT JOIN remotion_render_jobs rrj ON rrj.id = rbi.render_job_id
             WHERE rbi.batch_id=?
@@ -4512,7 +4646,10 @@ def cancel_remotion_render_batch(batch_id: int) -> int:
         con.execute(
             f"""
             UPDATE remotion_render_jobs
-            SET status='cancelled', finished_at=?
+            SET status='cancelled',
+                finished_at=?,
+                progress_stage='cancelled',
+                progress_message='Render cancelled'
             WHERE id IN ({placeholders}) AND status='queued'
             """,
             [now, *job_ids],

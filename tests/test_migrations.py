@@ -343,6 +343,23 @@ def test_studio_render_profile_diagnostics_schema_exists(tmp_data_dir):
     } <= pipeline_columns
 
 
+def test_studio_render_progress_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    db.init_db()
+    with db.connect() as con:
+        job_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(remotion_render_jobs)")
+        }
+
+    assert {
+        "progress_percent", "progress_stage", "progress_message",
+        "current_frame", "total_frames", "out_time_sec", "speed",
+        "eta_sec", "output_size_bytes", "completed_message",
+    } <= job_columns
+
+
 def test_idempotent(tmp_data_dir):
     """Running migrations many times must not raise."""
     from shortsfarm.migrations import run_migrations

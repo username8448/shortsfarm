@@ -65,11 +65,27 @@ export type RenderJob = {
   start_offset_sec: number;
   full_length: boolean;
   worker_pid?: number | null;
+  progress_percent: number;
+  progress_stage?: string | null;
+  progress_message?: string | null;
+  current_frame?: number | null;
+  total_frames?: number | null;
+  out_time_sec?: number | null;
+  speed?: string | null;
+  eta_sec?: number | null;
+  output_size_bytes?: number | null;
+  completed_message?: string | null;
   stdout_tail?: string | null;
   stderr_tail?: string | null;
   returncode?: number | null;
   elapsed_sec?: number | null;
   media_url?: string | null;
+};
+
+export type CompletedRenderJob = RenderJob & {
+  template_key: string;
+  main_workspace_path: string;
+  studio_template_id: number | null;
 };
 
 export type RenderQueueStatus = {
@@ -122,11 +138,33 @@ export type RenderBatchItem = {
   duration_limit_sec?: number | null;
   start_offset_sec?: number;
   full_length?: boolean;
+  progress_percent?: number;
+  progress_stage?: string | null;
+  progress_message?: string | null;
+  current_frame?: number | null;
+  total_frames?: number | null;
+  out_time_sec?: number | null;
+  speed?: string | null;
+  eta_sec?: number | null;
+  output_size_bytes?: number | null;
+  completed_message?: string | null;
   stdout_tail?: string | null;
   stderr_tail?: string | null;
   returncode?: number | null;
   elapsed_sec?: number | null;
   media_url?: string | null;
+};
+
+export type RenderBatchProgress = {
+  percent: number;
+  queued: number;
+  rendering: number;
+  done: number;
+  failed: number;
+  cancelled?: number;
+  total: number;
+  current_job_id: number | null;
+  message: string;
 };
 
 export type RenderBatch = {
@@ -150,6 +188,7 @@ export type RenderBatch = {
   done_items: number;
   failed_items: number;
   error: string | null;
+  progress?: RenderBatchProgress;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -266,6 +305,7 @@ export const studioApi = {
     body: '{}',
   }),
   renderJob: (id: number) => request<{job: RenderJob}>(`/api/studio/render-jobs/${id}`),
+  completedRenderJobs: (limit = 5) => request<{items: CompletedRenderJob[]}>(`/api/studio/render-jobs/completed?limit=${limit}`),
   retryRenderJob: (id: number) => request<{job: RenderJob; retried: boolean; queue?: RenderQueueStart}>(`/api/studio/render-jobs/${id}/retry`, {
     method: 'POST',
     body: '{}',

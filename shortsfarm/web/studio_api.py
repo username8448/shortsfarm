@@ -131,6 +131,7 @@ def _row_dict(row: Any) -> dict[str, Any]:
 def _render_job_payload(row: Any) -> dict[str, Any]:
     payload = _row_dict(row)
     payload["full_length"] = bool(payload.get("full_length"))
+    payload["progress_percent"] = float(payload.get("progress_percent") or 0)
     payload["media_url"] = (
         f"/api/studio/render-jobs/{int(row['id'])}/media"
         if str(row["status"]) == "done"
@@ -139,23 +140,83 @@ def _render_job_payload(row: Any) -> dict[str, Any]:
     return payload
 
 
+def _job_completion_percent(item: dict[str, Any]) -> float:
+    status = str(item.get("render_status") or item.get("status") or "")
+    if status in {"done", "failed", "cancelled"}:
+        return 100.0
+    if status == "rendering":
+        return min(99.0, max(0.0, float(item.get("progress_percent") or 0)))
+    return 0.0
+
+
+def _batch_progress_summary(items: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(items)
+    queued = sum(1 for item in items if str(item.get("render_status") or item.get("status")) == "queued")
+    rendering_items = [
+        (index, item)
+        for index, item in enumerate(items, start=1)
+        if str(item.get("render_status") or item.get("status")) == "rendering"
+    ]
+    done = sum(1 for item in items if str(item.get("render_status") or item.get("status")) == "done")
+    failed = sum(1 for item in items if str(item.get("render_status") or item.get("status")) == "failed")
+    cancelled = sum(1 for item in items if str(item.get("render_status") or item.get("status")) == "cancelled")
+    percent = (
+        sum(_job_completion_percent(item) for item in items) / total
+        if total
+        else 0.0
+    )
+    current_job_id = None
+    message = "Нет render jobs"
+    if rendering_items:
+        index, current = rendering_items[0]
+        current_job_id = int(current["render_job_id"])
+        message = f"Рендерится {index} из {total}"
+    elif queued:
+        message = f"В очереди: {queued} из {total}"
+    elif failed or cancelled:
+        message = f"Batch завершён с ошибками: готово {done}, ошибок {failed}"
+    elif done:
+        message = f"Batch готов: {done} видео создано"
+    return {
+        "percent": round(percent, 1),
+        "queued": queued,
+        "rendering": len(rendering_items),
+        "done": done,
+        "failed": failed,
+        "cancelled": cancelled,
+        "total": total,
+        "current_job_id": current_job_id,
+        "message": message,
+    }
+
+
 def _batch_payload(row: Any, *, include_items: bool = False) -> dict[str, Any]:
     payload = _row_dict(row)
     payload["parameter_values"] = json.loads(str(row["parameter_values_json"] or "{}"))
     payload["full_length"] = bool(payload.get("full_length"))
     payload.pop("parameter_values_json", None)
+    items: list[dict[str, Any]] = []
+    for item in db.list_remotion_render_batch_items(int(row["id"])):
+        item_payload = _row_dict(item)
+        item_payload["full_length"] = bool(item_payload.get("full_length"))
+        item_payload["progress_percent"] = float(item_payload.get("progress_percent") or 0)
+        item_payload["media_url"] = (
+            f"/api/studio/render-jobs/{int(item['render_job_id'])}/media"
+            if str(item["render_status"]) == "done"
+            else None
+        )
+        items.append(item_payload)
+    payload["progress"] = _batch_progress_summary(items)
     if include_items:
-        items: list[dict[str, Any]] = []
-        for item in db.list_remotion_render_batch_items(int(row["id"])):
-            item_payload = _row_dict(item)
-            item_payload["full_length"] = bool(item_payload.get("full_length"))
-            item_payload["media_url"] = (
-                f"/api/studio/render-jobs/{int(item['render_job_id'])}/media"
-                if str(item["render_status"]) == "done"
-                else None
-            )
-            items.append(item_payload)
         payload["items"] = items
+    return payload
+
+
+def _completed_render_payload(row: Any) -> dict[str, Any]:
+    payload = _render_job_payload(row)
+    payload["template_key"] = row["template_key"]
+    payload["main_workspace_path"] = row["main_workspace_path"]
+    payload["studio_template_id"] = row["studio_template_id"]
     return payload
 
 
@@ -703,6 +764,18 @@ def studio_render_queue_status() -> dict[str, Any]:
 def studio_render_queue_recover() -> dict[str, Any]:
     db.init_db()
     return recover_remotion_render_queue()
+
+
+@router.get("/render-jobs/completed")
+def studio_completed_render_jobs(limit: int = 5) -> dict[str, Any]:
+    db.init_db()
+    safe_limit = max(1, min(25, int(limit)))
+    return {
+        "items": [
+            _completed_render_payload(row)
+            for row in db.list_completed_remotion_render_jobs(limit=safe_limit)
+        ]
+    }
 
 
 @router.get("/pipelines")

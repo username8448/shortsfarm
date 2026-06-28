@@ -37,6 +37,15 @@ await renderMedia({
   chromiumOptions: {enableMultiProcessOnLinux: true},
   concurrency: 1,
   overwrite: true,
+  onProgress: ({progress, renderedFrames, encodedFrames}) => {
+    console.log(JSON.stringify({
+      type: 'progress',
+      progress,
+      renderedFrames,
+      encodedFrames,
+      totalFrames: composition.durationInFrames,
+    }));
+  },
 });
 
 process.stdout.write(JSON.stringify({status: 'done', outputPath: payload.outputPath}));

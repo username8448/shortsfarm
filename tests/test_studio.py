@@ -468,6 +468,123 @@ def test_render_queue_status_and_recover_stale_job(tmp_path, monkeypatch):
     assert "Render queue recovery" in job["error"]
 
 
+def test_render_job_progress_update_done_and_retry_reset(tmp_path, monkeypatch):
+    from shortsfarm import db
+
+    project_id, _main, _asset = _project(tmp_path, monkeypatch)
+    job_id = db.create_remotion_render_job(project_id)
+    assert db.update_remotion_render_job_progress(
+        job_id,
+        progress_percent=25.0,
+        progress_stage="rendering",
+        progress_message="Rendering 25%",
+        current_frame=250,
+        total_frames=1000,
+        out_time_sec=10.0,
+        speed="1.0x",
+        eta_sec=30.0,
+    )
+    job = db.get_remotion_render_job(job_id)
+    assert job["progress_percent"] == 25.0
+    assert job["progress_stage"] == "rendering"
+    assert job["current_frame"] == 250
+    assert job["eta_sec"] == 30.0
+
+    final = _main.parent / "done.mp4"
+    final.write_bytes(b"final")
+    assert db.mark_remotion_render_job_done(job_id, str(final))
+    job = db.get_remotion_render_job(job_id)
+    assert job["progress_percent"] == 100
+    assert job["progress_stage"] == "done"
+    assert job["progress_message"] == "Render completed"
+    assert job["completed_message"] == "Готово"
+    assert job["output_size_bytes"] == 5
+
+    failed_job = db.create_remotion_render_job(project_id)
+    db.update_remotion_render_job_progress(
+        failed_job,
+        progress_percent=70.0,
+        progress_stage="rendering",
+    )
+    db.mark_remotion_render_job_failed(failed_job, "boom")
+    assert db.retry_remotion_render_job(failed_job)
+    retried = db.get_remotion_render_job(failed_job)
+    assert retried["progress_percent"] == 0
+    assert retried["progress_stage"] is None
+    assert retried["completed_message"] is None
+    assert retried["output_size_bytes"] is None
+
+
+def test_batch_payload_contains_computed_progress_summary(tmp_path, monkeypatch):
+    from shortsfarm import db
+    from shortsfarm.web import studio_api as api
+
+    project_id, _main, asset_id = _project(tmp_path, monkeypatch)
+    second_main = _main.parent / "progress-second.mp4"
+    second_main.write_bytes(b"second")
+    second_project = db.create_studio_project(
+        main_workspace_path="cuts/show/progress-second.mp4",
+        template_key="reaction_top_25",
+        reaction_asset_id=asset_id,
+        recipe_json=_recipe("cuts/show/progress-second.mp4", asset_id),
+    )
+    first_job = db.create_remotion_render_job(project_id)
+    second_job = db.create_remotion_render_job(second_project)
+    batch_id = db.create_remotion_render_batch(
+        studio_template_id=None,
+        template_key="reaction_top_25",
+        name="Progress batch",
+        source_mode="selected",
+    )
+    db.create_remotion_render_batch_item(
+        batch_id=batch_id,
+        studio_project_id=project_id,
+        render_job_id=first_job,
+        main_workspace_path="cuts/show/segment.mp4",
+    )
+    db.create_remotion_render_batch_item(
+        batch_id=batch_id,
+        studio_project_id=second_project,
+        render_job_id=second_job,
+        main_workspace_path="cuts/show/progress-second.mp4",
+    )
+    final = _main.parent / "first-done.mp4"
+    final.write_bytes(b"done")
+    db.mark_remotion_render_job_done(first_job, str(final))
+    assert db.claim_remotion_render_job(second_job) is not None
+    db.update_remotion_render_job_progress(
+        second_job,
+        progress_percent=40,
+        progress_stage="rendering",
+        progress_message="Rendering 40%",
+    )
+
+    batch = api.studio_render_batch(batch_id)["batch"]
+
+    assert batch["progress"]["total"] == 2
+    assert batch["progress"]["done"] == 1
+    assert batch["progress"]["rendering"] == 1
+    assert batch["progress"]["current_job_id"] == second_job
+    assert batch["progress"]["percent"] == 70.0
+    assert batch["items"][1]["progress_percent"] == 40.0
+
+
+def test_ffmpeg_progress_parser_converts_out_time_to_percent():
+    import shortsfarm.remotion_renderer as renderer
+
+    payload = renderer._ffmpeg_progress_payload(
+        {"out_time_ms": "10000000", "speed": "1.0x", "frame": "123"},
+        duration_sec=40,
+        total_frames=960,
+    )
+
+    assert payload["progress_percent"] == pytest.approx(25.0)
+    assert payload["out_time_sec"] == 10.0
+    assert payload["current_frame"] == 123
+    assert payload["total_frames"] == 960
+    assert payload["eta_sec"] == pytest.approx(30.0)
+
+
 def test_apply_template_selected_creates_batch_projects_and_jobs(tmp_path, monkeypatch):
     from shortsfarm import db
     from shortsfarm.web import studio_api as api
@@ -759,6 +876,11 @@ def test_studio_frontend_uses_preview_registry_and_embedded_batch_open():
     assert "ReactionTop25: ReactionLayoutTemplate" in registry
     assert "/studio?batch=" not in apply_panel
     assert "onOpenBatch(batch.id)" in apply_panel
+    assert "render-progress" in apply_panel
+    assert "Batch готов" in apply_panel
+    assert "Latest completed renders" in apply_panel
+    assert "Открыть готовое видео" in apply_panel
+    assert "progress?.current_job_id" in apply_panel
     assert "activateInitialViewFromQuery" in legacy_js
     assert "params.has('batch')" in legacy_js
     assert "nav('studio'" in legacy_js

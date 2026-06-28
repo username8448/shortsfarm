@@ -1,6 +1,7 @@
 import {useMemo, useState} from 'react';
 import type {
   ApplySourceFolder,
+  CompletedRenderJob,
   MediaItem,
   MediaSection,
   ReactionItem,
@@ -8,6 +9,7 @@ import type {
   RemotionPipeline,
   RenderJob,
   RenderBatch,
+  RenderBatchItem,
 } from '../api';
 import {studioApi} from '../api';
 import {
@@ -32,6 +34,43 @@ type ReactionStrategy = 'fixed_asset' | 'pool_first' | 'pool_weighted';
 type RendererEngine = RenderJob['renderer_engine'];
 
 const itemSection = (path: string) => path.split('/')[0] || '';
+
+const renderStatus = (item: RenderBatchItem | RenderBatch): string =>
+  String(('render_status' in item && item.render_status) || item.status || 'queued');
+
+const progressPercent = (status: string, value?: number | null): number => {
+  if (['done', 'failed', 'cancelled'].includes(status)) return 100;
+  if (status === 'rendering') return Math.max(0, Math.min(99, Number(value || 0)));
+  return 0;
+};
+
+const formatDuration = (seconds?: number | null): string => {
+  if (seconds === null || seconds === undefined || !Number.isFinite(Number(seconds))) return '—';
+  const total = Math.max(0, Math.round(Number(seconds)));
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+};
+
+const formatBytes = (bytes?: number | null): string => {
+  if (!bytes) return '—';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = Number(bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+};
+
+const batchCompletionMessage = (batch: RenderBatch): string | null => {
+  if (batch.status === 'done') return `Batch готов: ${batch.done_items} видео создано`;
+  if (batch.status === 'failed') {
+    return `Batch завершён с ошибками: готово ${batch.done_items}, ошибок ${batch.failed_items}`;
+  }
+  return null;
+};
 
 const ParameterControl = ({
   name,
@@ -103,6 +142,7 @@ export const ApplyTemplatePanel = ({
   recipe,
   onRecipeChange,
   batches,
+  completedRenders,
   pipelines,
   onBatchCreated,
   onOpenBatch,
@@ -117,6 +157,7 @@ export const ApplyTemplatePanel = ({
   recipe: Recipe;
   onRecipeChange: (recipe: Recipe) => void;
   batches: RenderBatch[];
+  completedRenders: CompletedRenderJob[];
   pipelines: RemotionPipeline[];
   onBatchCreated: (batch: RenderBatch) => void;
   onOpenBatch: (batchId: number) => Promise<void>;
@@ -458,18 +499,66 @@ export const ApplyTemplatePanel = ({
                 </small>
               </div>
               <progress value={batch.done_items + batch.failed_items} max={Math.max(1, batch.total_items)} />
+              <progress
+                className="render-progress"
+                value={batch.progress?.percent ?? 0}
+                max={100}
+              />
+              <div className="render-progress-meta">
+                <span>Рендер: {batch.progress?.done ?? batch.done_items} / {batch.progress?.total ?? batch.total_items} готово</span>
+                {batch.progress?.current_job_id ? (
+                  <span>
+                    Сейчас: render_job_{batch.progress.current_job_id} — {Math.round(batch.progress.percent)}%
+                  </span>
+                ) : null}
+                {batch.progress?.message ? <span>{batch.progress.message}</span> : null}
+              </div>
+              {batchCompletionMessage(batch) ? (
+                <div className={`ts-alert ${batch.failed_items ? 'error' : 'success'}`}>
+                  {batchCompletionMessage(batch)}
+                </div>
+              ) : null}
               {batch.items?.length ? (
                 <div className="apply-media-list compact">
                   {batch.items.slice(0, 8).map((item) => (
-                    <div className="apply-media-row" key={item.id}>
-                      <span>#{item.render_job_id} · {statusLabel(item.render_status || item.status)}</span>
-                      <small>
-                        {workspacePathLabel(item.main_workspace_path)}
-                        {item.elapsed_sec ? ` · ${Number(item.elapsed_sec).toFixed(1)}s` : ''}
-                        {item.output_path ? ` · ${item.output_path}` : ''}
-                        {item.render_error ? ` · ${item.render_error}` : ''}
-                        {item.stderr_tail ? ` · stderr: ${item.stderr_tail}` : ''}
-                      </small>
+                    <div className="render-job-row" key={item.id}>
+                      <div className="render-job-head">
+                        <span>render_job_{item.render_job_id}</span>
+                        <span className={`ts-badge job-${renderStatus(item)}`}>
+                          {statusLabel(renderStatus(item))}
+                        </span>
+                      </div>
+                      <small>{workspacePathLabel(item.main_workspace_path)}</small>
+                      <progress
+                        className="render-progress"
+                        value={progressPercent(renderStatus(item), item.progress_percent)}
+                        max={100}
+                      />
+                      <div className="render-progress-meta">
+                        <span>{Math.round(progressPercent(renderStatus(item), item.progress_percent))}%</span>
+                        {item.elapsed_sec ? <span>Прошло: {formatDuration(item.elapsed_sec)}</span> : null}
+                        {item.eta_sec ? <span>Осталось примерно: {formatDuration(item.eta_sec)}</span> : null}
+                        {item.speed ? <span>Скорость: {item.speed}</span> : null}
+                      </div>
+                      {item.render_error ? <div className="render-error">{item.render_error}</div> : null}
+                      {item.stderr_tail ? <div className="render-error">stderr: {item.stderr_tail}</div> : null}
+                      {renderStatus(item) === 'done' ? (
+                        <div className="render-result">
+                          <strong>{item.completed_message || 'Готово'}</strong>
+                          {item.media_url ? (
+                            <a href={item.media_url} target="_blank" rel="noreferrer">
+                              Открыть готовое видео
+                            </a>
+                          ) : null}
+                          {item.output_path ? (
+                            <label>
+                              <span>Путь:</span>
+                              <input readOnly value={item.output_path} onFocus={(event) => event.currentTarget.select()} />
+                            </label>
+                          ) : null}
+                          <small>Размер файла: {formatBytes(item.output_size_bytes)}</small>
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -483,6 +572,38 @@ export const ApplyTemplatePanel = ({
             </article>
           ))}
           {!batches.length ? <div className="empty-note">Batch пока нет.</div> : null}
+        </div>
+      </section>
+
+      <section className="ts-card apply-panel apply-wide">
+        <div className="ts-card-head">
+          <div><h2>Latest completed renders</h2><p>Последние готовые MP4 из Studio.</p></div>
+        </div>
+        <div className="batch-list">
+          {completedRenders.map((item) => (
+            <article className="batch-card" key={item.id}>
+              <div>
+                <strong>render_job_{item.id}</strong>
+                <small>
+                  {item.template_key} · {item.render_profile}
+                  {' · '}
+                  {item.full_length ? 'полная длина' : `${item.duration_limit_sec || 'profile'} сек`}
+                </small>
+              </div>
+              <small>{workspacePathLabel(item.main_workspace_path)}</small>
+              {item.media_url ? (
+                <a href={item.media_url} target="_blank" rel="noreferrer">Открыть готовое видео</a>
+              ) : null}
+              {item.output_path ? (
+                <label className="copy-path">
+                  <span>Путь:</span>
+                  <input readOnly value={item.output_path} onFocus={(event) => event.currentTarget.select()} />
+                </label>
+              ) : null}
+              <small>Размер файла: {formatBytes(item.output_size_bytes)}</small>
+            </article>
+          ))}
+          {!completedRenders.length ? <div className="empty-note">Готовых Studio renders пока нет.</div> : null}
         </div>
       </section>
 

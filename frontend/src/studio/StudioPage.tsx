@@ -4,6 +4,7 @@ import {
   type MediaItem,
   type MediaSection,
   type ApplySourceFolder,
+  type CompletedRenderJob,
   type ReactionItem,
   type ReactionPool,
   type RenderJob,
@@ -55,6 +56,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   const [reactions, setReactions] = useState<ReactionItem[]>([]);
   const [pools, setPools] = useState<ReactionPool[]>([]);
   const [batches, setBatches] = useState<RenderBatch[]>([]);
+  const [completedRenders, setCompletedRenders] = useState<CompletedRenderJob[]>([]);
   const [pipelines, setPipelines] = useState<RemotionPipeline[]>([]);
   const [activeBatch, setActiveBatch] = useState<RenderBatch | null>(null);
   const [recipe, setRecipe] = useState<Recipe>(createDefaultRecipe);
@@ -93,9 +95,11 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
     const data = await studioApi.renderBatches();
     setBatches(data.items);
     if (activeBatch) {
-      const latest = data.items.find((item) => item.id === activeBatch.id);
-      if (latest) setActiveBatch(latest);
+      const latest = await studioApi.renderBatch(activeBatch.id);
+      setActiveBatch(latest.batch);
     }
+    const completed = await studioApi.completedRenderJobs(5);
+    setCompletedRenders(completed.items);
   };
 
   const refreshPipelines = async () => {
@@ -106,7 +110,16 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   useEffect(() => {
     const load = async () => {
       try {
-        const [media, applySources, reactionData, poolData, templateData, batchData, pipelineData] = await Promise.all([
+        const [
+          media,
+          applySources,
+          reactionData,
+          poolData,
+          templateData,
+          batchData,
+          pipelineData,
+          completedData,
+        ] = await Promise.all([
           studioApi.mediaItems(),
           studioApi.applySources(),
           studioApi.reactions(),
@@ -114,6 +127,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           studioApi.templates(),
           studioApi.renderBatches(),
           studioApi.pipelines(),
+          studioApi.completedRenderJobs(5),
         ]);
         setSections(media.sections);
         setFolders(applySources.folders);
@@ -122,6 +136,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
         setTemplates(templateData.items);
         setBatches(batchData.items);
         setPipelines(pipelineData.items);
+        setCompletedRenders(completedData.items);
 
         const projectIdFromUrl = Number(
           new URLSearchParams(window.location.search).get('project'),
@@ -541,6 +556,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           recipe={recipe}
           onRecipeChange={setRecipe}
           batches={activeBatch ? [activeBatch, ...batches.filter((item) => item.id !== activeBatch.id)] : batches}
+          completedRenders={completedRenders}
           pipelines={pipelines}
           onBatchCreated={handleBatchCreated}
           onOpenBatch={handleOpenBatch}
