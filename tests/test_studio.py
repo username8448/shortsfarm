@@ -884,3 +884,50 @@ def test_studio_frontend_uses_preview_registry_and_embedded_batch_open():
     assert "activateInitialViewFromQuery" in legacy_js
     assert "params.has('batch')" in legacy_js
     assert "nav('studio'" in legacy_js
+
+
+def test_universal_video_workbench_frontend_source_exists():
+    root = Path(__file__).resolve().parents[1]
+    package = json.loads((root / "frontend" / "package.json").read_text())
+    workbench = (
+        root
+        / "frontend"
+        / "src"
+        / "workbench"
+        / "UniversalVideoWorkbench.tsx"
+    ).read_text(encoding="utf-8")
+    apply_panel = (
+        root
+        / "frontend"
+        / "src"
+        / "studio"
+        / "ApplyTemplatePanel.tsx"
+    ).read_text(encoding="utf-8")
+    page = (
+        root
+        / "frontend"
+        / "src"
+        / "workbench"
+        / "VideoWorkbenchPage.tsx"
+    ).read_text(encoding="utf-8")
+    studio_page = (
+        root
+        / "frontend"
+        / "src"
+        / "studio"
+        / "StudioPage.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "media-chrome" in package["dependencies"]
+    assert "UniversalVideoWorkbenchProps" in workbench
+    assert "<media-controller>" in workbench
+    assert "Set In" in workbench
+    assert "Set Out" in workbench
+    assert "Play selection" in workbench
+    assert "Save segment" in workbench
+    assert "isTextInputTarget" in workbench
+    assert "textarea" in workbench
+    assert "Video Workbench" in page
+    assert "mode=\"viewer\"" in apply_panel
+    assert "output_workspace_path" in apply_panel
+    assert "workbench" in studio_page

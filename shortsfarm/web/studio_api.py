@@ -128,10 +128,26 @@ def _row_dict(row: Any) -> dict[str, Any]:
     return {key: row[key] for key in row.keys()}
 
 
+def _workspace_relative_output_path(output_path: str | None) -> str | None:
+    raw = str(output_path or "").strip()
+    if not raw:
+        return None
+    root = get_workspace_root()
+    if root is None:
+        return None
+    try:
+        return Path(raw).expanduser().resolve().relative_to(root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
 def _render_job_payload(row: Any) -> dict[str, Any]:
     payload = _row_dict(row)
     payload["full_length"] = bool(payload.get("full_length"))
     payload["progress_percent"] = float(payload.get("progress_percent") or 0)
+    payload["output_workspace_path"] = _workspace_relative_output_path(
+        payload.get("output_path")
+    )
     payload["media_url"] = (
         f"/api/studio/render-jobs/{int(row['id'])}/media"
         if str(row["status"]) == "done"
@@ -200,6 +216,9 @@ def _batch_payload(row: Any, *, include_items: bool = False) -> dict[str, Any]:
         item_payload = _row_dict(item)
         item_payload["full_length"] = bool(item_payload.get("full_length"))
         item_payload["progress_percent"] = float(item_payload.get("progress_percent") or 0)
+        item_payload["output_workspace_path"] = _workspace_relative_output_path(
+            item_payload.get("output_path")
+        )
         item_payload["media_url"] = (
             f"/api/studio/render-jobs/{int(item['render_job_id'])}/media"
             if str(item["render_status"]) == "done"

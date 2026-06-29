@@ -28,6 +28,7 @@ import {
   type ParameterDefinition,
 } from './template';
 import type {Recipe} from './recipe';
+import {UniversalVideoWorkbench} from '../workbench/UniversalVideoWorkbench';
 
 type SourceMode = 'selected' | 'folder' | 'folder_recursive';
 type ReactionStrategy = 'fixed_asset' | 'pool_first' | 'pool_weighted';
@@ -557,6 +558,13 @@ export const ApplyTemplatePanel = ({
                             </label>
                           ) : null}
                           <small>Размер файла: {formatBytes(item.output_size_bytes)}</small>
+                          {item.output_workspace_path ? (
+                            <UniversalVideoWorkbench
+                              workspacePath={item.output_workspace_path}
+                              title={`render_job_${item.render_job_id}`}
+                              mode="viewer"
+                            />
+                          ) : null}
                         </div>
                       ) : null}
                     </div>

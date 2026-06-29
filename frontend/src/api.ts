@@ -58,6 +58,7 @@ export type RenderJob = {
   studio_project_id: number;
   status: 'queued' | 'rendering' | 'done' | 'failed' | 'cancelled';
   output_path: string | null;
+  output_workspace_path?: string | null;
   error: string | null;
   renderer_engine: 'ffmpeg_fast' | 'remotion';
   render_profile: string;
@@ -117,6 +118,44 @@ export type RenderProfile = {
   timeout_sec: number;
 };
 
+export type MediaMetadata = {
+  path: string;
+  filename: string;
+  size_bytes: number;
+  duration_sec: number | null;
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  video_codec: string | null;
+  audio_codec: string | null;
+  has_audio: boolean;
+  container: string | null;
+};
+
+export type WorkspaceVideoItem = {
+  path: string;
+  filename: string;
+  size_bytes: number;
+};
+
+export type WorkspaceVideoSection = {
+  key: string;
+  items: WorkspaceVideoItem[];
+};
+
+export type VideoSegment = {
+  id: number;
+  source_path: string;
+  label: string | null;
+  start_sec: number;
+  end_sec: number;
+  duration_sec: number;
+  status: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ApplySourceFolder = {
   path: string;
   name: string;
@@ -131,6 +170,7 @@ export type RenderBatchItem = {
   status: RenderJob['status'];
   error: string | null;
   output_path?: string | null;
+  output_workspace_path?: string | null;
   render_status?: RenderJob['status'];
   render_error?: string | null;
   renderer_engine?: RenderJob['renderer_engine'];
@@ -344,5 +384,32 @@ export const studioApi = {
   runPipeline: (id: number) => request<{batch: RenderBatch; jobs: RenderJob[]; queue?: RenderQueueStart | null}>(`/api/studio/pipelines/${id}/run`, {
     method: 'POST',
     body: '{}',
+  }),
+};
+
+export const mediaApi = {
+  videoUrl: (path: string) => `/api/media/video?path=${encodeURIComponent(path)}`,
+  metadata: (path: string) => request<MediaMetadata>(`/api/media/metadata?path=${encodeURIComponent(path)}`),
+  videos: () => request<{sections: WorkspaceVideoSection[]}>('/api/media/videos'),
+  segments: (path: string) => request<{items: VideoSegment[]}>(`/api/media/segments?path=${encodeURIComponent(path)}`),
+  createSegment: (body: {
+    source_path: string;
+    label?: string | null;
+    start_sec: number;
+    end_sec: number;
+    notes?: string | null;
+  }) => request<{item: VideoSegment}>('/api/media/segments', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+  updateSegment: (
+    id: number,
+    body: Partial<Pick<VideoSegment, 'label' | 'start_sec' | 'end_sec' | 'status' | 'notes'>>,
+  ) => request<{item: VideoSegment}>(`/api/media/segments/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  }),
+  deleteSegment: (id: number) => request<{deleted: boolean}>(`/api/media/segments/${id}`, {
+    method: 'DELETE',
   }),
 };

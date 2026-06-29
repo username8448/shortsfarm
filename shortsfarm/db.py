@@ -3763,6 +3763,115 @@ def update_studio_project(
         return result.rowcount > 0
 
 
+# ---------------------------------------------------------------------------
+# Universal Video Workbench manual segments
+# ---------------------------------------------------------------------------
+
+def create_video_segment(
+    *,
+    source_path: str,
+    start_sec: float,
+    end_sec: float,
+    duration_sec: float,
+    label: str | None = None,
+    notes: str | None = None,
+    status: str = "draft",
+) -> int:
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO video_segments
+                (source_path, label, start_sec, end_sec, duration_sec,
+                 status, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                source_path,
+                label,
+                float(start_sec),
+                float(end_sec),
+                float(duration_sec),
+                status,
+                notes,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def get_video_segment(segment_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM video_segments WHERE id=?",
+            (int(segment_id),),
+        ).fetchone()
+
+
+def list_video_segments_for_source(source_path: str) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM video_segments
+            WHERE source_path=?
+            ORDER BY start_sec ASC, id ASC
+            """,
+            (source_path,),
+        ).fetchall()
+
+
+def update_video_segment(
+    segment_id: int,
+    *,
+    label: str | None = None,
+    start_sec: float | None = None,
+    end_sec: float | None = None,
+    duration_sec: float | None = None,
+    status: str | None = None,
+    notes: str | None = None,
+) -> bool:
+    fields: dict[str, Any] = {
+        "label": label,
+        "start_sec": start_sec,
+        "end_sec": end_sec,
+        "duration_sec": duration_sec,
+        "status": status,
+        "notes": notes,
+    }
+    assignments: list[str] = []
+    values: list[Any] = []
+    for name, value in fields.items():
+        if value is None:
+            continue
+        assignments.append(f"{name}=?")
+        values.append(value)
+    if not assignments:
+        return False
+    assignments.append("updated_at=?")
+    values.append(now_utc())
+    with connect() as con:
+        result = con.execute(
+            f"""
+            UPDATE video_segments
+            SET {", ".join(assignments)}
+            WHERE id=?
+            """,
+            (*values, int(segment_id)),
+        )
+        return result.rowcount > 0
+
+
+def delete_video_segment(segment_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            "DELETE FROM video_segments WHERE id=?",
+            (int(segment_id),),
+        )
+        return result.rowcount > 0
+
+
 def create_remotion_render_job(
     studio_project_id: int,
     output_path: str | None = None,

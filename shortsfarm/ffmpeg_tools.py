@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 
 def require_binary(name: str) -> str:
@@ -50,6 +52,94 @@ def probe_duration(input_path: Path) -> float | None:
         return float(value)
     except ValueError:
         return None
+
+
+def probe_media_metadata(input_path: Path) -> dict[str, Any]:
+    ffprobe = require_binary("ffprobe")
+    cmd = [
+        ffprobe,
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(input_path),
+    ]
+    result = subprocess.run(
+        cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        return {
+            "duration_sec": probe_duration(input_path),
+            "width": None,
+            "height": None,
+            "fps": None,
+            "video_codec": None,
+            "audio_codec": None,
+            "has_audio": False,
+            "container": input_path.suffix.lower().lstrip("."),
+        }
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except Exception:
+        payload = {}
+    streams = payload.get("streams") if isinstance(payload, dict) else []
+    streams = streams if isinstance(streams, list) else []
+    video = next(
+        (item for item in streams if item.get("codec_type") == "video"),
+        {},
+    )
+    audio = next(
+        (item for item in streams if item.get("codec_type") == "audio"),
+        {},
+    )
+    fmt = payload.get("format") if isinstance(payload, dict) else {}
+    fmt = fmt if isinstance(fmt, dict) else {}
+    duration = fmt.get("duration") or video.get("duration")
+    try:
+        duration_sec = float(duration) if duration not in {None, "N/A", ""} else None
+    except (TypeError, ValueError):
+        duration_sec = None
+
+    fps: float | None = None
+    rate = str(video.get("avg_frame_rate") or video.get("r_frame_rate") or "")
+    if "/" in rate:
+        numerator, denominator = rate.split("/", 1)
+        try:
+            denominator_float = float(denominator)
+            if denominator_float:
+                fps = float(numerator) / denominator_float
+        except (TypeError, ValueError):
+            fps = None
+    else:
+        try:
+            fps = float(rate) if rate else None
+        except ValueError:
+            fps = None
+
+    def _int_or_none(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "duration_sec": duration_sec,
+        "width": _int_or_none(video.get("width")),
+        "height": _int_or_none(video.get("height")),
+        "fps": round(fps, 3) if fps else None,
+        "video_codec": video.get("codec_name"),
+        "audio_codec": audio.get("codec_name"),
+        "has_audio": bool(audio),
+        "container": (
+            str(fmt.get("format_name") or input_path.suffix.lower().lstrip("."))
+            .split(",", 1)[0]
+        ),
+    }
 
 
 def split_video(

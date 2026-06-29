@@ -20,6 +20,7 @@ import {RulesPanel} from './RulesPanel';
 import {SlotsPanel} from './SlotsPanel';
 import {TemplatesPage} from './TemplatesPage';
 import {TestMediaPanel} from './TestMediaPanel';
+import {VideoWorkbenchPage} from '../workbench/VideoWorkbenchPage';
 import {
   createDefaultRecipe,
   resolveDraftRecipe,
@@ -33,7 +34,7 @@ import {
   type TemplateStatus,
 } from './template';
 
-type StudioMode = 'templates' | 'builder' | 'test' | 'apply';
+type StudioMode = 'templates' | 'builder' | 'test' | 'apply' | 'workbench';
 
 const cloneDefinition = (value: TemplateDefinition): TemplateDefinition =>
   JSON.parse(JSON.stringify(value)) as TemplateDefinition;
@@ -138,12 +139,10 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
         setPipelines(pipelineData.items);
         setCompletedRenders(completedData.items);
 
-        const projectIdFromUrl = Number(
-          new URLSearchParams(window.location.search).get('project'),
-        );
-        const batchIdFromUrl = Number(
-          new URLSearchParams(window.location.search).get('batch'),
-        );
+        const params = new URLSearchParams(window.location.search);
+        const projectIdFromUrl = Number(params.get('project'));
+        const batchIdFromUrl = Number(params.get('batch'));
+        const mediaPathFromUrl = params.get('media');
         if (projectIdFromUrl > 0) {
           const project = await studioApi.project(projectIdFromUrl);
           const template = templateData.items.find(
@@ -169,6 +168,14 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
             setRecipe(recipeFromTemplate(template));
           }
           setMode('apply');
+        } else if (mediaPathFromUrl) {
+          setMode('workbench');
+          if (templateData.items[0]) {
+            const template = templateData.items[0];
+            setSelectedTemplate(template);
+            setDefinition(cloneDefinition(template.definition));
+            setRecipe(recipeFromTemplate(template));
+          }
         } else if (templateData.items[0]) {
           const template = templateData.items[0];
           setSelectedTemplate(template);
@@ -435,6 +442,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
         <button className={mode === 'builder' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('builder')}>Конструктор шаблона</button>
         <button className={mode === 'test' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('test')}>Тестовый рендер</button>
         <button className={mode === 'apply' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('apply')}>Apply Template</button>
+        <button className={mode === 'workbench' ? 'active' : ''} onClick={() => setMode('workbench')}>Video Workbench</button>
       </nav>
       {error ? <div className="ts-alert error">{error}</div> : null}
       {message ? <div className="ts-alert success">{message}</div> : null}
@@ -563,6 +571,10 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           onRefreshBatches={refreshBatches}
           onRefreshPipelines={refreshPipelines}
         />
+      ) : null}
+
+      {mode === 'workbench' ? (
+        <VideoWorkbenchPage initialPath={new URLSearchParams(window.location.search).get('media') || ''} />
       ) : null}
     </div>
   );

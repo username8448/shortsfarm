@@ -12,6 +12,7 @@
     "@remotion/bundler": "4.0.482",
     "@remotion/player": "4.0.482",
     "@remotion/renderer": "4.0.482",
+    "media-chrome": "^4.19.2",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "remotion": "4.0.482",

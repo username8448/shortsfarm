@@ -360,6 +360,29 @@ def test_studio_render_progress_schema_exists(tmp_data_dir):
     } <= job_columns
 
 
+def test_video_segments_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    db.init_db()
+    with db.connect() as con:
+        con.execute("SELECT * FROM video_segments LIMIT 0")
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(video_segments)")
+        }
+        indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(video_segments)")
+        }
+
+    assert {
+        "source_path", "label", "start_sec", "end_sec", "duration_sec",
+        "status", "notes", "created_at", "updated_at",
+    } <= columns
+    assert "idx_video_segments_source_path" in indexes
+    assert "idx_video_segments_status" in indexes
+
+
 def test_idempotent(tmp_data_dir):
     """Running migrations many times must not raise."""
     from shortsfarm.migrations import run_migrations
