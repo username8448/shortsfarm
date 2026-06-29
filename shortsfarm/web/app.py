@@ -68,17 +68,17 @@ def create_app() -> FastAPI:
     app.include_router(media_api_router, prefix="/api/media")
     app.include_router(studio_api_router, prefix="/api/studio")
 
-    def studio_response() -> FileResponse | HTMLResponse:
+    def spa_response(title: str = "ShortsFarm Studio") -> FileResponse | HTMLResponse:
         index_path = STUDIO_DIST / "index.html"
         if index_path.is_file():
             return FileResponse(index_path, media_type="text/html")
         return HTMLResponse(
-            """
+            f"""
             <!doctype html>
             <html lang="ru"><meta charset="utf-8">
-            <title>ShortsFarm Studio</title>
+            <title>{title}</title>
             <body style="font-family:system-ui;background:#101216;color:#eee;padding:40px">
-              <h1>ShortsFarm Studio ещё не собрана</h1>
+              <h1>{title} ещё не собран</h1>
               <p>Выполните в корне проекта:</p>
               <pre style="padding:16px;background:#191d24;border-radius:8px">npm --prefix frontend install
 npm --prefix frontend run build</pre>
@@ -90,11 +90,19 @@ npm --prefix frontend run build</pre>
 
     @app.get("/studio", include_in_schema=False)
     def studio_index() -> Response:
-        return studio_response()
+        return spa_response("ShortsFarm Studio")
 
     @app.get("/studio/{path:path}", include_in_schema=False)
     def studio_spa(path: str) -> Response:
-        return studio_response()
+        return spa_response("ShortsFarm Studio")
+
+    @app.get("/player", include_in_schema=False)
+    def player_index() -> Response:
+        return spa_response("ShortsFarm Video Player")
+
+    @app.get("/player/{path:path}", include_in_schema=False)
+    def player_spa(path: str) -> Response:
+        return spa_response("ShortsFarm Video Player")
     return app
 
 

@@ -29,6 +29,7 @@ import {
 } from './template';
 import type {Recipe} from './recipe';
 import {UniversalVideoWorkbench} from '../workbench/UniversalVideoWorkbench';
+import {openWebPlayer, webPlayerUrl} from '../workbench/openWebPlayer';
 
 type SourceMode = 'selected' | 'folder' | 'folder_recursive';
 type ReactionStrategy = 'fixed_asset' | 'pool_first' | 'pool_weighted';
@@ -551,6 +552,11 @@ export const ApplyTemplatePanel = ({
                               Открыть готовое видео
                             </a>
                           ) : null}
+                          {item.output_workspace_path ? (
+                            <button onClick={() => openWebPlayer(item.output_workspace_path || '')}>
+                              Смотреть в web player
+                            </button>
+                          ) : null}
                           {item.output_path ? (
                             <label>
                               <span>Путь:</span>
@@ -601,6 +607,11 @@ export const ApplyTemplatePanel = ({
               <small>{workspacePathLabel(item.main_workspace_path)}</small>
               {item.media_url ? (
                 <a href={item.media_url} target="_blank" rel="noreferrer">Открыть готовое видео</a>
+              ) : null}
+              {item.output_workspace_path ? (
+                <a href={webPlayerUrl(item.output_workspace_path)} target="_blank" rel="noreferrer">
+                  Смотреть в web player
+                </a>
               ) : null}
               {item.output_path ? (
                 <label className="copy-path">

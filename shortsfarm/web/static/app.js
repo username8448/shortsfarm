@@ -175,9 +175,51 @@ function thumbnailUrl(path) {
 function videoThumb(path, name='video') {
   return `<img class="video-thumb" loading="lazy" src="${esc(thumbnailUrl(path))}" alt="Миниатюра ${esc(name)}">`;
 }
-function mpvButton(path, label='MPV') {
-  if (!path) return '<button class="btn-mini" disabled>MPV</button>';
-  return `<button class="btn-mini" data-path="${esc(path)}" onclick="openVideoInMpv(this.dataset.path)">${esc(label)}</button>`;
+const WORKSPACE_MEDIA_SECTIONS = ['sources', 'cuts', 'prepared', 'edits', 'ready', 'published'];
+function isWorkspaceRelativeMediaPath(path) {
+  const text = String(path || '').trim();
+  if (!text || text.startsWith('/') || /^[A-Za-z]:[\\/]/.test(text) || text.includes('\\')) return false;
+  const parts = text.split('/');
+  return WORKSPACE_MEDIA_SECTIONS.includes(parts[0]) && !parts.some(part => !part || part === '.' || part === '..');
+}
+async function ensureWorkspaceRootForPlayer() {
+  if (managedFilesState.workspaceRoot) return managedFilesState.workspaceRoot;
+  const settings = await api.get('/api/settings/workspace');
+  managedFilesState.workspaceRoot = settings.workspace_root || null;
+  return managedFilesState.workspaceRoot;
+}
+async function workspaceMediaPathForPlayer(path) {
+  const text = String(path || '').trim();
+  if (!text) throw new Error('Путь к видео не задан.');
+  if (isWorkspaceRelativeMediaPath(text)) return text;
+  const root = String(await ensureWorkspaceRootForPlayer() || '').replace(/\/+$/, '');
+  if (!root) throw new Error('workspace_root не настроен.');
+  const normalized = text.replace(/\/+$/, '');
+  if (normalized === root || !normalized.startsWith(root + '/')) {
+    throw new Error('Web player открывает только видео внутри workspace. Сначала импортируйте файл в workspace.');
+  }
+  const relative = normalized.slice(root.length + 1);
+  if (!isWorkspaceRelativeMediaPath(relative)) {
+    throw new Error('Web player открывает только видео из sources/cuts/prepared/edits/ready/published.');
+  }
+  return relative;
+}
+async function openWebPlayer(path) {
+  try {
+    const relative = await workspaceMediaPathForPlayer(path);
+    window.open(`/player?path=${encodeURIComponent(relative)}`, '_blank', 'noopener,noreferrer');
+  } catch (err) {
+    showToast(err.message || 'Не удалось открыть web player', 'err');
+    if (currentView === 'split') showInlineError('split-error', err.message || 'Не удалось открыть web player');
+    if (currentView === 'files') showInlineError('files-error', err.message || 'Не удалось открыть web player');
+  }
+}
+function webPlayerButton(path, label='Смотреть') {
+  if (!path) return `<button class="btn-mini" disabled>${esc(label)}</button>`;
+  return `<button class="btn-mini" data-web-player="1" data-path="${esc(path)}" onclick="openWebPlayer(this.dataset.path)">${esc(label)}</button>`;
+}
+function mpvButton(path, label='Смотреть') {
+  return webPlayerButton(path, label);
 }
 function outputFolderButton(path, label='Папка') {
   if (!path) return '<button class="btn-mini" disabled>Папка</button>';
@@ -462,7 +504,7 @@ function renderManagedFiles() {
       ? `<button class="btn-mini" data-path="${esc(item.path)}" onclick="loadManagedFiles(this.dataset.path)">Открыть</button>`
       : '';
     const videoActions = !folder && item.media_type === 'video'
-      ? `<button class="btn-mini" data-path="${esc(item.path)}" onclick="openManagedFileInStudio(this.dataset.path)">Открыть в Нарезке</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="registerManagedSource(this.dataset.path)">Добавить как исходник</button>`
+      ? `${webPlayerButton(item.path)}<button class="btn-mini" data-path="${esc(item.path)}" onclick="openManagedFileInStudio(this.dataset.path)">Открыть в Нарезке</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="registerManagedSource(this.dataset.path)">Добавить как исходник</button>`
       : '';
     const mutations = system ? '' : `<button class="btn-mini" data-path="${esc(item.path)}" data-name="${esc(item.name)}" onclick="renameManagedItem(this.dataset.path,this.dataset.name)">Переименовать</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="moveManagedItem(this.dataset.path)">Переместить</button><button class="btn-danger" data-path="${esc(item.path)}" data-folder="${folder ? '1' : '0'}" onclick="deleteManagedItem(this.dataset.path,this.dataset.folder==='1')">Удалить</button>`;
     return `<tr><td><span class="workspace-type ${folder ? 'segment' : 'clip'}"><i class="ti ${icon}"></i>&nbsp;${esc(type || 'файл')}</span></td><td><div class="mono txt">${esc(displayName)}</div><div class="mono dim" title="${esc(item.path)}">${esc(displayPath)}</div>${folder ? `<div class="mono dim">${Number(item.children_count || 0)} объектов</div>` : ''}</td><td class="mono mid">${folder ? '—' : esc(formatFileSize(item.size))}</td><td class="mono dim">${esc(formatMtime(item.modified_at))}</td><td><div class="row-actions">${open}${videoActions}${mutations}</div></td></tr>`;
@@ -1346,12 +1388,12 @@ function prepareBadge(item) {
   if (item.prepare_status === 'failed') return '<span class="badge b-err">Ошибка подготовки</span>';
   return '';
 }
-function workspaceOpenFileButton(item, label='Открыть') {
+function workspaceOpenFileButton(item, label='Смотреть') {
   const path = item?.path || item?.source_path || '';
   if (!path || item?.missing || !item?.file_exists) {
     return `<button class="btn-mini" disabled title="${esc(item?.path_error || 'Файл отсутствует')}">${esc(label)}</button>`;
   }
-  return `<button class="btn-mini" data-path="${esc(path)}" onclick="openVideoInMpv(this.dataset.path)">${esc(label)}</button>`;
+  return webPlayerButton(path, label);
 }
 function workspaceOpenFolderButton(item, label='Папка') {
   if (!item?.folder_path || !item?.folder_exists) {
@@ -1730,7 +1772,7 @@ function renderWorkspaceDetail() {
     <div class="field"><label class="field-lbl">Теги</label><input id="workspace-tags" type="text" value="${esc(item.tags || '')}" placeholder="через запятую" oninput="markWorkspaceDetailDirty()"></div>
     <div class="workspace-detail-actions">
       <button class="btn-primary" onclick="saveWorkspaceDetail()">Сохранить</button>
-      ${workspaceOpenFileButton(item, 'Открыть файл')}
+      ${workspaceOpenFileButton(item, 'Смотреть')}
       ${workspaceOpenFolderButton(item, 'Открыть папку')}
       <button class="btn-secondary" onclick="prepareCurrentWorkspaceItem()">Подготовить видео</button>
       <button class="btn-secondary" onclick="setCurrentWorkspaceStatus('ready')"${readyDisabled}>Сделать готовым</button>
@@ -2184,7 +2226,7 @@ function renderPublishJobsTable() {
     else if (job.can_force_run) actions.push(`<button class="btn-mini" onclick="runPublishJob(${Number(job.id)}, true)">Запустить принудительно</button>`);
     if (job.schedule_state === 'overdue' && job.schedule_group_id) actions.push(`<button class="btn-secondary" onclick="approvePublishScheduleGroup(${Number(job.schedule_group_id)})">Разрешить</button>`);
     if (job.can_cancel) actions.push(`<button class="btn-danger" onclick="cancelPublishJob(${Number(job.id)})">Отменить</button>`);
-    actions.push(mpvButton(clipPath, 'MPV'));
+    actions.push(webPlayerButton(clipPath, 'Смотреть'));
     return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="togglePublishJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td>${badge(job.status)}</td><td class="mono mid ov" title="${esc(job.title || '')}">${esc(job.title || '—')}</td><td><div class="mono txt">${esc(job.channel_title || job.account_display_name || '—')}</div>${profile}</td><td>${renderPublishScheduleCell(job)}</td><td class="mono dim">${esc(job.privacy_status || 'private')}<div>${esc(job.publish_mode || 'private')}</div></td><td class="mono dim ov" title="${esc(clipPath)}">${esc(shortPath(clipPath || '—'))}</td><td class="mono dim">${esc(formatMtime(job.created_at))}</td><td class="mono txt">${esc(job.attempt_count || 0)}</td><td><div class="row-actions">${err}</div></td><td>${youtubeLink}</td><td><div class="row-actions">${actions.join('')}</div></td></tr>`;
   }).join('')}</tbody></table>`;
   renderPublishJobSelectionState();
@@ -3522,7 +3564,7 @@ function renderEditingJobs() {
       : '';
     const review = job.review_status || 'pending';
     const doneActions = isDone
-      ? `<button class="btn-mini${previewOpen ? ' on' : ''}" onclick="toggleEditingJobPreview(${Number(job.id)})">${previewOpen ? 'Скрыть предпросмотр' : 'Показать предпросмотр'}</button><button class="btn-mini" onclick="openEditingJobResult(${Number(job.id)})">Открыть результат</button><button class="btn-mini" onclick="openEditingJobMpv(${Number(job.id)})">Открыть в mpv</button><button class="btn-mini" onclick="openEditingJobFolder(${Number(job.id)})">Открыть папку</button><button class="btn-primary" onclick="setEditingJobReview(${Number(job.id)}, 'approved')">Одобрить</button><button class="btn-danger" onclick="setEditingJobReview(${Number(job.id)}, 'rejected')">Отклонить</button>`
+      ? `<button class="btn-mini${previewOpen ? ' on' : ''}" onclick="toggleEditingJobPreview(${Number(job.id)})">${previewOpen ? 'Скрыть предпросмотр' : 'Показать предпросмотр'}</button>${webPlayerButton(job.edited_path || job.output_path, 'Смотреть')}<button class="btn-mini" onclick="openEditingJobFolder(${Number(job.id)})">Открыть папку</button><button class="btn-primary" onclick="setEditingJobReview(${Number(job.id)}, 'approved')">Одобрить</button><button class="btn-danger" onclick="setEditingJobReview(${Number(job.id)}, 'rejected')">Отклонить</button>`
       : '';
     const reviewNote = job.review_note
       ? `<div class="mono dim ov" title="${esc(job.review_note)}">${esc(shortErrorText(job.review_note))}</div>`

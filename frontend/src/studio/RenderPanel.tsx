@@ -1,4 +1,5 @@
 import type {RenderJob} from '../api';
+import {webPlayerUrl} from '../workbench/openWebPlayer';
 import {statusLabel} from './labels';
 
 const progressValue = (job: RenderJob): number => {
@@ -60,6 +61,11 @@ export const RenderPanel = ({
     {job?.status === 'done' && job.media_url ? (
       <a className="result-link" href={job.media_url} target="_blank" rel="noreferrer">
         Открыть готовое видео
+      </a>
+    ) : null}
+    {job?.status === 'done' && job.output_workspace_path ? (
+      <a className="result-link" href={webPlayerUrl(job.output_workspace_path)} target="_blank" rel="noreferrer">
+        Смотреть в web player
       </a>
     ) : null}
   </section>

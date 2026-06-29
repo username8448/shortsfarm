@@ -825,6 +825,25 @@ def test_studio_route_shows_build_instructions_without_dist(tmp_path, monkeypatc
     assert b"npm --prefix frontend run build" in response.body
 
 
+def test_player_route_serves_frontend_page(tmp_path, monkeypatch):
+    import shortsfarm.web.app as web_app
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><div id=\"root\"></div>", encoding="utf-8")
+    monkeypatch.setattr(web_app, "STUDIO_DIST", dist)
+    app = web_app.create_app()
+    route = next(
+        item for item in app.routes
+        if getattr(item, "path", None) == "/player"
+    )
+
+    response = route.endpoint()
+
+    assert isinstance(response, FileResponse)
+    assert Path(response.path) == dist / "index.html"
+
+
 def test_main_panel_embeds_template_studio_without_legacy_word():
     template = (
         Path(__file__).resolve().parents[1]
@@ -880,10 +899,15 @@ def test_studio_frontend_uses_preview_registry_and_embedded_batch_open():
     assert "Batch готов" in apply_panel
     assert "Latest completed renders" in apply_panel
     assert "Открыть готовое видео" in apply_panel
+    assert "Смотреть в web player" in apply_panel
     assert "progress?.current_job_id" in apply_panel
     assert "activateInitialViewFromQuery" in legacy_js
     assert "params.has('batch')" in legacy_js
     assert "nav('studio'" in legacy_js
+    assert "function openWebPlayer" in legacy_js
+    assert "data-web-player" in legacy_js
+    assert "Открыть в mpv" not in legacy_js
+    assert 'onclick="openVideoInMpv' not in legacy_js
 
 
 def test_universal_video_workbench_frontend_source_exists():
@@ -910,6 +934,33 @@ def test_universal_video_workbench_frontend_source_exists():
         / "workbench"
         / "VideoWorkbenchPage.tsx"
     ).read_text(encoding="utf-8")
+    player_page = (
+        root
+        / "frontend"
+        / "src"
+        / "workbench"
+        / "VideoPlayerPage.tsx"
+    ).read_text(encoding="utf-8")
+    open_helper = (
+        root
+        / "frontend"
+        / "src"
+        / "workbench"
+        / "openWebPlayer.ts"
+    ).read_text(encoding="utf-8")
+    app = (
+        root
+        / "frontend"
+        / "src"
+        / "App.tsx"
+    ).read_text(encoding="utf-8")
+    media_picker = (
+        root
+        / "frontend"
+        / "src"
+        / "studio"
+        / "MediaPicker.tsx"
+    ).read_text(encoding="utf-8")
     studio_page = (
         root
         / "frontend"
@@ -928,6 +979,13 @@ def test_universal_video_workbench_frontend_source_exists():
     assert "isTextInputTarget" in workbench
     assert "textarea" in workbench
     assert "Video Workbench" in page
+    assert "Video Player" in player_page
+    assert "Назад в основную панель" in player_page
+    assert "initialPath={params.get('path')" in app
+    assert "window.open(webPlayerUrl(path)" in open_helper
+    assert "`/player?path=${encodeURIComponent(workspacePath)}`" in open_helper
+    assert "Смотреть" in media_picker
+    assert "openWebPlayer(item.workspace_path)" in media_picker
     assert "mode=\"viewer\"" in apply_panel
     assert "output_workspace_path" in apply_panel
     assert "workbench" in studio_page
