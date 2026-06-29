@@ -905,6 +905,11 @@ def test_studio_frontend_uses_preview_registry_and_embedded_batch_open():
     assert "params.has('batch')" in legacy_js
     assert "nav('studio'" in legacy_js
     assert "function openWebPlayer" in legacy_js
+    assert "window.shortsFarmOpenVideoLightbox" in legacy_js
+    assert "video-lightbox" in legacy_js
+    assert "videoWatchThumb" in legacy_js
+    assert "embed=1" in legacy_js
+    assert "shortsFarmOpenVideoLightbox(relative, options)" in legacy_js
     assert "data-web-player" in legacy_js
     assert "Открыть в mpv" not in legacy_js
     assert 'onclick="openVideoInMpv' not in legacy_js
@@ -981,7 +986,11 @@ def test_universal_video_workbench_frontend_source_exists():
     assert "Video Workbench" in page
     assert "Video Player" in player_page
     assert "Назад в основную панель" in player_page
+    assert "player-embed" in player_page
+    assert "params.get('embed') === '1'" in player_page
+    assert "mode={mode === 'workbench' ? 'marking' : 'viewer'}" in player_page
     assert "initialPath={params.get('path')" in app
+    assert "shortsFarmOpenVideoLightbox" in open_helper
     assert "window.open(webPlayerUrl(path)" in open_helper
     assert "`/player?path=${encodeURIComponent(workspacePath)}`" in open_helper
     assert "Смотреть" in media_picker

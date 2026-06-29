@@ -175,7 +175,16 @@ function thumbnailUrl(path) {
 function videoThumb(path, name='video') {
   return `<img class="video-thumb" loading="lazy" src="${esc(thumbnailUrl(path))}" alt="Миниатюра ${esc(name)}">`;
 }
+function videoWatchThumb(path, name='video') {
+  if (!path) return videoThumb(path, name);
+  return `<button class="video-watch-trigger" data-path="${esc(path)}" title="Смотреть: ${esc(name)}" onclick="event.stopPropagation();openWebPlayer(this.dataset.path,{title:this.dataset.title||''})" data-title="${esc(name)}">${videoThumb(path, name)}</button>`;
+}
 const WORKSPACE_MEDIA_SECTIONS = ['sources', 'cuts', 'prepared', 'edits', 'ready', 'published'];
+const videoLightboxState = {
+  path: '',
+  title: '',
+  mode: 'viewer',
+};
 function isWorkspaceRelativeMediaPath(path) {
   const text = String(path || '').trim();
   if (!text || text.startsWith('/') || /^[A-Za-z]:[\\/]/.test(text) || text.includes('\\')) return false;
@@ -204,9 +213,15 @@ async function workspaceMediaPathForPlayer(path) {
   }
   return relative;
 }
-async function openWebPlayer(path) {
+async function openWebPlayer(path, options = {}) {
   try {
     const relative = await workspaceMediaPathForPlayer(path);
+    if (
+      typeof window.shortsFarmOpenVideoLightbox === 'function'
+      && window.shortsFarmOpenVideoLightbox(relative, options) !== false
+    ) {
+      return;
+    }
     window.open(`/player?path=${encodeURIComponent(relative)}`, '_blank', 'noopener,noreferrer');
   } catch (err) {
     showToast(err.message || 'Не удалось открыть web player', 'err');
@@ -214,9 +229,98 @@ async function openWebPlayer(path) {
     if (currentView === 'files') showInlineError('files-error', err.message || 'Не удалось открыть web player');
   }
 }
+function videoLightboxUrl(path, mode = 'viewer') {
+  return `/player?path=${encodeURIComponent(path)}&embed=1&mode=${encodeURIComponent(mode)}`;
+}
+function ensureVideoLightbox() {
+  let box = document.getElementById('video-lightbox');
+  if (box) return box;
+  box = document.createElement('div');
+  box.id = 'video-lightbox';
+  box.className = 'video-lightbox';
+  box.innerHTML = `
+    <div class="video-lightbox-backdrop" data-lightbox-close="1"></div>
+    <section class="video-lightbox-panel" role="dialog" aria-modal="true" aria-label="Video Player">
+      <header class="video-lightbox-head">
+        <div>
+          <div class="video-lightbox-kicker">Video Player</div>
+          <div class="video-lightbox-title" id="video-lightbox-title"></div>
+          <div class="video-lightbox-path mono" id="video-lightbox-path"></div>
+        </div>
+        <div class="video-lightbox-actions">
+          <button class="btn-mini" id="video-lightbox-copy">Копировать путь</button>
+          <button class="btn-mini" id="video-lightbox-tools">Инструменты</button>
+          <button class="btn-mini" id="video-lightbox-open">Открыть отдельно</button>
+          <button class="btn-danger" id="video-lightbox-close" title="Закрыть">×</button>
+        </div>
+      </header>
+      <iframe id="video-lightbox-frame" title="ShortsFarm video player" loading="lazy" allow="fullscreen; picture-in-picture"></iframe>
+    </section>`;
+  document.body.appendChild(box);
+  box.addEventListener('click', event => {
+    const target = event.target;
+    if (target?.dataset?.lightboxClose) closeVideoLightbox();
+  });
+  document.getElementById('video-lightbox-close')?.addEventListener('click', closeVideoLightbox);
+  document.getElementById('video-lightbox-copy')?.addEventListener('click', () => {
+    if (!videoLightboxState.path) return;
+    navigator.clipboard?.writeText(videoLightboxState.path);
+    showToast('Workspace path скопирован');
+  });
+  document.getElementById('video-lightbox-open')?.addEventListener('click', () => {
+    if (!videoLightboxState.path) return;
+    window.open(`/player?path=${encodeURIComponent(videoLightboxState.path)}`, '_blank', 'noopener,noreferrer');
+  });
+  document.getElementById('video-lightbox-tools')?.addEventListener('click', () => {
+    videoLightboxState.mode = videoLightboxState.mode === 'workbench' ? 'viewer' : 'workbench';
+    updateVideoLightboxFrame();
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && box?.classList.contains('open')) closeVideoLightbox();
+  });
+  return box;
+}
+function updateVideoLightboxFrame() {
+  const frame = document.getElementById('video-lightbox-frame');
+  const tools = document.getElementById('video-lightbox-tools');
+  if (frame) frame.src = videoLightboxUrl(videoLightboxState.path, videoLightboxState.mode);
+  if (tools) tools.textContent = videoLightboxState.mode === 'workbench' ? 'Скрыть инструменты' : 'Инструменты';
+}
+function closeVideoLightbox() {
+  const box = document.getElementById('video-lightbox');
+  const frame = document.getElementById('video-lightbox-frame');
+  if (box) box.classList.remove('open');
+  if (frame) frame.src = 'about:blank';
+  document.body.classList.remove('video-lightbox-open');
+}
+function showVideoLightbox(path, options = {}) {
+  if (!isWorkspaceRelativeMediaPath(path)) {
+    throw new Error('Lightbox открывает только видео внутри workspace.');
+  }
+  const box = ensureVideoLightbox();
+  videoLightboxState.path = path;
+  videoLightboxState.title = String(options.title || path.split('/').pop() || 'Video Player');
+  videoLightboxState.mode = options.startMode === 'workbench' ? 'workbench' : 'viewer';
+  const title = document.getElementById('video-lightbox-title');
+  const pathEl = document.getElementById('video-lightbox-path');
+  if (title) title.textContent = videoLightboxState.title;
+  if (pathEl) pathEl.textContent = path;
+  updateVideoLightboxFrame();
+  box.classList.add('open');
+  document.body.classList.add('video-lightbox-open');
+}
+window.shortsFarmOpenVideoLightbox = (workspacePath, options = {}) => {
+  try {
+    showVideoLightbox(String(workspacePath || ''), options);
+    return true;
+  } catch (err) {
+    showToast(err.message || 'Не удалось открыть lightbox', 'err');
+    return false;
+  }
+};
 function webPlayerButton(path, label='Смотреть') {
   if (!path) return `<button class="btn-mini" disabled>${esc(label)}</button>`;
-  return `<button class="btn-mini" data-web-player="1" data-path="${esc(path)}" onclick="openWebPlayer(this.dataset.path)">${esc(label)}</button>`;
+  return `<button class="btn-mini" data-web-player="1" data-path="${esc(path)}" onclick="event.stopPropagation();openWebPlayer(this.dataset.path)">${esc(label)}</button>`;
 }
 function mpvButton(path, label='Смотреть') {
   return webPlayerButton(path, label);
@@ -500,6 +604,9 @@ function renderManagedFiles() {
     const type = folder ? workspaceKindLabel(item.kind) : workspaceKindLabel(item.media_type);
     const displayName = system ? workspaceFolderLabel(item.path, item.name) : (item.display_name || item.name);
     const displayPath = workspaceDisplayPath(item.path);
+    const nameCell = !folder && item.media_type === 'video'
+      ? `<button class="link-video mono txt ov" data-path="${esc(item.path)}" title="${esc(item.path)}" onclick="openWebPlayer(this.dataset.path)">${esc(displayName)}</button>`
+      : `<div class="mono txt">${esc(displayName)}</div>`;
     const open = folder
       ? `<button class="btn-mini" data-path="${esc(item.path)}" onclick="loadManagedFiles(this.dataset.path)">Открыть</button>`
       : '';
@@ -507,7 +614,7 @@ function renderManagedFiles() {
       ? `${webPlayerButton(item.path)}<button class="btn-mini" data-path="${esc(item.path)}" onclick="openManagedFileInStudio(this.dataset.path)">Открыть в Нарезке</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="registerManagedSource(this.dataset.path)">Добавить как исходник</button>`
       : '';
     const mutations = system ? '' : `<button class="btn-mini" data-path="${esc(item.path)}" data-name="${esc(item.name)}" onclick="renameManagedItem(this.dataset.path,this.dataset.name)">Переименовать</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="moveManagedItem(this.dataset.path)">Переместить</button><button class="btn-danger" data-path="${esc(item.path)}" data-folder="${folder ? '1' : '0'}" onclick="deleteManagedItem(this.dataset.path,this.dataset.folder==='1')">Удалить</button>`;
-    return `<tr><td><span class="workspace-type ${folder ? 'segment' : 'clip'}"><i class="ti ${icon}"></i>&nbsp;${esc(type || 'файл')}</span></td><td><div class="mono txt">${esc(displayName)}</div><div class="mono dim" title="${esc(item.path)}">${esc(displayPath)}</div>${folder ? `<div class="mono dim">${Number(item.children_count || 0)} объектов</div>` : ''}</td><td class="mono mid">${folder ? '—' : esc(formatFileSize(item.size))}</td><td class="mono dim">${esc(formatMtime(item.modified_at))}</td><td><div class="row-actions">${open}${videoActions}${mutations}</div></td></tr>`;
+    return `<tr><td><span class="workspace-type ${folder ? 'segment' : 'clip'}"><i class="ti ${icon}"></i>&nbsp;${esc(type || 'файл')}</span></td><td>${nameCell}<div class="mono dim" title="${esc(item.path)}">${esc(displayPath)}</div>${folder ? `<div class="mono dim">${Number(item.children_count || 0)} объектов</div>` : ''}</td><td class="mono mid">${folder ? '—' : esc(formatFileSize(item.size))}</td><td class="mono dim">${esc(formatMtime(item.modified_at))}</td><td><div class="row-actions">${open}${videoActions}${mutations}</div></td></tr>`;
   }).join('')}</tbody></table>`;
 }
 
@@ -1442,7 +1549,11 @@ function renderClipsTable(rows) {
     const renderInfo = item.render_status ? `<div class="mono dim">render: ${esc(ruStatus(item.render_status))}</div>` : '';
     const publishInfo = item.publish_job_status ? `<div class="mono dim">publish #${esc(item.publish_job_id || '')}: ${esc(ruStatus(item.publish_job_status))}</div>` : '';
     const prepareInfo = `<div class="mono dim">format: ${esc(targetAspectLabel(item.target_aspect))}${item.prepare_status && item.prepare_status !== 'none' ? ` · ${esc(ruStatus(item.prepare_status))}` : ''}</div>`;
-    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${videoThumb(playablePath, title)}<div style="min-width:0;flex:1"><div class="mono txt ov" title="${esc(title)}">${esc(title)}</div><div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}${prepareInfo}${publishInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${missingBadge(item)}${prepareBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
+    const thumb = item.missing ? videoThumb(playablePath, title) : videoWatchThumb(playablePath, title);
+    const titleCell = item.missing
+      ? `<div class="mono txt ov" title="${esc(title)}">${esc(title)}</div>`
+      : `<button class="link-video mono txt ov" data-path="${esc(playablePath)}" title="${esc(title)}" onclick="event.stopPropagation();openWebPlayer(this.dataset.path,{title:this.textContent||''})">${esc(title)}</button>`;
+    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${thumb}<div style="min-width:0;flex:1">${titleCell}<div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}${prepareInfo}${publishInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${missingBadge(item)}${prepareBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
   }).join('')}</tbody></table>`;
   renderWorkspaceBulkState();
 }
@@ -1749,7 +1860,7 @@ function renderWorkspaceDetail() {
     : '';
   const preparedPanel = `<div class="missing-panel publish-panel">${prepareBadge(item) || badge(item.prepare_status || 'none')}<div><b>Подготовленный файл</b><p>${item.prepared_path ? `<span title="${esc(item.prepared_path)}">${esc(shortPath(item.prepared_path))}</span>` : 'Файл ещё не подготовлен.'}${item.prepare_error ? `<br><span class="err">${esc(shortErrorText(item.prepare_error))}</span>` : ''}</p></div></div>`;
   el.innerHTML = `<div class="workspace-detail-body">
-    <div class="workspace-preview">${videoThumb(playablePath, title)}</div>
+    <div class="workspace-preview">${item.missing ? videoThumb(playablePath, title) : videoWatchThumb(playablePath, title)}</div>
     <div class="workspace-detail-head">
       <div>
         <div class="workspace-detail-title">${esc(title)}</div>
@@ -2082,7 +2193,8 @@ function renderReadyPublishClips() {
   el.innerHTML = `<table class="tbl compact"><thead><tr><th>#</th><th>Клип</th><th>Видео</th><th>Файл</th><th>Действие</th></tr></thead><tbody>${lastReadyPublishClips.map(clip => {
     const selected = Number(clip.id) === Number(publishState.selectedClipId);
     const playable = clip.output_path || clip.source_path;
-    return `<tr><td class="mono dim">#${clip.id}</td><td><div class="video-name-cell">${videoThumb(playable, clip.video_title || 'clip')}<div style="min-width:0;flex:1"><div class="mono txt ov">${esc(clip.video_title || `Клип #${clip.id}`)}</div><div class="mono dim ov">${esc(shortPath(clip.output_path || playable || '—'))}</div></div></div></td><td class="mono mid">${esc(clip.video_title || '—')}</td><td class="mono dim ov">${esc(shortPath(clip.output_path || '—'))}</td><td><div class="row-actions"><button class="btn-mini${selected ? ' on' : ''}" onclick="selectPublishClip(${Number(clip.id)})">Выбрать</button>${mpvButton(playable)}</div></td></tr>`;
+    const title = clip.video_title || `Клип #${clip.id}`;
+    return `<tr><td class="mono dim">#${clip.id}</td><td><div class="video-name-cell">${videoWatchThumb(playable, title)}<div style="min-width:0;flex:1"><button class="link-video mono txt ov" data-path="${esc(playable)}" onclick="openWebPlayer(this.dataset.path,{title:this.textContent||''})">${esc(title)}</button><div class="mono dim ov">${esc(shortPath(clip.output_path || playable || '—'))}</div></div></div></td><td class="mono mid">${esc(clip.video_title || '—')}</td><td class="mono dim ov">${esc(shortPath(clip.output_path || '—'))}</td><td><div class="row-actions"><button class="btn-mini${selected ? ' on' : ''}" onclick="selectPublishClip(${Number(clip.id)})">Выбрать</button>${mpvButton(playable)}</div></td></tr>`;
   }).join('')}</tbody></table>`;
 }
 
@@ -2095,7 +2207,7 @@ function renderSelectedPublishClip() {
     return;
   }
   const playable = clip.output_path || clip.source_path;
-  el.innerHTML = `<div class="selection-card-body"><div class="selection-title">Выбран клип</div><div class="selected-video-row">${videoThumb(playable, clip.video_title || 'clip')}<div style="min-width:0;flex:1"><div class="selection-name">${esc(clip.video_title || `Клип #${clip.id}`)}</div><div class="selection-meta mono">${esc(shortPath(clip.output_path || playable || '—'))}</div></div><div class="row-actions">${mpvButton(playable)}</div></div></div>`;
+  el.innerHTML = `<div class="selection-card-body"><div class="selection-title">Выбран клип</div><div class="selected-video-row">${videoWatchThumb(playable, clip.video_title || 'clip')}<div style="min-width:0;flex:1"><button class="link-video selection-name" data-path="${esc(playable)}" onclick="openWebPlayer(this.dataset.path,{title:this.textContent||''})">${esc(clip.video_title || `Клип #${clip.id}`)}</button><div class="selection-meta mono">${esc(shortPath(clip.output_path || playable || '—'))}</div></div><div class="row-actions">${mpvButton(playable)}</div></div></div>`;
 }
 
 function publishJobCountsFromItems(items) {

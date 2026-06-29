@@ -492,6 +492,49 @@
 .player-hero h1 { margin: 0; font-size: 26px; }
 .player-hero p { margin: 4px 0 0; color: var(--ts-mid); }
 .player-kicker { color: #8eb9ff !important; font: 11px ui-monospace, monospace; text-transform: uppercase; letter-spacing: .12em; }
+.player-embed {
+  min-height: 100vh;
+  padding: 0;
+  background: #000;
+}
+.player-embed .ts-alert { margin: 12px; }
+.player-embed .uvw {
+  min-height: 100vh;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #000;
+}
+.player-embed.player-mode-viewer .uvw {
+  display: block;
+}
+.player-embed.player-mode-viewer .uvw-top,
+.player-embed.player-mode-viewer .uvw-tools,
+.player-embed.player-mode-viewer .uvw-meta,
+.player-embed.player-mode-viewer .uvw-timeline,
+.player-embed.player-mode-viewer .uvw-segments {
+  display: none;
+}
+.player-embed.player-mode-viewer .uvw-player-wrap {
+  height: 100vh;
+  border: 0;
+  border-radius: 0;
+}
+.player-embed.player-mode-viewer .uvw media-controller {
+  height: 100vh;
+  aspect-ratio: auto;
+}
+.player-embed.player-mode-workbench {
+  padding: 12px;
+  background: var(--ts-bg);
+}
+.player-embed.player-mode-workbench .uvw {
+  min-height: 0;
+  padding: 12px;
+  border: 1px solid var(--ts-border);
+  border-radius: 10px;
+  background: var(--ts-panel);
+}
 .uvw {
   display: grid;
   gap: 10px;

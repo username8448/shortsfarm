@@ -4,9 +4,13 @@ import {folderSectionLabel, workspacePathLabel} from '../studio/labels';
 import {UniversalVideoWorkbench} from './UniversalVideoWorkbench';
 
 export const VideoPlayerPage = ({initialPath = ''}: {initialPath?: string}) => {
+  const params = new URLSearchParams(window.location.search);
+  const embedded = params.get('embed') === '1';
+  const initialMode = params.get('mode') === 'workbench' ? 'workbench' : 'viewer';
   const [sections, setSections] = useState<WorkspaceVideoSection[]>([]);
   const [inputPath, setInputPath] = useState(initialPath);
   const [activePath, setActivePath] = useState(initialPath);
+  const [mode, setMode] = useState<'viewer' | 'workbench'>(initialMode);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
@@ -30,6 +34,7 @@ export const VideoPlayerPage = ({initialPath = ''}: {initialPath?: string}) => {
   };
 
   useEffect(() => {
+    if (embedded && activePath) return;
     void loadVideos().catch((caught) => {
       setError(caught instanceof Error ? caught.message : String(caught));
     });
@@ -56,6 +61,29 @@ export const VideoPlayerPage = ({initialPath = ''}: {initialPath?: string}) => {
     window.setTimeout(() => setMessage(''), 1800);
   };
 
+  if (embedded) {
+    return (
+      <main className={`player-page player-embed player-mode-${mode}`}>
+        {error ? <div className="ts-alert error">{error}</div> : null}
+        {!activePath ? (
+          <section className="ts-card">
+            <div className="preview-empty">Workspace path не указан.</div>
+          </section>
+        ) : (
+          <UniversalVideoWorkbench
+            workspacePath={activePath}
+            title={workspacePathLabel(activePath)}
+            mode={mode === 'workbench' ? 'marking' : 'viewer'}
+            onUseAsSource={(path) => {
+              setInputPath(path);
+              setActivePath(path);
+            }}
+          />
+        )}
+      </main>
+    );
+  }
+
   return (
     <main className="player-page">
       <section className="player-hero">
@@ -67,6 +95,11 @@ export const VideoPlayerPage = ({initialPath = ''}: {initialPath?: string}) => {
         <div className="ts-row-actions">
           <a className="button-like" href="/">Назад в основную панель</a>
           <button disabled={!activePath} onClick={() => void copyPath()}>Копировать путь</button>
+          {activePath ? (
+            <button onClick={() => setMode(mode === 'workbench' ? 'viewer' : 'workbench')}>
+              {mode === 'workbench' ? 'Скрыть инструменты' : 'Инструменты'}
+            </button>
+          ) : null}
         </div>
       </section>
 
@@ -107,7 +140,7 @@ export const VideoPlayerPage = ({initialPath = ''}: {initialPath?: string}) => {
         <UniversalVideoWorkbench
           workspacePath={activePath}
           title={workspacePathLabel(activePath)}
-          mode="marking"
+          mode={mode === 'workbench' ? 'marking' : 'viewer'}
           onUseAsSource={(path) => {
             setInputPath(path);
             setActivePath(path);

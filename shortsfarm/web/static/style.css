@@ -334,6 +334,60 @@ button:disabled { opacity: .4; cursor: not-allowed; }
   border-radius: 6px; border: 1px solid var(--border);
   background: #273244; box-shadow: 0 2px 8px rgba(0,0,0,.22);
 }
+.video-watch-trigger {
+  display: inline-flex; flex-shrink: 0; padding: 0; border: 0; background: transparent;
+  cursor: pointer; border-radius: 7px;
+}
+.video-watch-trigger:hover .video-thumb {
+  border-color: var(--acc-br); box-shadow: 0 0 0 2px var(--acc-bg), 0 3px 12px rgba(0,0,0,.32);
+}
+body.video-lightbox-open { overflow: hidden; }
+.video-lightbox {
+  position: fixed; inset: 0; z-index: 10000; display: none;
+}
+.video-lightbox.open { display: block; }
+.video-lightbox-backdrop {
+  position: absolute; inset: 0; background: rgba(3,7,18,.84); backdrop-filter: blur(8px);
+}
+.video-lightbox-panel {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(1180px, calc(100vw - 36px)); max-height: calc(100vh - 36px);
+  display: grid; grid-template-rows: auto minmax(280px, 1fr);
+  border: 1px solid rgba(148,163,184,.36); border-radius: 16px;
+  background: #070b12; box-shadow: 0 28px 90px rgba(0,0,0,.62); overflow: hidden;
+}
+.video-lightbox-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(30,41,59,.96), rgba(15,23,42,.92));
+}
+.video-lightbox-kicker {
+  color: #93c5fd; font: 9px var(--mono); text-transform: uppercase; letter-spacing: .14em;
+}
+.video-lightbox-title {
+  margin-top: 2px; max-width: 620px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--txt); font-weight: 700;
+}
+.video-lightbox-path {
+  max-width: 620px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--dim); font-size: 10px;
+}
+.video-lightbox-actions {
+  display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end;
+}
+.video-lightbox-actions #video-lightbox-close {
+  min-width: 32px; font-size: 18px; line-height: 1;
+}
+#video-lightbox-frame {
+  width: 100%; height: min(72vh, 760px); min-height: 360px;
+  border: 0; background: #000;
+}
+@media (max-width: 720px) {
+  .video-lightbox-panel { width: calc(100vw - 16px); max-height: calc(100vh - 16px); }
+  .video-lightbox-head { align-items: flex-start; flex-direction: column; }
+  .video-lightbox-title, .video-lightbox-path { max-width: calc(100vw - 48px); }
+  #video-lightbox-frame { height: 62vh; min-height: 260px; }
+}
 .selected-video-row {
   display: flex; align-items: center; gap: 10px; min-width: 0;
 }
