@@ -361,6 +361,127 @@ def update_youtube_video_metadata(
         raise
 
 
+def _best_thumbnail(snippet: dict[str, Any]) -> str:
+    thumbnails = snippet.get("thumbnails") or {}
+    for key in ("maxres", "standard", "high", "medium", "default"):
+        url = (thumbnails.get(key) or {}).get("url")
+        if url:
+            return str(url)
+    return ""
+
+
+def _channel_uploads_playlist(youtube: Any, account: Any) -> tuple[str, dict[str, Any]]:
+    response = youtube.channels().list(
+        part="snippet,contentDetails",
+        mine=True,
+    ).execute()
+    items = response.get("items") or []
+    if not items and account["channel_id"]:
+        response = youtube.channels().list(
+            part="snippet,contentDetails",
+            id=str(account["channel_id"]),
+        ).execute()
+        items = response.get("items") or []
+    if not items:
+        raise FileNotFoundError("YouTube канал для этого аккаунта не найден.")
+    channel = items[0]
+    uploads = (
+        (channel.get("contentDetails") or {})
+        .get("relatedPlaylists", {})
+        .get("uploads")
+    )
+    if not uploads:
+        raise RuntimeError("YouTube не вернул uploads playlist для канала.")
+    return str(uploads), channel
+
+
+def fetch_youtube_channel_videos(
+    account: Any,
+    *,
+    max_results: int = 200,
+) -> dict[str, Any]:
+    if str(account["platform"] or "") != "youtube":
+        raise ValueError("Аккаунт не является YouTube аккаунтом.")
+    if str(account["status"] or "") != "active":
+        raise ValueError("YouTube аккаунт не активен.")
+
+    youtube = build_youtube_client(account)
+    uploads_playlist_id, channel = _channel_uploads_playlist(youtube, account)
+    limit = max(1, min(int(max_results or 200), 500))
+    playlist_items: list[dict[str, Any]] = []
+    video_ids: list[str] = []
+    page_token: str | None = None
+    while len(video_ids) < limit:
+        request = {
+            "part": "snippet,contentDetails",
+            "playlistId": uploads_playlist_id,
+            "maxResults": min(50, limit - len(video_ids)),
+        }
+        if page_token:
+            request["pageToken"] = page_token
+        response = youtube.playlistItems().list(**request).execute()
+        for item in response.get("items") or []:
+            content = item.get("contentDetails") or {}
+            snippet = item.get("snippet") or {}
+            video_id = str(content.get("videoId") or snippet.get("resourceId", {}).get("videoId") or "").strip()
+            if not video_id:
+                continue
+            video_ids.append(video_id)
+            playlist_items.append(item)
+            if len(video_ids) >= limit:
+                break
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    playlist_by_id = {
+        str((item.get("contentDetails") or {}).get("videoId") or ""): item
+        for item in playlist_items
+    }
+    videos: list[dict[str, Any]] = []
+    for index in range(0, len(video_ids), 50):
+        batch = video_ids[index:index + 50]
+        if not batch:
+            continue
+        response = youtube.videos().list(
+            part="snippet,status,contentDetails",
+            id=",".join(batch),
+        ).execute()
+        for video in response.get("items") or []:
+            video_id = str(video.get("id") or "").strip()
+            snippet = video.get("snippet") or {}
+            status = video.get("status") or {}
+            details = video.get("contentDetails") or {}
+            playlist_item = playlist_by_id.get(video_id) or {}
+            playlist_content = playlist_item.get("contentDetails") or {}
+            published_at = snippet.get("publishedAt") or playlist_content.get("videoPublishedAt")
+            videos.append({
+                "video_id": video_id,
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "title": snippet.get("title") or "",
+                "description": snippet.get("description") or "",
+                "tags": snippet.get("tags") or [],
+                "category_id": snippet.get("categoryId") or "",
+                "privacy_status": status.get("privacyStatus") or "",
+                "publish_at": status.get("publishAt"),
+                "published_at": published_at,
+                "duration": details.get("duration") or "",
+                "thumbnail_url": _best_thumbnail(snippet),
+                "raw": video,
+            })
+
+    order = {video_id: position for position, video_id in enumerate(video_ids)}
+    videos.sort(key=lambda item: order.get(str(item.get("video_id")), 10**9))
+    return {
+        "channel": {
+            "id": channel.get("id") or account["channel_id"],
+            "title": (channel.get("snippet") or {}).get("title") or account["channel_title"] or account["display_name"],
+            "uploads_playlist_id": uploads_playlist_id,
+        },
+        "videos": videos,
+    }
+
+
 def _google_error_status(exc: Exception) -> int | None:
     status = getattr(exc, "status_code", None)
     if isinstance(status, int):

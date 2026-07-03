@@ -7,10 +7,11 @@ which uses an explicit BEGIN IMMEDIATE to guarantee atomic claim-and-update.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
 
 from .config import (
@@ -638,6 +639,75 @@ def get_or_create_publish_clip_for_workspace_item(
             VALUES (?, NULL, 'done', 'prepared', ?, NULL, NULL, ?, NULL, ?, ?, ?)
             """,
             (int(clip["video_id"]), resolved_output_path, now, now, item_id, aspect),
+        )
+        return int(cur.lastrowid)
+
+
+def get_or_create_publish_clip_for_file(
+    output_path: str | Path,
+    *,
+    title: str | None = None,
+    duration_sec: float | None = None,
+) -> int:
+    """Return a done clip row that points at an already prepared local file.
+
+    This is used by local storage profiles: the file is not copied, rendered or
+    sliced; we only create the minimal videos/clips metadata needed by the
+    existing YouTube publish pipeline.
+    """
+    path = Path(output_path).expanduser()
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"Файл для публикации не найден: {path}")
+    resolved_path = str(path)
+    clean_title = str(title or path.stem).strip() or path.stem
+    now = now_utc()
+    with connect() as con:
+        video = con.execute(
+            "SELECT id FROM videos WHERE source_path=?",
+            (resolved_path,),
+        ).fetchone()
+        if video is None:
+            cur = con.execute(
+                """
+                INSERT INTO videos (source_path, title, duration_sec, status, created_at)
+                VALUES (?, ?, ?, 'added', ?)
+                """,
+                (resolved_path, clean_title, duration_sec, now),
+            )
+            video_id = int(cur.lastrowid)
+        else:
+            video_id = int(video["id"])
+
+        existing = con.execute(
+            """
+            SELECT id FROM clips
+            WHERE output_path=?
+            ORDER BY CASE WHEN cut_mode='profile' THEN 0 ELSE 1 END, id ASC
+            LIMIT 1
+            """,
+            (resolved_path,),
+        ).fetchone()
+        if existing is not None:
+            clip_id = int(existing["id"])
+            con.execute(
+                """
+                UPDATE clips
+                SET video_id=?, status='done', output_path=?, temp_path=NULL,
+                    error=NULL, rendered_at=COALESCE(rendered_at, ?)
+                WHERE id=?
+                """,
+                (video_id, resolved_path, now, clip_id),
+            )
+            return clip_id
+
+        cur = con.execute(
+            """
+            INSERT INTO clips
+                (video_id, mark_id, status, cut_mode, output_path, temp_path,
+                 error, created_at, started_at, rendered_at)
+            VALUES (?, NULL, 'done', 'profile', ?, NULL, NULL, ?, NULL, ?)
+            """,
+            (video_id, resolved_path, now, now),
         )
         return int(cur.lastrowid)
 
@@ -1277,6 +1347,821 @@ def cleanup_missing_workspace_items() -> int:
         if hide_workspace_item(item["item_type"], int(item["item_id"]), missing_confirmed=True):
             hidden += 1
     return hidden
+
+
+# ---------------------------------------------------------------------------
+# local storage profiles (local content vitrines)
+# ---------------------------------------------------------------------------
+
+_PROFILE_UNSET = object()
+LOCAL_STORAGE_PROFILE_STATUSES = {"draft", "ready", "published", "archived"}
+LOCAL_STORAGE_PROFILE_AUTO_IMPORT_SECTIONS = {"edits", "ready", "published"}
+
+
+def _normalize_profile_text(value: str | None, *, max_length: int = 240) -> str | None:
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    return text[:max_length] if text else None
+
+
+def _normalize_local_storage_profile_name(name: str) -> str:
+    normalized = _normalize_profile_text(name, max_length=120)
+    if not normalized:
+        raise ValueError("Название профиля не может быть пустым.")
+    return normalized
+
+
+def _normalize_profile_handle(value: str) -> str:
+    raw = re.sub(r"\s+", "-", str(value or "").strip().lower())
+    cleaned = re.sub(r"[^\w.-]+", "-", raw, flags=re.UNICODE)
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-._")
+    if not cleaned:
+        cleaned = "profile"
+    return cleaned[:80]
+
+
+def _unique_profile_handle(con: sqlite3.Connection, base: str) -> str:
+    normalized = _normalize_profile_handle(base)
+    candidate = normalized
+    suffix = 2
+    while con.execute(
+        "SELECT 1 FROM local_storage_profiles WHERE handle=?",
+        (candidate,),
+    ).fetchone() is not None:
+        tail = f"-{suffix}"
+        candidate = f"{normalized[:80 - len(tail)]}{tail}"
+        suffix += 1
+    return candidate
+
+
+def _normalize_profile_color(value: str | None, default: str) -> str:
+    text = str(value or "").strip()
+    if re.fullmatch(r"#[0-9A-Fa-f]{6}", text):
+        return text.lower()
+    return default
+
+
+def _profile_initials(name: str, initials: str | None = None) -> str:
+    explicit = _normalize_profile_text(initials, max_length=4)
+    if explicit:
+        return explicit.upper()
+    letters = [part[0] for part in re.split(r"\s+", name) if part]
+    return "".join(letters[:2]).upper() or "SF"
+
+
+def _normalize_profile_item_status(value: str | None) -> str:
+    status = str(value or "draft").strip().lower()
+    if status not in LOCAL_STORAGE_PROFILE_STATUSES:
+        raise ValueError(
+            "Storage profile item status must be one of: "
+            + ", ".join(sorted(LOCAL_STORAGE_PROFILE_STATUSES))
+        )
+    return status
+
+
+def _normalize_auto_import_sections(value: Any = None) -> str:
+    if value is None or value is _PROFILE_UNSET:
+        sections = sorted(LOCAL_STORAGE_PROFILE_AUTO_IMPORT_SECTIONS)
+    elif isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            parsed = [part.strip() for part in value.split(",")]
+        sections = [str(item).strip().lower() for item in parsed if str(item).strip()]
+    else:
+        sections = [str(item).strip().lower() for item in value if str(item).strip()]
+    clean = []
+    for section in sections:
+        if section not in LOCAL_STORAGE_PROFILE_AUTO_IMPORT_SECTIONS:
+            raise ValueError(
+                "Auto import sections must be one of: "
+                + ", ".join(sorted(LOCAL_STORAGE_PROFILE_AUTO_IMPORT_SECTIONS))
+            )
+        if section not in clean:
+            clean.append(section)
+    if not clean:
+        raise ValueError("Выберите хотя бы одну папку для автоимпорта.")
+    return json.dumps(clean, ensure_ascii=False)
+
+
+def _normalize_auto_import_prefix(value: str | None) -> str | None:
+    text = str(value or "").strip().strip("/")
+    if not text:
+        return None
+    if "\\" in text or text.startswith("/") or (len(text) >= 3 and text[1:3] == ":/"):
+        raise ValueError("Префикс автоимпорта должен быть workspace-relative path.")
+    relative = PurePosixPath(text)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("Path traversal в префиксе автоимпорта запрещён.")
+    if any(part == ".shortsfarm" for part in relative.parts):
+        raise PermissionError("Доступ к .shortsfarm запрещён.")
+    if relative.parts[0] not in LOCAL_STORAGE_PROFILE_AUTO_IMPORT_SECTIONS:
+        raise ValueError("Префикс автоимпорта должен начинаться с edits/, ready/ или published/.")
+    return relative.as_posix()
+
+
+def create_local_storage_profile(
+    *,
+    name: str,
+    handle: str | None = None,
+    description: str | None = None,
+    avatar_initials: str | None = None,
+    avatar_color: str | None = None,
+    banner_color: str | None = None,
+    auto_import_enabled: bool = False,
+    auto_import_sections: Any = None,
+    auto_import_prefix: str | None = None,
+    enabled: bool = True,
+) -> int:
+    normalized_name = _normalize_local_storage_profile_name(name)
+    now = now_utc()
+    with connect() as con:
+        normalized_handle = (
+            _normalize_profile_handle(handle)
+            if handle and str(handle).strip()
+            else _unique_profile_handle(con, normalized_name)
+        )
+        cur = con.execute(
+            """
+            INSERT INTO local_storage_profiles
+                (name, handle, description, avatar_initials, avatar_color,
+                 banner_color, auto_import_enabled, auto_import_sections,
+                 auto_import_prefix, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_name,
+                normalized_handle,
+                _normalize_profile_text(description, max_length=2000),
+                _profile_initials(normalized_name, avatar_initials),
+                _normalize_profile_color(avatar_color, "#3b82f6"),
+                _normalize_profile_color(banner_color, "#111827"),
+                1 if auto_import_enabled else 0,
+                _normalize_auto_import_sections(auto_import_sections),
+                _normalize_auto_import_prefix(auto_import_prefix),
+                1 if enabled else 0,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def get_local_storage_profile(profile_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT
+                p.*,
+                COUNT(i.id) AS item_count
+            FROM local_storage_profiles p
+            LEFT JOIN local_storage_profile_items i ON i.profile_id=p.id
+            WHERE p.id=?
+            GROUP BY p.id
+            """,
+            (int(profile_id),),
+        ).fetchone()
+
+
+def list_local_storage_profiles(enabled: bool | None = None) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if enabled is not None:
+        clauses.append("p.enabled=?")
+        params.append(1 if enabled else 0)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT
+                p.*,
+                COUNT(i.id) AS item_count
+            FROM local_storage_profiles p
+            LEFT JOIN local_storage_profile_items i ON i.profile_id=p.id
+            {where}
+            GROUP BY p.id
+            ORDER BY p.created_at DESC, p.id DESC
+            """,
+            params,
+        ).fetchall()
+
+
+def update_local_storage_profile(
+    profile_id: int,
+    *,
+    name: Any = _PROFILE_UNSET,
+    handle: Any = _PROFILE_UNSET,
+    description: Any = _PROFILE_UNSET,
+    avatar_initials: Any = _PROFILE_UNSET,
+    avatar_color: Any = _PROFILE_UNSET,
+    banner_color: Any = _PROFILE_UNSET,
+    auto_import_enabled: Any = _PROFILE_UNSET,
+    auto_import_sections: Any = _PROFILE_UNSET,
+    auto_import_prefix: Any = _PROFILE_UNSET,
+    auto_import_last_scan_at: Any = _PROFILE_UNSET,
+    enabled: Any = _PROFILE_UNSET,
+) -> bool:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM local_storage_profiles WHERE id=?",
+            (int(profile_id),),
+        ).fetchone()
+        if row is None:
+            return False
+        resolved_name = (
+            row["name"]
+            if name is _PROFILE_UNSET
+            else _normalize_local_storage_profile_name(name)
+        )
+        resolved_handle = (
+            row["handle"]
+            if handle is _PROFILE_UNSET
+            else _normalize_profile_handle(handle or resolved_name)
+        )
+        con.execute(
+            """
+            UPDATE local_storage_profiles
+            SET name=?, handle=?, description=?, avatar_initials=?,
+                avatar_color=?, banner_color=?,
+                auto_import_enabled=?, auto_import_sections=?,
+                auto_import_prefix=?, auto_import_last_scan_at=?,
+                enabled=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                resolved_name,
+                resolved_handle,
+                row["description"]
+                if description is _PROFILE_UNSET
+                else _normalize_profile_text(description, max_length=2000),
+                row["avatar_initials"]
+                if avatar_initials is _PROFILE_UNSET
+                else _profile_initials(resolved_name, avatar_initials),
+                row["avatar_color"]
+                if avatar_color is _PROFILE_UNSET
+                else _normalize_profile_color(avatar_color, row["avatar_color"]),
+                row["banner_color"]
+                if banner_color is _PROFILE_UNSET
+                else _normalize_profile_color(banner_color, row["banner_color"]),
+                row["auto_import_enabled"]
+                if auto_import_enabled is _PROFILE_UNSET
+                else (1 if auto_import_enabled else 0),
+                row["auto_import_sections"]
+                if auto_import_sections is _PROFILE_UNSET
+                else _normalize_auto_import_sections(auto_import_sections),
+                row["auto_import_prefix"]
+                if auto_import_prefix is _PROFILE_UNSET
+                else _normalize_auto_import_prefix(auto_import_prefix),
+                row["auto_import_last_scan_at"]
+                if auto_import_last_scan_at is _PROFILE_UNSET
+                else auto_import_last_scan_at,
+                row["enabled"] if enabled is _PROFILE_UNSET else (1 if enabled else 0),
+                now_utc(),
+                int(profile_id),
+            ),
+        )
+        return True
+
+
+def disable_local_storage_profile(profile_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            "UPDATE local_storage_profiles SET enabled=0, updated_at=? WHERE id=?",
+            (now_utc(), int(profile_id)),
+        )
+        return result.rowcount > 0
+
+
+def add_local_storage_profile_item(
+    profile_id: int,
+    *,
+    workspace_path: str,
+    title: str | None = None,
+    description: str | None = None,
+    tags: str | None = None,
+    status: str = "draft",
+) -> int:
+    now = now_utc()
+    normalized_status = _normalize_profile_item_status(status)
+    with connect() as con:
+        if con.execute(
+            "SELECT 1 FROM local_storage_profiles WHERE id=? AND enabled=1",
+            (int(profile_id),),
+        ).fetchone() is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        cur = con.execute(
+            """
+            INSERT INTO local_storage_profile_items
+                (profile_id, workspace_path, title, description, tags, status, added_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, workspace_path) DO UPDATE SET
+                title=COALESCE(excluded.title, local_storage_profile_items.title),
+                description=COALESCE(excluded.description, local_storage_profile_items.description),
+                tags=COALESCE(excluded.tags, local_storage_profile_items.tags),
+                status=excluded.status,
+                updated_at=excluded.updated_at
+            """,
+            (
+                int(profile_id),
+                str(workspace_path),
+                _normalize_profile_text(title, max_length=240),
+                _normalize_profile_text(description, max_length=2000),
+                _normalize_profile_text(tags, max_length=1000),
+                normalized_status,
+                now,
+                now,
+            ),
+        )
+        row = con.execute(
+            """
+            SELECT id FROM local_storage_profile_items
+            WHERE profile_id=? AND workspace_path=?
+            """,
+            (int(profile_id), str(workspace_path)),
+        ).fetchone()
+        return int(row["id"] if row is not None else cur.lastrowid)
+
+
+def list_local_storage_profile_items(profile_id: int) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM local_storage_profile_items
+            WHERE profile_id=?
+            ORDER BY added_at DESC, id DESC
+            """,
+            (int(profile_id),),
+        ).fetchall()
+
+
+def get_local_storage_profile_item(item_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM local_storage_profile_items WHERE id=?",
+            (int(item_id),),
+        ).fetchone()
+
+
+def remove_local_storage_profile_item(profile_id: int, item_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            "DELETE FROM local_storage_profile_items WHERE profile_id=? AND id=?",
+            (int(profile_id), int(item_id)),
+        )
+        return result.rowcount > 0
+
+
+def update_local_storage_profile_item_status(
+    profile_item_id: int,
+    status: str,
+) -> bool:
+    normalized_status = _normalize_profile_item_status(status)
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE local_storage_profile_items
+            SET status=?, updated_at=?
+            WHERE id=?
+            """,
+            (normalized_status, now_utc(), int(profile_item_id)),
+        )
+        return result.rowcount > 0
+
+
+def list_local_storage_profile_service_links(profile_id: int) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM local_storage_profile_service_links
+            WHERE profile_id=?
+            ORDER BY platform ASC, id ASC
+            """,
+            (int(profile_id),),
+        ).fetchall()
+
+
+def get_local_storage_profile_service_link(
+    profile_id: int,
+    platform: str,
+) -> sqlite3.Row | None:
+    normalized_platform = str(platform or "").strip().lower()
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM local_storage_profile_service_links
+            WHERE profile_id=? AND platform=?
+            """,
+            (int(profile_id), normalized_platform),
+        ).fetchone()
+
+
+def upsert_local_storage_profile_service_link(
+    profile_id: int,
+    *,
+    platform: str,
+    external_account_id: int | None = None,
+    display_name: str | None = None,
+    status: str = "linked",
+    settings_json: str | None = None,
+) -> int:
+    normalized_platform = str(platform or "").strip().lower()
+    if not normalized_platform:
+        raise ValueError("platform не может быть пустым.")
+    now = now_utc()
+    with connect() as con:
+        if con.execute(
+            "SELECT 1 FROM local_storage_profiles WHERE id=? AND enabled=1",
+            (int(profile_id),),
+        ).fetchone() is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        cur = con.execute(
+            """
+            INSERT INTO local_storage_profile_service_links
+                (profile_id, platform, external_account_id, display_name,
+                 status, settings_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, platform) DO UPDATE SET
+                external_account_id=excluded.external_account_id,
+                display_name=excluded.display_name,
+                status=excluded.status,
+                settings_json=excluded.settings_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                int(profile_id),
+                normalized_platform,
+                external_account_id,
+                _normalize_profile_text(display_name, max_length=240),
+                str(status or "linked").strip().lower() or "linked",
+                settings_json,
+                now,
+                now,
+            ),
+        )
+        row = con.execute(
+            """
+            SELECT id FROM local_storage_profile_service_links
+            WHERE profile_id=? AND platform=?
+            """,
+            (int(profile_id), normalized_platform),
+        ).fetchone()
+        return int(row["id"] if row is not None else cur.lastrowid)
+
+
+def update_local_storage_profile_service_link_sync(
+    profile_id: int,
+    platform: str,
+    *,
+    last_sync_at: str | None = None,
+    last_sync_error: str | None = None,
+    synced_video_count: int | None = None,
+) -> bool:
+    normalized_platform = str(platform or "").strip().lower()
+    updates = ["updated_at=?"]
+    params: list[Any] = [now_utc()]
+    if last_sync_at is not None:
+        updates.append("last_sync_at=?")
+        params.append(last_sync_at)
+    updates.append("last_sync_error=?")
+    params.append(last_sync_error)
+    if synced_video_count is not None:
+        updates.append("synced_video_count=?")
+        params.append(int(synced_video_count))
+    params.extend([int(profile_id), normalized_platform])
+    with connect() as con:
+        result = con.execute(
+            f"""
+            UPDATE local_storage_profile_service_links
+            SET {", ".join(updates)}
+            WHERE profile_id=? AND platform=?
+            """,
+            params,
+        )
+        return result.rowcount > 0
+
+
+def remove_local_storage_profile_service_link(profile_id: int, platform: str) -> bool:
+    normalized_platform = str(platform or "").strip().lower()
+    with connect() as con:
+        result = con.execute(
+            """
+            DELETE FROM local_storage_profile_service_links
+            WHERE profile_id=? AND platform=?
+            """,
+            (int(profile_id), normalized_platform),
+        )
+        return result.rowcount > 0
+
+
+def get_publish_job_by_youtube_video_id(
+    *,
+    account_id: int,
+    youtube_video_id: str,
+    platform: str = "youtube",
+) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            f"""
+            {_PUBLISH_JOB_SELECT}
+            WHERE pj.platform=? AND pj.account_id=? AND pj.youtube_video_id=?
+            ORDER BY pj.id DESC
+            LIMIT 1
+            """,
+            (platform, int(account_id), str(youtube_video_id)),
+        ).fetchone()
+
+
+def get_local_storage_profile_publish_link_for_job(
+    profile_id: int,
+    publish_job_id: int,
+    *,
+    platform: str = "youtube",
+) -> sqlite3.Row | None:
+    normalized_platform = str(platform or "youtube").strip().lower() or "youtube"
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT lspj.*, lspi.workspace_path
+            FROM local_storage_profile_publish_jobs lspj
+            LEFT JOIN local_storage_profile_items lspi ON lspi.id=lspj.profile_item_id
+            WHERE lspj.profile_id=? AND lspj.publish_job_id=? AND lspj.platform=?
+            ORDER BY lspj.id DESC
+            LIMIT 1
+            """,
+            (int(profile_id), int(publish_job_id), normalized_platform),
+        ).fetchone()
+
+
+def update_publish_job_from_youtube_sync(
+    job_id: int,
+    *,
+    youtube_video_id: str,
+    youtube_url: str,
+    title: str | None = None,
+    description: str | None = None,
+    tags: str | list[str] | None = None,
+    category_id: str | None = None,
+    privacy_status: str | None = None,
+    publish_at: str | None = None,
+) -> bool:
+    now = now_utc()
+    if isinstance(tags, list):
+        tags_value = json.dumps([str(item) for item in tags], ensure_ascii=False)
+    else:
+        tags_value = tags
+    with connect() as con:
+        row = con.execute("SELECT * FROM publish_jobs WHERE id=?", (int(job_id),)).fetchone()
+        if row is None:
+            return False
+        result = con.execute(
+            """
+            UPDATE publish_jobs
+            SET status='done',
+                title=COALESCE(?, title),
+                description=COALESCE(?, description),
+                tags=COALESCE(?, tags),
+                category_id=COALESCE(?, category_id),
+                privacy_status=COALESCE(?, privacy_status),
+                publish_at=?,
+                publish_mode=CASE WHEN ? IS NOT NULL THEN 'schedule' ELSE publish_mode END,
+                youtube_video_id=?,
+                youtube_url=?,
+                error=NULL,
+                next_attempt_at=NULL,
+                finished_at=COALESCE(finished_at, ?),
+                updated_at=?
+            WHERE id=?
+            """,
+            (
+                title,
+                description,
+                tags_value,
+                category_id,
+                privacy_status,
+                publish_at,
+                publish_at,
+                youtube_video_id,
+                youtube_url,
+                now,
+                now,
+                int(job_id),
+            ),
+        )
+        return result.rowcount > 0
+
+
+def link_local_storage_profile_publish_job(
+    profile_id: int,
+    profile_item_id: int,
+    publish_job_id: int,
+    *,
+    platform: str = "youtube",
+) -> int:
+    normalized_platform = str(platform or "youtube").strip().lower() or "youtube"
+    now = now_utc()
+    with connect() as con:
+        item = con.execute(
+            """
+            SELECT id FROM local_storage_profile_items
+            WHERE id=? AND profile_id=?
+            """,
+            (int(profile_item_id), int(profile_id)),
+        ).fetchone()
+        if item is None:
+            raise FileNotFoundError("Видео в локальном профиле не найдено.")
+        job = con.execute(
+            "SELECT id FROM publish_jobs WHERE id=? AND platform=?",
+            (int(publish_job_id), normalized_platform),
+        ).fetchone()
+        if job is None:
+            raise FileNotFoundError("Publish job не найден.")
+        cur = con.execute(
+            """
+            INSERT INTO local_storage_profile_publish_jobs
+                (profile_id, profile_item_id, publish_job_id, platform, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_item_id, publish_job_id) DO UPDATE SET
+                profile_id=excluded.profile_id,
+                platform=excluded.platform,
+                updated_at=excluded.updated_at
+            """,
+            (
+                int(profile_id),
+                int(profile_item_id),
+                int(publish_job_id),
+                normalized_platform,
+                now,
+                now,
+            ),
+        )
+        row = con.execute(
+            """
+            SELECT id FROM local_storage_profile_publish_jobs
+            WHERE profile_item_id=? AND publish_job_id=?
+            """,
+            (int(profile_item_id), int(publish_job_id)),
+        ).fetchone()
+        return int(row["id"] if row is not None else cur.lastrowid)
+
+
+def upsert_local_storage_profile_external_video(
+    profile_id: int,
+    *,
+    platform: str = "youtube",
+    external_video_id: str,
+    external_url: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    tags: str | list[str] | None = None,
+    category_id: str | None = None,
+    privacy_status: str | None = None,
+    publish_at: str | None = None,
+    published_at: str | None = None,
+    duration: str | None = None,
+    thumbnail_url: str | None = None,
+    profile_item_id: int | None = None,
+    publish_job_id: int | None = None,
+    raw_json: str | dict[str, Any] | None = None,
+) -> int:
+    normalized_platform = str(platform or "youtube").strip().lower() or "youtube"
+    clean_video_id = str(external_video_id or "").strip()
+    if not clean_video_id:
+        raise ValueError("external_video_id не может быть пустым.")
+    now = now_utc()
+    if isinstance(tags, list):
+        tags_value = json.dumps([str(item) for item in tags], ensure_ascii=False)
+    else:
+        tags_value = tags
+    if isinstance(raw_json, dict):
+        raw_json_value = json.dumps(raw_json, ensure_ascii=False)
+    else:
+        raw_json_value = raw_json
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO local_storage_profile_external_videos
+                (profile_id, platform, external_video_id, external_url, title,
+                 description, tags, category_id, privacy_status, publish_at,
+                 published_at, duration, thumbnail_url, profile_item_id,
+                 publish_job_id, raw_json, first_seen_at, last_seen_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id, platform, external_video_id) DO UPDATE SET
+                external_url=excluded.external_url,
+                title=excluded.title,
+                description=excluded.description,
+                tags=excluded.tags,
+                category_id=excluded.category_id,
+                privacy_status=excluded.privacy_status,
+                publish_at=excluded.publish_at,
+                published_at=excluded.published_at,
+                duration=excluded.duration,
+                thumbnail_url=excluded.thumbnail_url,
+                profile_item_id=excluded.profile_item_id,
+                publish_job_id=excluded.publish_job_id,
+                raw_json=excluded.raw_json,
+                last_seen_at=excluded.last_seen_at,
+                updated_at=excluded.updated_at
+            """,
+            (
+                int(profile_id),
+                normalized_platform,
+                clean_video_id,
+                external_url,
+                _normalize_profile_text(title, max_length=240),
+                description,
+                tags_value,
+                category_id,
+                privacy_status,
+                publish_at,
+                published_at,
+                duration,
+                thumbnail_url,
+                int(profile_item_id) if profile_item_id is not None else None,
+                int(publish_job_id) if publish_job_id is not None else None,
+                raw_json_value,
+                now,
+                now,
+                now,
+            ),
+        )
+        row = con.execute(
+            """
+            SELECT id FROM local_storage_profile_external_videos
+            WHERE profile_id=? AND platform=? AND external_video_id=?
+            """,
+            (int(profile_id), normalized_platform, clean_video_id),
+        ).fetchone()
+        return int(row["id"] if row is not None else cur.lastrowid)
+
+
+def list_local_storage_profile_external_videos(
+    profile_id: int,
+    *,
+    platform: str = "youtube",
+    limit: int = 200,
+) -> list[sqlite3.Row]:
+    normalized_platform = str(platform or "youtube").strip().lower() or "youtube"
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT ev.*,
+                   lspi.workspace_path AS profile_item_workspace_path,
+                   pj.status AS publish_job_status,
+                   pj.youtube_url AS publish_job_youtube_url
+            FROM local_storage_profile_external_videos ev
+            LEFT JOIN local_storage_profile_items lspi ON lspi.id=ev.profile_item_id
+            LEFT JOIN publish_jobs pj ON pj.id=ev.publish_job_id
+            WHERE ev.profile_id=? AND ev.platform=?
+            ORDER BY COALESCE(ev.published_at, ev.last_seen_at) DESC, ev.id DESC
+            LIMIT ?
+            """,
+            (int(profile_id), normalized_platform, int(limit)),
+        ).fetchall()
+
+
+def get_latest_local_storage_profile_item_publish_job(
+    profile_item_id: int,
+    *,
+    platform: str = "youtube",
+) -> sqlite3.Row | None:
+    normalized_platform = str(platform or "youtube").strip().lower() or "youtube"
+    with connect() as con:
+        return con.execute(
+            f"""
+            {_PUBLISH_JOB_SELECT}
+            JOIN local_storage_profile_publish_jobs lspj
+              ON lspj.publish_job_id=pj.id
+            WHERE lspj.profile_item_id=? AND lspj.platform=?
+            ORDER BY pj.id DESC
+            LIMIT 1
+            """,
+            (int(profile_item_id), normalized_platform),
+        ).fetchone()
+
+
+def list_local_storage_profile_publish_jobs(
+    profile_id: int,
+    *,
+    platform: str = "youtube",
+    limit: int = 100,
+) -> list[sqlite3.Row]:
+    normalized_platform = str(platform or "youtube").strip().lower() or "youtube"
+    with connect() as con:
+        return con.execute(
+            f"""
+            {_PUBLISH_JOB_SELECT}
+            JOIN local_storage_profile_publish_jobs lspj
+              ON lspj.publish_job_id=pj.id
+            WHERE lspj.profile_id=? AND lspj.platform=?
+            ORDER BY pj.id DESC
+            LIMIT ?
+            """,
+            (int(profile_id), normalized_platform, int(limit)),
+        ).fetchall()
 
 
 def _workspace_identity_for_publish_clip(con: sqlite3.Connection, clip_id: int) -> tuple[str, int] | None:

@@ -909,6 +909,9 @@ def test_studio_frontend_uses_preview_registry_and_embedded_batch_open():
     assert "video-lightbox" in legacy_js
     assert "videoWatchThumb" in legacy_js
     assert "embed=1" in legacy_js
+    assert "stopVideoLightboxPlayback" in legacy_js
+    assert "shortsfarm:pause-video" in legacy_js
+    assert "frame.replaceWith(replacement)" in legacy_js
     assert "shortsFarmOpenVideoLightbox(relative, options)" in legacy_js
     assert "data-web-player" in legacy_js
     assert "Открыть в mpv" not in legacy_js
@@ -981,6 +984,8 @@ def test_universal_video_workbench_frontend_source_exists():
     assert "Set Out" in workbench
     assert "Play selection" in workbench
     assert "Save segment" in workbench
+    assert "shortsfarm:pause-video" in workbench
+    assert "video.pause()" in workbench
     assert "isTextInputTarget" in workbench
     assert "textarea" in workbench
     assert "Video Workbench" in page

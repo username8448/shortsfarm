@@ -8,7 +8,7 @@ import sqlite3
 import subprocess
 from collections import Counter, OrderedDict
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -44,6 +44,7 @@ from ..local_dialogs import (
 )
 from ..mpv_session import require_mpv
 from ..publish_youtube import (
+    fetch_youtube_channel_videos,
     parse_tags,
     run_publish_job_now,
     run_publish_queue_once,
@@ -74,6 +75,7 @@ from ..workspace_fs import (
     move_workspace_item as move_managed_workspace_item,
     register_workspace_source,
     rename_workspace_item as rename_managed_workspace_item,
+    resolve_workspace_path,
     set_workspace_root,
 )
 from .schemas import (
@@ -91,6 +93,12 @@ from .schemas import (
     FileRegisterSourceRequest,
     FileRenameRequest,
     LocalDialogPickRequest,
+    LocalStorageProfileAutoImportRunRequest,
+    LocalStorageProfileCreateRequest,
+    LocalStorageProfileItemCreateRequest,
+    LocalStorageProfileUpdateRequest,
+    LocalStorageProfileYouTubeLinkRequest,
+    LocalStorageProfileYouTubePublishRequest,
     OpenMpvRequest,
     PublishJobRetryRequest,
     PublishJobRunRequest,
@@ -415,6 +423,173 @@ def _workspace_counts(items: list[dict[str, Any]]) -> dict[str, int]:
 
 def _workspace_items_response(items: list[dict[str, Any]]) -> dict[str, Any]:
     return {"items": items, "counts": _workspace_counts(items)}
+
+
+LOCAL_STORAGE_PROFILE_VIDEO_FOLDERS = {"edits", "ready", "published"}
+
+
+def _local_storage_service_link_dict(row: Any) -> dict[str, Any]:
+    platform = _row(row, "platform", "") or ""
+    external_account_id = _row(row, "external_account_id")
+    data = {
+        "id": int(row["id"]),
+        "profile_id": int(row["profile_id"]),
+        "platform": platform,
+        "external_account_id": external_account_id,
+        "display_name": _row(row, "display_name", "") or "",
+        "status": _row(row, "status", "not_connected") or "not_connected",
+        "settings_json": _row(row, "settings_json"),
+        "last_sync_at": _row(row, "last_sync_at"),
+        "last_sync_error": _row(row, "last_sync_error"),
+        "synced_video_count": int(_row(row, "synced_video_count", 0) or 0),
+        "created_at": _row(row, "created_at"),
+        "updated_at": _row(row, "updated_at"),
+    }
+    if platform == "youtube" and external_account_id is not None:
+        account = db.get_social_account(int(external_account_id))
+        if account is not None:
+            data["youtube_account"] = _social_account_dict(account)
+    return data
+
+
+def _local_storage_profile_dict(row: Any, *, include_links: bool = False) -> dict[str, Any]:
+    profile_id = int(row["id"])
+    try:
+        auto_sections = json.loads(str(_row(row, "auto_import_sections", "[]") or "[]"))
+    except json.JSONDecodeError:
+        auto_sections = ["edits", "ready", "published"]
+    if not isinstance(auto_sections, list):
+        auto_sections = ["edits", "ready", "published"]
+    data = {
+        "id": profile_id,
+        "name": _row(row, "name", "") or "",
+        "handle": _row(row, "handle", "") or "",
+        "description": _row(row, "description", "") or "",
+        "avatar_initials": _row(row, "avatar_initials", "") or "",
+        "avatar_color": _row(row, "avatar_color", "#3b82f6") or "#3b82f6",
+        "banner_color": _row(row, "banner_color", "#111827") or "#111827",
+        "enabled": bool(_row(row, "enabled", 1)),
+        "item_count": int(_row(row, "item_count", 0) or 0),
+        "auto_import": {
+            "enabled": bool(_row(row, "auto_import_enabled", 0)),
+            "sections": [str(item) for item in auto_sections],
+            "prefix": _row(row, "auto_import_prefix", "") or "",
+            "last_scan_at": _row(row, "auto_import_last_scan_at"),
+        },
+        "created_at": _row(row, "created_at"),
+        "updated_at": _row(row, "updated_at"),
+    }
+    if include_links:
+        data["service_links"] = [
+            _local_storage_service_link_dict(link)
+            for link in db.list_local_storage_profile_service_links(profile_id)
+        ]
+    return data
+
+
+def _validate_local_storage_workspace_video(value: str) -> tuple[str, Path]:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("workspace_path не задан.")
+    if "\\" in text:
+        raise ValueError("Используйте '/' в workspace paths.")
+    if text.startswith("/") or (len(text) >= 3 and text[1:3] == ":/"):
+        raise ValueError("Абсолютные пути запрещены. Используйте workspace-relative path.")
+    relative = PurePosixPath(text)
+    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("Path traversal в workspace запрещён.")
+    if any(part == ".shortsfarm" for part in relative.parts):
+        raise PermissionError("Доступ к .shortsfarm запрещён.")
+    if not relative.parts or relative.parts[0] not in LOCAL_STORAGE_PROFILE_VIDEO_FOLDERS:
+        raise PermissionError("В профиль можно добавлять только готовые видео из edits/, ready/ или published/.")
+    path = resolve_workspace_path(relative.as_posix())
+    if not path.exists():
+        raise FileNotFoundError(f"Workspace video не найден: {relative.as_posix()}")
+    if not path.is_file():
+        raise ValueError("В профиль можно добавить только обычный файл.")
+    if path.suffix.lower() not in VIDEO_EXTENSIONS:
+        raise ValueError("В профиль можно добавить только поддерживаемый video file.")
+    return relative.as_posix(), path
+
+
+def _local_storage_profile_item_dict(row: Any) -> dict[str, Any]:
+    workspace_path = _row(row, "workspace_path", "") or ""
+    section = workspace_path.split("/", 1)[0] if workspace_path else ""
+    file_name = workspace_path.split("/")[-1] if workspace_path else ""
+    resolved_path = None
+    file_exists = False
+    size = None
+    modified_at = None
+    path_error = ""
+    try:
+        resolved_path = resolve_workspace_path(workspace_path)
+        file_exists = resolved_path.exists() and resolved_path.is_file()
+        if file_exists:
+            stat = resolved_path.stat()
+            size = int(stat.st_size)
+            modified_at = datetime.fromtimestamp(
+                stat.st_mtime,
+                tz=timezone.utc,
+            ).isoformat()
+    except Exception as exc:
+        path_error = str(exc) or exc.__class__.__name__
+    publish_job_row = db.get_latest_local_storage_profile_item_publish_job(int(row["id"]))
+    publish_job = _publish_job_dict(publish_job_row) if publish_job_row is not None else None
+    return {
+        "id": int(row["id"]),
+        "profile_id": int(row["profile_id"]),
+        "workspace_path": workspace_path,
+        "section": section,
+        "file_name": file_name,
+        "title": _row(row, "title", "") or Path(file_name).stem,
+        "description": _row(row, "description", "") or "",
+        "tags": _row(row, "tags", "") or "",
+        "status": _row(row, "status", "draft") or "draft",
+        "file_exists": file_exists,
+        "size": size,
+        "modified_at": modified_at,
+        "path_error": path_error,
+        "absolute_path": str(resolved_path) if resolved_path is not None else "",
+        "publish_job": publish_job,
+        "added_at": _row(row, "added_at"),
+        "updated_at": _row(row, "updated_at"),
+    }
+
+
+def _local_storage_external_video_dict(row: Any) -> dict[str, Any]:
+    tags_raw = _row(row, "tags")
+    try:
+        tags = json.loads(str(tags_raw or "[]"))
+    except json.JSONDecodeError:
+        tags = parse_tags(tags_raw)
+    if not isinstance(tags, list):
+        tags = []
+    profile_item_id = _row(row, "profile_item_id")
+    publish_job_id = _row(row, "publish_job_id")
+    return {
+        "id": int(row["id"]),
+        "profile_id": int(row["profile_id"]),
+        "platform": _row(row, "platform", "youtube") or "youtube",
+        "external_video_id": _row(row, "external_video_id", "") or "",
+        "external_url": _row(row, "external_url", "") or "",
+        "title": _row(row, "title", "") or "",
+        "description": _row(row, "description", "") or "",
+        "tags": tags,
+        "category_id": _row(row, "category_id", "") or "",
+        "privacy_status": _row(row, "privacy_status", "") or "",
+        "publish_at": _row(row, "publish_at"),
+        "published_at": _row(row, "published_at"),
+        "duration": _row(row, "duration", "") or "",
+        "thumbnail_url": _row(row, "thumbnail_url", "") or "",
+        "profile_item_id": profile_item_id,
+        "publish_job_id": publish_job_id,
+        "profile_item_workspace_path": _row(row, "profile_item_workspace_path", "") or "",
+        "publish_job_status": _row(row, "publish_job_status", "") or "",
+        "matched": profile_item_id is not None or publish_job_id is not None,
+        "first_seen_at": _row(row, "first_seen_at"),
+        "last_seen_at": _row(row, "last_seen_at"),
+        "updated_at": _row(row, "updated_at"),
+    }
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -3201,6 +3376,718 @@ def workspace_clips_youtube_enqueue(req: WorkspaceYouTubeEnqueueRequest) -> dict
             "items": items,
             "skipped_items": skipped_items,
             "workspace": _workspace_items_response(workspace_items),
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+def _local_storage_candidate_dict(path: Path, root: Path) -> dict[str, Any]:
+    relative = path.relative_to(root).as_posix()
+    stat = path.stat()
+    return {
+        "workspace_path": relative,
+        "section": relative.split("/", 1)[0],
+        "file_name": path.name,
+        "title": path.stem,
+        "size": int(stat.st_size),
+        "modified_at": datetime.fromtimestamp(
+            stat.st_mtime,
+            tz=timezone.utc,
+        ).isoformat(),
+    }
+
+
+def _list_local_storage_candidate_videos(limit: int = 1000) -> list[dict[str, Any]]:
+    root = get_workspace_root()
+    if root is None:
+        raise ValueError("workspace_root не настроен.")
+    items: list[dict[str, Any]] = []
+    for folder_name in ("edits", "ready", "published"):
+        folder = root / folder_name
+        if not folder.exists() or folder.is_symlink() or not folder.is_dir():
+            continue
+        for path in folder.rglob("*"):
+            try:
+                if path.is_symlink():
+                    continue
+                relative = path.relative_to(root)
+                if any(part.startswith(".") for part in relative.parts):
+                    continue
+                if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+                    items.append(_local_storage_candidate_dict(path, root))
+            except (OSError, ValueError):
+                continue
+    items.sort(key=lambda item: str(item.get("modified_at") or ""), reverse=True)
+    return items[: max(1, min(int(limit or 1000), 5000))]
+
+
+def _storage_profile_auto_import_sections(row: Any) -> set[str]:
+    try:
+        parsed = json.loads(str(_row(row, "auto_import_sections", "[]") or "[]"))
+    except json.JSONDecodeError:
+        parsed = ["edits", "ready", "published"]
+    sections = {
+        str(item).strip().lower()
+        for item in parsed
+        if str(item).strip().lower() in LOCAL_STORAGE_PROFILE_VIDEO_FOLDERS
+    }
+    return sections or set(LOCAL_STORAGE_PROFILE_VIDEO_FOLDERS)
+
+
+def _storage_profile_prefix_matches(workspace_path: str, prefix: str) -> bool:
+    clean_prefix = str(prefix or "").strip().strip("/")
+    if not clean_prefix:
+        return True
+    return workspace_path == clean_prefix or workspace_path.startswith(f"{clean_prefix}/")
+
+
+def _run_local_storage_profile_auto_import(
+    profile_id: int,
+    *,
+    force: bool = False,
+) -> dict[str, Any]:
+    profile = db.get_local_storage_profile(profile_id)
+    if profile is None or not bool(_row(profile, "enabled", 1)):
+        raise FileNotFoundError("Локальный профиль не найден.")
+    enabled = bool(_row(profile, "auto_import_enabled", 0))
+    if not enabled and not force:
+        return {
+            "status": "ok",
+            "disabled": True,
+            "summary": {"scanned": 0, "added": 0, "existing": 0, "skipped": 0, "errors": 0},
+            "items": [
+                _local_storage_profile_item_dict(item)
+                for item in db.list_local_storage_profile_items(profile_id)
+            ],
+            "profile": _local_storage_profile_dict(profile, include_links=True),
+        }
+
+    sections = _storage_profile_auto_import_sections(profile)
+    prefix = _row(profile, "auto_import_prefix", "") or ""
+    candidates = _list_local_storage_candidate_videos(limit=5000)
+    existing_paths = {
+        str(item["workspace_path"])
+        for item in db.list_local_storage_profile_items(profile_id)
+    }
+    summary = {"scanned": 0, "added": 0, "existing": 0, "skipped": 0, "errors": 0}
+    added: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+
+    for candidate in candidates:
+        workspace_path = str(candidate["workspace_path"])
+        section = str(candidate.get("section") or workspace_path.split("/", 1)[0])
+        if section not in sections or not _storage_profile_prefix_matches(workspace_path, prefix):
+            continue
+        summary["scanned"] += 1
+        if workspace_path in existing_paths:
+            summary["existing"] += 1
+            continue
+        try:
+            item_id = db.add_local_storage_profile_item(
+                profile_id,
+                workspace_path=workspace_path,
+                title=str(candidate.get("title") or candidate.get("file_name") or ""),
+                status="ready",
+            )
+            row = db.get_local_storage_profile_item(item_id)
+            if row is not None:
+                added.append(_local_storage_profile_item_dict(row))
+            existing_paths.add(workspace_path)
+            summary["added"] += 1
+        except Exception as exc:
+            summary["errors"] += 1
+            skipped.append({"workspace_path": workspace_path, "reason": str(exc) or exc.__class__.__name__})
+
+    db.update_local_storage_profile(
+        profile_id,
+        auto_import_last_scan_at=db.now_utc(),
+    )
+    profile = db.get_local_storage_profile(profile_id)
+    return {
+        "status": "ok",
+        "disabled": False,
+        "summary": summary,
+        "added": added,
+        "skipped_items": skipped,
+        "items": [
+            _local_storage_profile_item_dict(item)
+            for item in db.list_local_storage_profile_items(profile_id)
+        ],
+        "profile": _local_storage_profile_dict(profile, include_links=True) if profile else None,
+    }
+
+
+@router.get("/storage-profiles/ready-videos")
+def local_storage_profile_ready_videos(limit: int = 1000) -> dict[str, Any]:
+    try:
+        _init()
+        items = _list_local_storage_candidate_videos(limit=limit)
+        counts = dict(Counter(item["section"] for item in items))
+        counts["all"] = len(items)
+        return {"items": items, "counts": counts}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/storage-profiles/{profile_id}/auto-import/run")
+def local_storage_profile_auto_import_run(
+    profile_id: int,
+    req: LocalStorageProfileAutoImportRunRequest | None = None,
+) -> dict[str, Any]:
+    try:
+        _init()
+        return _run_local_storage_profile_auto_import(
+            profile_id,
+            force=bool(req.force) if req is not None else False,
+        )
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/storage-profiles")
+def local_storage_profiles(enabled: bool | None = True) -> dict[str, Any]:
+    try:
+        _init()
+        rows = db.list_local_storage_profiles(enabled=enabled)
+        return {"items": [_local_storage_profile_dict(row, include_links=True) for row in rows]}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/storage-profiles")
+def local_storage_profile_create(req: LocalStorageProfileCreateRequest) -> dict[str, Any]:
+    try:
+        _init()
+        profile_id = db.create_local_storage_profile(
+            name=req.name,
+            handle=req.handle,
+            description=req.description,
+            avatar_initials=req.avatar_initials,
+            avatar_color=req.avatar_color,
+            banner_color=req.banner_color,
+            auto_import_enabled=req.auto_import_enabled,
+            auto_import_sections=req.auto_import_sections,
+            auto_import_prefix=req.auto_import_prefix,
+        )
+        row = db.get_local_storage_profile(profile_id)
+        assert row is not None
+        return {"profile": _local_storage_profile_dict(row, include_links=True)}
+    except sqlite3.IntegrityError as exc:
+        raise _fail(ValueError("Профиль с таким handle уже существует."))
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/storage-profiles/{profile_id}")
+def local_storage_profile_detail(profile_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        row = db.get_local_storage_profile(profile_id)
+        if row is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        items = [
+            _local_storage_profile_item_dict(item)
+            for item in db.list_local_storage_profile_items(profile_id)
+        ]
+        return {
+            "profile": _local_storage_profile_dict(row, include_links=True),
+            "items": items,
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.patch("/storage-profiles/{profile_id}")
+def local_storage_profile_update(
+    profile_id: int,
+    req: LocalStorageProfileUpdateRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        updates = _request_updates(
+            req,
+            (
+                "name",
+                "handle",
+                "description",
+                "avatar_initials",
+                "avatar_color",
+                "banner_color",
+                "auto_import_enabled",
+                "auto_import_sections",
+                "auto_import_prefix",
+                "enabled",
+            ),
+        )
+        if not db.update_local_storage_profile(profile_id, **updates):
+            raise FileNotFoundError("Локальный профиль не найден.")
+        row = db.get_local_storage_profile(profile_id)
+        assert row is not None
+        return {"profile": _local_storage_profile_dict(row, include_links=True)}
+    except sqlite3.IntegrityError:
+        raise _fail(ValueError("Профиль с таким handle уже существует."))
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.delete("/storage-profiles/{profile_id}")
+def local_storage_profile_disable(profile_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if not db.disable_local_storage_profile(profile_id):
+            raise FileNotFoundError("Локальный профиль не найден.")
+        return {"status": "ok", "profile_id": int(profile_id)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+def _active_youtube_account(account_id: int) -> Any:
+    account = db.get_social_account(account_id)
+    if account is None or _row(account, "platform") != "youtube":
+        raise FileNotFoundError("YouTube аккаунт не найден.")
+    if _row(account, "status", "active") != "active":
+        raise ValueError("YouTube аккаунт не активен.")
+    return account
+
+
+def _linked_storage_profile_youtube_account_id(
+    profile_id: int,
+    requested_account_id: int | None = None,
+) -> int:
+    profile = db.get_local_storage_profile(profile_id)
+    if profile is None or not bool(_row(profile, "enabled", 1)):
+        raise FileNotFoundError("Локальный профиль не найден.")
+    link = db.get_local_storage_profile_service_link(profile_id, "youtube")
+    if (
+        link is None
+        or _row(link, "status", "not_connected") != "linked"
+        or _row(link, "external_account_id") is None
+    ):
+        raise ValueError("Сначала привяжите YouTube-канал к профилю.")
+    linked_account_id = int(_row(link, "external_account_id"))
+    if requested_account_id is not None and int(requested_account_id) != linked_account_id:
+        raise ValueError("Профиль привязан к другому YouTube-каналу.")
+    _active_youtube_account(linked_account_id)
+    return linked_account_id
+
+
+def _storage_profile_publish_title(item: Any) -> str:
+    title = _normalize_setting_text(_row(item, "title"))
+    if title:
+        return title
+    workspace_path = _row(item, "workspace_path", "") or ""
+    stem = Path(workspace_path).stem
+    return stem or f"ShortsFarm profile video {int(item['id'])}"
+
+
+def _create_publish_job_from_storage_profile_item(
+    *,
+    profile_id: int,
+    item: Any,
+    account_id: int,
+    req: LocalStorageProfileYouTubePublishRequest,
+) -> tuple[int, int, str | None]:
+    workspace_path, abs_path = _validate_local_storage_workspace_video(_row(item, "workspace_path"))
+    title = _storage_profile_publish_title(item)
+    clip_id = db.get_or_create_publish_clip_for_file(
+        abs_path,
+        title=title,
+    )
+    existing_job = db.get_publish_job_for_clip(account_id=account_id, clip_id=clip_id)
+    validated = validate_publish_options(
+        title=title,
+        publish_mode=req.publish_mode,
+        publish_at=None,
+        category_id=req.category_id,
+    )
+    tags = parse_tags(_row(item, "tags") or "")
+    job_id = db.create_publish_job(
+        account_id=account_id,
+        clip_id=clip_id,
+        title=title,
+        description=_row(item, "description", "") or "",
+        tags=json.dumps(tags, ensure_ascii=False),
+        category_id=req.category_id,
+        privacy_status=str(validated["privacy_status"]),
+        publish_mode=req.publish_mode,
+        publish_at=validated["publish_at"],
+        made_for_kids=req.made_for_kids,
+        platform="youtube",
+    )
+    db.link_local_storage_profile_publish_job(
+        profile_id,
+        int(item["id"]),
+        job_id,
+        platform="youtube",
+    )
+    return clip_id, job_id, _row(existing_job, "status") if existing_job is not None else None
+
+
+@router.post("/storage-profiles/{profile_id}/youtube/link")
+def local_storage_profile_youtube_link(
+    profile_id: int,
+    req: LocalStorageProfileYouTubeLinkRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_local_storage_profile(profile_id) is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        account = _active_youtube_account(req.account_id)
+        display_name = (
+            _row(account, "channel_title")
+            or _row(account, "display_name")
+            or f"YouTube аккаунт #{int(req.account_id)}"
+        )
+        db.upsert_local_storage_profile_service_link(
+            profile_id,
+            platform="youtube",
+            external_account_id=int(req.account_id),
+            display_name=display_name,
+            status="linked",
+        )
+        profile = db.get_local_storage_profile(profile_id)
+        assert profile is not None
+        return {"profile": _local_storage_profile_dict(profile, include_links=True)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.delete("/storage-profiles/{profile_id}/youtube/link")
+def local_storage_profile_youtube_unlink(profile_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_local_storage_profile(profile_id) is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        db.remove_local_storage_profile_service_link(profile_id, "youtube")
+        profile = db.get_local_storage_profile(profile_id)
+        assert profile is not None
+        return {"profile": _local_storage_profile_dict(profile, include_links=True)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/storage-profiles/{profile_id}/publish-jobs")
+def local_storage_profile_publish_jobs(profile_id: int, limit: int = 100) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_local_storage_profile(profile_id) is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        rows = db.list_local_storage_profile_publish_jobs(
+            profile_id,
+            platform="youtube",
+            limit=max(1, min(int(limit or 100), 500)),
+        )
+        return {"jobs": [_publish_job_dict(row) for row in rows]}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/storage-profiles/{profile_id}/youtube/videos")
+def local_storage_profile_youtube_videos(profile_id: int, limit: int = 200) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_local_storage_profile(profile_id) is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        rows = db.list_local_storage_profile_external_videos(
+            profile_id,
+            platform="youtube",
+            limit=max(1, min(int(limit or 200), 500)),
+        )
+        return {"videos": [_local_storage_external_video_dict(row) for row in rows]}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/storage-profiles/{profile_id}/youtube/enqueue")
+def local_storage_profile_youtube_enqueue(
+    profile_id: int,
+    req: LocalStorageProfileYouTubePublishRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        if not req.item_ids:
+            raise ValueError("Выберите видео профиля для публикации.")
+        account_id = _linked_storage_profile_youtube_account_id(profile_id, req.account_id)
+
+        seen: set[int] = set()
+        jobs: list[dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
+        skipped_items: list[dict[str, Any]] = []
+        summary = {
+            "created": 0,
+            "updated": 0,
+            "already_done": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
+
+        for raw_item_id in req.item_ids:
+            item_id = int(raw_item_id)
+            if item_id in seen:
+                continue
+            seen.add(item_id)
+            try:
+                item = db.get_local_storage_profile_item(item_id)
+                if item is None or int(item["profile_id"]) != int(profile_id):
+                    skipped_items.append({"item_id": item_id, "reason": "Видео в профиле не найдено"})
+                    summary["skipped"] += 1
+                    continue
+                clip_id, job_id, previous_status = _create_publish_job_from_storage_profile_item(
+                    profile_id=profile_id,
+                    item=item,
+                    account_id=account_id,
+                    req=req,
+                )
+                job = db.get_publish_job(job_id)
+                if job is None:
+                    raise FileNotFoundError(f"Publish job {job_id} не найден")
+                validate_publish_job(job)
+                job_payload = _publish_job_dict(job)
+                if previous_status is None:
+                    summary["created"] += 1
+                elif previous_status == "done":
+                    summary["already_done"] += 1
+                    skipped_items.append({"item_id": item_id, "reason": "Уже загружено"})
+                else:
+                    summary["updated"] += 1
+                items.append({
+                    "item_id": item_id,
+                    "clip_id": clip_id,
+                    "job_id": job_id,
+                    "status": job_payload["status"],
+                })
+                jobs.append(job_payload)
+            except Exception as exc:
+                summary["errors"] += 1
+                summary["skipped"] += 1
+                skipped_items.append({
+                    "item_id": item_id,
+                    "reason": str(exc) or exc.__class__.__name__,
+                })
+
+        profile = db.get_local_storage_profile(profile_id)
+        detail_items = [
+            _local_storage_profile_item_dict(item)
+            for item in db.list_local_storage_profile_items(profile_id)
+        ]
+        return {
+            "status": "ok",
+            "summary": summary,
+            "jobs": jobs,
+            "items": items,
+            "skipped_items": skipped_items,
+            "profile": _local_storage_profile_dict(profile, include_links=True) if profile else None,
+            "profile_items": detail_items,
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/storage-profiles/{profile_id}/youtube/sync")
+def local_storage_profile_youtube_sync(profile_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        account_id = _linked_storage_profile_youtube_account_id(profile_id)
+        account = _active_youtube_account(account_id)
+        synced_at = db.now_utc()
+        display_name = (
+            _row(account, "channel_title")
+            or _row(account, "display_name")
+            or f"YouTube аккаунт #{account_id}"
+        )
+        inventory = fetch_youtube_channel_videos(account, max_results=500)
+        summary = {
+            "fetched": 0,
+            "matched_jobs": 0,
+            "matched_profile_items": 0,
+            "external_only": 0,
+            "published": 0,
+            "metadata_updated": 0,
+        }
+        for video in inventory.get("videos", []):
+            youtube_video_id = str(video.get("video_id") or "").strip()
+            if not youtube_video_id:
+                continue
+            summary["fetched"] += 1
+            youtube_url = str(video.get("url") or f"https://www.youtube.com/watch?v={youtube_video_id}")
+            job = db.get_publish_job_by_youtube_video_id(
+                account_id=account_id,
+                youtube_video_id=youtube_video_id,
+            )
+            publish_job_id = int(job["id"]) if job is not None else None
+            profile_item_id = None
+            if job is not None:
+                summary["matched_jobs"] += 1
+                db.update_publish_job_from_youtube_sync(
+                    int(job["id"]),
+                    youtube_video_id=youtube_video_id,
+                    youtube_url=youtube_url,
+                    title=video.get("title") or None,
+                    description=video.get("description") or None,
+                    tags=video.get("tags") or None,
+                    category_id=video.get("category_id") or None,
+                    privacy_status=video.get("privacy_status") or None,
+                    publish_at=video.get("publish_at") or None,
+                )
+                summary["metadata_updated"] += 1
+                link = db.get_local_storage_profile_publish_link_for_job(
+                    profile_id,
+                    int(job["id"]),
+                    platform="youtube",
+                )
+                if link is not None and _row(link, "profile_item_id") is not None:
+                    profile_item_id = int(_row(link, "profile_item_id"))
+                    db.update_local_storage_profile_item_status(profile_item_id, "published")
+                    summary["matched_profile_items"] += 1
+                    summary["published"] += 1
+            else:
+                summary["external_only"] += 1
+            db.upsert_local_storage_profile_external_video(
+                profile_id,
+                platform="youtube",
+                external_video_id=youtube_video_id,
+                external_url=youtube_url,
+                title=video.get("title") or "",
+                description=video.get("description") or "",
+                tags=video.get("tags") or [],
+                category_id=video.get("category_id") or "",
+                privacy_status=video.get("privacy_status") or "",
+                publish_at=video.get("publish_at"),
+                published_at=video.get("published_at"),
+                duration=video.get("duration") or "",
+                thumbnail_url=video.get("thumbnail_url") or "",
+                profile_item_id=profile_item_id,
+                publish_job_id=publish_job_id,
+                raw_json=video.get("raw") or {},
+            )
+
+        db.upsert_local_storage_profile_service_link(
+            profile_id,
+            platform="youtube",
+            external_account_id=account_id,
+            display_name=display_name,
+            status="linked",
+        )
+        db.update_local_storage_profile_service_link_sync(
+            profile_id,
+            "youtube",
+            last_sync_at=synced_at,
+            last_sync_error=None,
+            synced_video_count=summary["fetched"],
+        )
+
+        profile = db.get_local_storage_profile(profile_id)
+        jobs = db.list_local_storage_profile_publish_jobs(profile_id, platform="youtube", limit=200)
+        external_rows = db.list_local_storage_profile_external_videos(profile_id, platform="youtube", limit=200)
+        return {
+            "status": "ok",
+            "summary": summary,
+            "channel": inventory.get("channel") or {},
+            "profile": _local_storage_profile_dict(profile, include_links=True) if profile else None,
+            "items": [
+                _local_storage_profile_item_dict(item)
+                for item in db.list_local_storage_profile_items(profile_id)
+            ],
+            "jobs": [_publish_job_dict(job) for job in jobs],
+            "youtube_videos": [_local_storage_external_video_dict(row) for row in external_rows],
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        try:
+            db.update_local_storage_profile_service_link_sync(
+                profile_id,
+                "youtube",
+                last_sync_error=str(exc) or exc.__class__.__name__,
+            )
+        except Exception:
+            pass
+        raise _fail(exc)
+
+
+@router.get("/storage-profiles/{profile_id}/items")
+def local_storage_profile_items(profile_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_local_storage_profile(profile_id) is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        items = [
+            _local_storage_profile_item_dict(item)
+            for item in db.list_local_storage_profile_items(profile_id)
+        ]
+        return {"items": items}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/storage-profiles/{profile_id}/items")
+def local_storage_profile_item_add(
+    profile_id: int,
+    req: LocalStorageProfileItemCreateRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        workspace_path, _ = _validate_local_storage_workspace_video(req.workspace_path)
+        item_id = db.add_local_storage_profile_item(
+            profile_id,
+            workspace_path=workspace_path,
+            title=req.title,
+            description=req.description,
+            tags=req.tags,
+            status=req.status,
+        )
+        row = db.get_local_storage_profile_item(item_id)
+        profile = db.get_local_storage_profile(profile_id)
+        if row is None or profile is None:
+            raise FileNotFoundError("Локальный профиль или видео не найдены.")
+        return {
+            "item": _local_storage_profile_item_dict(row),
+            "profile": _local_storage_profile_dict(profile, include_links=True),
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.delete("/storage-profiles/{profile_id}/items/{item_id}")
+def local_storage_profile_item_remove(profile_id: int, item_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if not db.remove_local_storage_profile_item(profile_id, item_id):
+            raise FileNotFoundError("Видео в профиле не найдено.")
+        profile = db.get_local_storage_profile(profile_id)
+        return {
+            "status": "ok",
+            "profile": _local_storage_profile_dict(profile, include_links=True) if profile else None,
         }
     except FileNotFoundError as exc:
         raise _fail(exc, status_code=404)

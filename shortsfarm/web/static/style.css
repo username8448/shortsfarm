@@ -588,6 +588,317 @@ body.video-lightbox-open { overflow: hidden; }
   margin-bottom: 0;
 }
 
+/* ── Local storage profiles ────────────────────────── */
+.storage-profiles-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, .34fr) minmax(0, .66fr);
+  gap: 14px;
+  align-items: start;
+}
+.storage-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+.storage-profile-card {
+  min-height: 148px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 10px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(15,23,42,.42);
+  color: var(--txt);
+  cursor: pointer;
+  text-align: center;
+}
+.storage-profile-card:hover,
+.storage-profile-card.active {
+  border-color: var(--acc-br);
+  background: var(--acc-bg);
+}
+.storage-profile-card-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 800;
+}
+.storage-profile-icon,
+.storage-profile-plus,
+.storage-channel-avatar {
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: #fff;
+  font-weight: 900;
+  box-shadow: 0 8px 22px rgba(0,0,0,.28);
+}
+.storage-profile-icon {
+  width: 58px;
+  height: 58px;
+  font-size: 18px;
+}
+.storage-profile-plus {
+  width: 58px;
+  height: 58px;
+  border: 1px dashed var(--acc-br);
+  background: rgba(59,130,246,.12);
+  color: #bfdbfe;
+  font-size: 34px;
+  line-height: 1;
+}
+.storage-profile-page {
+  min-width: 0;
+}
+.storage-channel {
+  min-width: 0;
+}
+.storage-channel-banner {
+  height: 146px;
+  background: #111827;
+}
+.storage-channel-head {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+  padding: 0 18px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.storage-channel-avatar {
+  width: 92px;
+  height: 92px;
+  margin-top: -34px;
+  flex-shrink: 0;
+  border: 4px solid var(--s1);
+  font-size: 28px;
+}
+.storage-channel-name {
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--txt);
+  line-height: 1.15;
+}
+.storage-channel-head p {
+  margin-top: 8px;
+  color: var(--mid);
+  line-height: 1.55;
+}
+.storage-service-note {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 14px 18px 0;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(148,163,184,.08);
+}
+.storage-service-note i {
+  color: #ef4444;
+  font-size: 20px;
+}
+.storage-service-note b {
+  color: var(--txt);
+  font-size: 12px;
+}
+.storage-service-note p {
+  margin: 3px 0 0;
+  color: var(--mid);
+  font: 10px var(--mono);
+}
+.storage-youtube-link > div {
+  flex: 1;
+  min-width: 0;
+}
+.storage-youtube-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+.storage-youtube-controls select {
+  min-width: min(340px, 100%);
+  flex: 1;
+}
+.storage-profile-edit {
+  padding: 16px 18px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.storage-profile-publish-panel {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin: 14px 18px 0;
+  padding: 12px;
+  border: 1px solid rgba(239,68,68,.36);
+  border-radius: 10px;
+  background: rgba(127,29,29,.12);
+}
+.storage-auto-panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(260px, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin: 14px 18px 0;
+  padding: 12px;
+  border: 1px solid rgba(59,130,246,.34);
+  border-radius: 10px;
+  background: rgba(59,130,246,.08);
+}
+.storage-auto-form {
+  display: grid;
+  gap: 8px;
+}
+.storage-auto-sections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.storage-auto-check {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--mid);
+  font: 10px var(--mono);
+}
+.storage-section-title.inline-title {
+  padding: 0 0 4px;
+}
+.storage-section-title {
+  padding: 16px 18px 0;
+  color: var(--txt);
+  font-size: 14px;
+  font-weight: 800;
+}
+.storage-video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 13px;
+  padding: 16px 18px 18px;
+}
+.storage-video-card {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(15,23,42,.44);
+}
+.storage-video-card.missing {
+  opacity: .66;
+}
+.storage-video-select {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+  color: var(--mid);
+  font: 10px var(--mono);
+}
+.storage-video-thumb .video-thumb {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 9 / 16;
+  max-height: 260px;
+  object-fit: cover;
+}
+.storage-video-thumb .video-watch-trigger {
+  width: 100%;
+}
+.storage-video-title {
+  margin-top: 8px;
+  color: var(--txt);
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.storage-video-path {
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.storage-video-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+}
+.storage-video-publish-status {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+.storage-profile-jobs {
+  padding: 12px 18px 18px;
+  overflow-x: auto;
+}
+.storage-youtube-inventory {
+  padding: 12px 18px 18px;
+}
+.storage-youtube-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 13px;
+  margin-top: 10px;
+}
+.storage-youtube-video-card {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(239,68,68,.28);
+  border-radius: 12px;
+  background: rgba(127,29,29,.10);
+}
+.storage-youtube-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 9px;
+  overflow: hidden;
+  background: rgba(15,23,42,.75);
+}
+.storage-youtube-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.storage-candidates {
+  margin: 16px 18px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(15,23,42,.38);
+}
+.storage-candidate-list {
+  display: grid;
+  gap: 0;
+  max-height: 360px;
+  overflow: auto;
+}
+.storage-candidate-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--border);
+}
+.storage-candidate-row:last-child {
+  border-bottom: none;
+}
+.storage-candidate-row .video-thumb {
+  width: 68px;
+  height: 38px;
+}
+
 /* ── Workspace ─────────────────────────────────────── */
 .workspace-toolbar {
   display: flex; align-items: center; justify-content: space-between;
@@ -795,6 +1106,8 @@ body.video-lightbox-open { overflow: hidden; }
 @media (max-width: 1080px) {
   .publish-grid,
   .settings-grid,
+  .storage-profiles-layout,
+  .storage-auto-panel,
   .editing-layout,
   .field-grid,
   .workspace-layout,

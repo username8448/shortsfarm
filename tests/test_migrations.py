@@ -35,6 +35,11 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "025_create_workspace_folders" in versions
     assert "026_create_remotion_studio" in versions
     assert "027_create_studio_templates" in versions
+    assert "032_create_local_storage_profiles" in versions
+    assert "033_local_storage_profile_service_link_unique" in versions
+    assert "034_link_storage_profiles_to_publish_jobs" in versions
+    assert "035_add_storage_profile_auto_import" in versions
+    assert "036_create_storage_profile_youtube_sync" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -381,6 +386,90 @@ def test_video_segments_schema_exists(tmp_data_dir):
     } <= columns
     assert "idx_video_segments_source_path" in indexes
     assert "idx_video_segments_status" in indexes
+
+
+def test_local_storage_profiles_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    db.init_db()
+    with db.connect() as con:
+        con.execute("SELECT * FROM local_storage_profiles LIMIT 0")
+        con.execute("SELECT * FROM local_storage_profile_items LIMIT 0")
+        con.execute("SELECT * FROM local_storage_profile_service_links LIMIT 0")
+        con.execute("SELECT * FROM local_storage_profile_publish_jobs LIMIT 0")
+        con.execute("SELECT * FROM local_storage_profile_external_videos LIMIT 0")
+        profile_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(local_storage_profiles)")
+        }
+        profile_indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(local_storage_profiles)")
+        }
+        item_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(local_storage_profile_items)")
+        }
+        link_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(local_storage_profile_service_links)")
+        }
+        item_indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(local_storage_profile_items)")
+        }
+        link_indexes = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA index_list(local_storage_profile_service_links)"
+            )
+        }
+        publish_link_columns = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA table_info(local_storage_profile_publish_jobs)"
+            )
+        }
+        publish_link_indexes = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA index_list(local_storage_profile_publish_jobs)"
+            )
+        }
+        external_columns = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA table_info(local_storage_profile_external_videos)"
+            )
+        }
+        external_indexes = {
+            row["name"]
+            for row in con.execute(
+                "PRAGMA index_list(local_storage_profile_external_videos)"
+            )
+        }
+
+    assert {
+        "name", "handle", "description", "avatar_initials",
+        "avatar_color", "banner_color", "enabled",
+        "auto_import_enabled", "auto_import_sections",
+        "auto_import_prefix", "auto_import_last_scan_at",
+    } <= profile_columns
+    assert {"profile_id", "workspace_path", "title", "status", "added_at"} <= item_columns
+    assert {
+        "profile_id", "platform", "external_account_id", "status",
+        "last_sync_at", "last_sync_error", "synced_video_count",
+    } <= link_columns
+    assert {"profile_id", "profile_item_id", "publish_job_id", "platform"} <= publish_link_columns
+    assert {
+        "profile_id", "platform", "external_video_id", "external_url",
+        "title", "privacy_status", "profile_item_id", "publish_job_id",
+    } <= external_columns
+    assert "idx_local_storage_profile_items_path" in item_indexes
+    assert "idx_local_storage_profiles_auto_import" in profile_indexes
+    assert "idx_local_storage_profile_service_links_unique_profile_platform" in link_indexes
+    assert "idx_local_storage_profile_publish_jobs_profile" in publish_link_indexes
+    assert "idx_local_storage_profile_external_videos_profile" in external_indexes
 
 
 def test_idempotent(tmp_data_dir):

@@ -26,6 +26,7 @@
       <button class="nb" data-v="queue" onclick="nav('queue', this)"><i class="ti ti-list"></i><span>Очередь</span><span id="nav-jobs" class="badge-pill" style="background:var(--acc-bg);color:var(--acc);"></span></button>
       <button class="nb" data-v="videos" onclick="nav('videos', this)"><i class="ti ti-video"></i><span>Видео</span><span id="nav-videos" class="badge-pill" style="background:var(--s2);color:var(--mid);"></span></button>
       <button class="nb" data-v="clips" onclick="nav('clips', this)"><i class="ti ti-player-play"></i><span>Клипы</span><span id="nav-clips" class="badge-pill" style="background:var(--warn-bg);color:var(--warn);"></span></button>
+      <button class="nb" data-v="storage-profiles" onclick="nav('storage-profiles', this)"><i class="ti ti-user-square-rounded"></i><span>Профили</span></button>
       <button class="nb" data-v="publish" onclick="nav('publish', this)"><i class="ti ti-upload"></i><span>Публикация</span></button>
       <button class="nb" data-v="editing" onclick="nav('editing', this)"><i class="ti ti-layout-collage"></i><span>Монтаж</span></button>
       <button class="nb" data-v="studio" onclick="nav('studio', this)"><i class="ti ti-movie"></i><span>Template Studio</span></button>
@@ -230,6 +231,33 @@
           <div class="box-head">Детали</div>
           <div id="workspace-detail"><div class="empty">Выберите сегмент или клип</div></div>
         </aside>
+      </div>
+    </div>
+
+    <div id="v-storage-profiles" class="v">
+      <div class="ph"><h1>Профили</h1><p>локальные витрины готового Shorts-контента без копирования файлов</p></div>
+      <div id="storage-profiles-error" class="err-line" style="display:none;margin-bottom:14px"></div>
+      <div class="storage-profiles-layout">
+        <section class="box">
+          <div class="box-head">
+            <span>Локальные профили</span>
+            <div class="row-actions">
+              <button class="btn-mini" onclick="loadStorageProfiles()">Обновить</button>
+              <button class="btn-secondary" onclick="createStorageProfile()">Создать профиль</button>
+            </div>
+          </div>
+          <div id="storage-profiles-grid" class="storage-profile-grid"></div>
+        </section>
+        <section class="box storage-profile-page">
+          <div class="box-head">
+            <span>Витрина профиля</span>
+            <div class="row-actions">
+              <button class="btn-mini" onclick="loadStorageProfileDetail()">Обновить</button>
+              <button class="btn-primary" onclick="toggleStorageCandidatePicker()">Добавить видео</button>
+            </div>
+          </div>
+          <div id="storage-profile-detail"><div class="empty">Создайте или выберите профиль.</div></div>
+        </section>
       </div>
     </div>
 

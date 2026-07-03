@@ -93,6 +93,55 @@ class WorkspaceYouTubeEnqueueRequest(BaseModel):
     made_for_kids: bool = False
 
 
+class LocalStorageProfileCreateRequest(BaseModel):
+    name: str
+    handle: str | None = None
+    description: str | None = None
+    avatar_initials: str | None = None
+    avatar_color: str | None = None
+    banner_color: str | None = None
+    auto_import_enabled: bool = False
+    auto_import_sections: list[str] = Field(default_factory=lambda: ["edits", "ready", "published"])
+    auto_import_prefix: str | None = None
+
+
+class LocalStorageProfileUpdateRequest(BaseModel):
+    name: str | None = None
+    handle: str | None = None
+    description: str | None = None
+    avatar_initials: str | None = None
+    avatar_color: str | None = None
+    banner_color: str | None = None
+    auto_import_enabled: bool | None = None
+    auto_import_sections: list[str] | None = None
+    auto_import_prefix: str | None = None
+    enabled: bool | None = None
+
+
+class LocalStorageProfileItemCreateRequest(BaseModel):
+    workspace_path: str
+    title: str | None = None
+    description: str | None = None
+    tags: str | None = None
+    status: str = "draft"
+
+
+class LocalStorageProfileYouTubeLinkRequest(BaseModel):
+    account_id: int
+
+
+class LocalStorageProfileYouTubePublishRequest(BaseModel):
+    item_ids: list[int] = Field(default_factory=list)
+    account_id: int | None = None
+    publish_mode: str = "private"
+    category_id: str = "22"
+    made_for_kids: bool = False
+
+
+class LocalStorageProfileAutoImportRunRequest(BaseModel):
+    force: bool = False
+
+
 class YouTubeSettingsRequest(BaseModel):
     client_id: str = ""
     client_secret: str = ""

@@ -155,6 +155,29 @@ export const UniversalVideoWorkbench = ({
     if (videoRef.current) videoRef.current.playbackRate = speed;
   }, [speed]);
 
+  useEffect(() => {
+    const stopVideo = () => {
+      const video = videoRef.current;
+      if (!video) return;
+      video.pause();
+      setSelectionPlayback(false);
+    };
+    const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === 'shortsfarm:pause-video') stopVideo();
+    };
+    window.addEventListener('message', handleMessage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      stopVideo();
+      const video = videoRef.current;
+      if (video) {
+        video.removeAttribute('src');
+        video.load();
+      }
+    };
+  }, []);
+
   const seekTo = (time: number) => {
     const video = videoRef.current;
     if (!video) return;
