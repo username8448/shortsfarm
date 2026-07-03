@@ -237,7 +237,7 @@
     <div id="v-storage-profiles" class="v">
       <div class="ph"><h1>Профили</h1><p>локальные витрины готового Shorts-контента без копирования файлов</p></div>
       <div id="storage-profiles-error" class="err-line" style="display:none;margin-bottom:14px"></div>
-      <div class="storage-profiles-layout">
+      <div class="storage-profiles-hub">
         <section class="box">
           <div class="box-head">
             <span>Локальные профили</span>
@@ -248,17 +248,60 @@
           </div>
           <div id="storage-profiles-grid" class="storage-profile-grid"></div>
         </section>
-        <section class="box storage-profile-page">
+        <section class="box storage-profiles-settings">
           <div class="box-head">
-            <span>Витрина профиля</span>
+            <span>Настройки профилей</span>
             <div class="row-actions">
-              <button class="btn-mini" onclick="loadStorageProfileDetail()">Обновить</button>
-              <button class="btn-primary" onclick="toggleStorageCandidatePicker()">Добавить видео</button>
+              <button class="btn-secondary" onclick="openStorageProfileYoutubeSettings()">YouTube-аккаунты</button>
             </div>
           </div>
-          <div id="storage-profile-detail"><div class="empty">Создайте или выберите профиль.</div></div>
+          <div class="storage-profiles-settings-body">
+            <div class="storage-settings-card">
+              <i class="ti ti-user-square-rounded"></i>
+              <div>
+                <b>Профили — это локальные каналы</b>
+                <p>В этой вкладке остаются только карточки профилей и общие настройки. Нажмите профиль, чтобы открыть отдельную страницу канала с видео, очередью публикации и YouTube-синхронизацией.</p>
+              </div>
+            </div>
+            <div class="storage-settings-card">
+              <i class="ti ti-brand-youtube"></i>
+              <div>
+                <b>YouTube подключается отдельно</b>
+                <p>Сами аккаунты YouTube настраиваются в разделе «Публикация», а привязка к конкретному профилю — внутри страницы этого профиля.</p>
+              </div>
+            </div>
+            <div class="storage-settings-card">
+              <i class="ti ti-tags"></i>
+              <div>
+                <b>Теги — основной способ отбора</b>
+                <p>Создавайте теги для каналов, жанров и тем. Профиль подключает теги, а не папки.</p>
+                <button class="btn-secondary" onclick="createStorageCatalogTag()">Создать тег</button>
+              </div>
+            </div>
+          </div>
         </section>
       </div>
+    </div>
+
+    <div id="v-storage-profile" class="v">
+      <div class="storage-profile-route-head">
+        <button class="btn-secondary" onclick="openStorageProfilesHub()"><i class="ti ti-arrow-left"></i> Все профили</button>
+        <div class="ph">
+          <h1 id="storage-profile-view-title">Профиль</h1>
+          <p id="storage-profile-view-subtitle">отдельная страница локального канала</p>
+        </div>
+      </div>
+      <div id="storage-profile-error" class="err-line" style="display:none;margin-bottom:14px"></div>
+      <section class="box storage-profile-page">
+        <div class="box-head">
+          <span id="storage-profile-page-head-title">Витрина профиля</span>
+          <div class="row-actions">
+            <button class="btn-mini" onclick="loadStorageProfileDetail()">Обновить</button>
+            <button class="btn-primary" onclick="toggleStorageCandidatePicker()">Добавить видео</button>
+          </div>
+        </div>
+        <div id="storage-profile-detail"><div class="empty">Выберите профиль.</div></div>
+      </section>
     </div>
 
     <div id="v-publish" class="v">

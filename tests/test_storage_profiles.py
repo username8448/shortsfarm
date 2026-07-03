@@ -187,6 +187,7 @@ def test_storage_profile_youtube_enqueue_creates_publish_job(tmp_path):
             title="Ready Short",
             description="Profile description",
             tags="one, two",
+            status="ready",
         ),
     )["item"]
 
@@ -222,7 +223,7 @@ def test_storage_profile_youtube_enqueue_requires_linked_account(tmp_path):
     profile_id = _profile_id()
     item = api.local_storage_profile_item_add(
         profile_id,
-        LocalStorageProfileItemCreateRequest(workspace_path=relative),
+        LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
 
     with pytest.raises(HTTPException) as exc:
@@ -254,7 +255,7 @@ def test_storage_profile_youtube_enqueue_reuses_existing_job(tmp_path):
     )
     item = api.local_storage_profile_item_add(
         profile_id,
-        LocalStorageProfileItemCreateRequest(workspace_path=relative),
+        LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
     req = LocalStorageProfileYouTubePublishRequest(item_ids=[item["id"]])
 
@@ -286,7 +287,7 @@ def test_storage_profile_youtube_enqueue_rejects_other_account(tmp_path):
     )
     item = api.local_storage_profile_item_add(
         profile_id,
-        LocalStorageProfileItemCreateRequest(workspace_path=relative),
+        LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
 
     with pytest.raises(HTTPException) as exc:
@@ -450,7 +451,7 @@ def test_storage_profile_youtube_sync_fetches_channel_inventory(monkeypatch, tmp
     )
     item = api.local_storage_profile_item_add(
         profile_id,
-        LocalStorageProfileItemCreateRequest(workspace_path=relative),
+        LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
     job = api.local_storage_profile_youtube_enqueue(
         profile_id,
@@ -633,6 +634,173 @@ def test_storage_profile_ready_videos_lists_only_allowed_video_folders(tmp_path)
     assert "ready/note.txt" not in paths
 
 
+def test_channel_tag_is_created_reconciled_and_removed_from_profile_rules(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileTagRulesRequest, LocalStorageProfileYouTubeLinkRequest
+
+    _workspace(tmp_path)
+    profile_id = _profile_id()
+    account_id = _youtube_account(channel_title="Hello World")
+
+    linked = api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )["profile"]
+    channel_rules = [
+        rule for rule in linked["tag_rules"]
+        if rule["mode"] == "include" and rule["tag"]["kind"] == "channel"
+    ]
+    assert len(channel_rules) == 1
+    assert channel_rules[0]["locked"] is True
+    assert channel_rules[0]["tag"]["name"] == "channel-Hello World"
+    assert channel_rules[0]["tag"]["slug"] == "channel-hello-world"
+    assert channel_rules[0]["tag"]["color"] == "#f59e0b"
+
+    extra = db.ensure_channel_tag_for_account(account_id=999, display_name="Wrong Channel")
+    api.local_storage_profile_tag_rules_update(
+        profile_id,
+        LocalStorageProfileTagRulesRequest(
+            include_tag_ids=[channel_rules[0]["tag_id"], int(extra["id"])],
+            exclude_tag_ids=[],
+            tag_match_mode="any",
+        ),
+    )
+    detail = api.local_storage_profile_detail(profile_id)["profile"]
+    channel_slugs = [
+        rule["tag"]["slug"] for rule in detail["tag_rules"]
+        if rule["tag"]["kind"] == "channel"
+    ]
+    assert channel_slugs == ["channel-hello-world"]
+
+    unlinked = api.local_storage_profile_youtube_unlink(profile_id)["profile"]
+    assert [
+        rule for rule in unlinked["tag_rules"]
+        if rule["tag"]["kind"] == "channel"
+    ] == []
+
+
+def test_catalog_tags_search_random_and_status_compat(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import CatalogVideoTagsRequest, TagCreateRequest
+
+    root = _workspace(tmp_path)
+    _video(root, "ready/anime/clip-one.mp4")
+    _video(root, "edits/cinema/clip-two.mp4")
+    _video(root, "sources/raw.mp4")
+
+    anime = api.tag_create(TagCreateRequest(name="аниме", color="#ff77aa"))["tag"]
+    ready = next(tag for tag in api.tags_list()["items"] if tag["slug"] == "status-ready")
+    api.catalog_video_tags_update(
+        CatalogVideoTagsRequest(
+            workspace_path="ready/anime/clip-one.mp4",
+            tag_ids=[anime["id"], ready["id"]],
+        )
+    )
+
+    tags = api.catalog_video_tags("ready/anime/clip-one.mp4")["tags"]
+    assert {tag["slug"] for tag in tags} >= {"аниме", "status-ready"}
+
+    search = api.catalog_videos_search(q="аниме")["items"]
+    assert [item["workspace_path"] for item in search] == ["ready/anime/clip-one.mp4"]
+    assert search[0]["is_publish_ready"] is True
+
+    random_items = api.catalog_videos_random(limit=20)["items"]
+    paths = {item["workspace_path"] for item in random_items}
+    assert "ready/anime/clip-one.mp4" in paths
+    assert "edits/cinema/clip-two.mp4" in paths
+    assert "sources/raw.mp4" not in paths
+
+
+def test_profile_tag_sync_any_all_and_exclude(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import (
+        CatalogVideoTagsRequest,
+        LocalStorageProfileTagRulesRequest,
+        TagCreateRequest,
+    )
+
+    root = _workspace(tmp_path)
+    _video(root, "ready/channel/anime.mp4")
+    _video(root, "ready/channel/anime-film.mp4")
+    _video(root, "ready/channel/film.mp4")
+
+    anime = api.tag_create(TagCreateRequest(name="аниме"))["tag"]
+    film = api.tag_create(TagCreateRequest(name="кино"))["tag"]
+    ready = next(tag for tag in api.tags_list()["items"] if tag["slug"] == "status-ready")
+    api.catalog_video_tags_update(CatalogVideoTagsRequest(
+        workspace_path="ready/channel/anime.mp4",
+        tag_ids=[anime["id"], ready["id"]],
+    ))
+    api.catalog_video_tags_update(CatalogVideoTagsRequest(
+        workspace_path="ready/channel/anime-film.mp4",
+        tag_ids=[anime["id"], film["id"], ready["id"]],
+    ))
+    api.catalog_video_tags_update(CatalogVideoTagsRequest(
+        workspace_path="ready/channel/film.mp4",
+        tag_ids=[film["id"], ready["id"]],
+    ))
+
+    profile_any = _profile_id("Anime Profile")
+    api.local_storage_profile_tag_rules_update(
+        profile_any,
+        LocalStorageProfileTagRulesRequest(
+            include_tag_ids=[anime["id"]],
+            exclude_tag_ids=[film["id"]],
+            tag_match_mode="any",
+        ),
+    )
+    synced_any = api.local_storage_profile_tag_sync_run(profile_any)
+    assert synced_any["summary"]["matched"] == 1
+    assert {item["workspace_path"] for item in synced_any["items"]} == {"ready/channel/anime.mp4"}
+
+    profile_all = _profile_id("Anime Film Profile")
+    api.local_storage_profile_tag_rules_update(
+        profile_all,
+        LocalStorageProfileTagRulesRequest(
+            include_tag_ids=[anime["id"], film["id"]],
+            exclude_tag_ids=[],
+            tag_match_mode="all",
+        ),
+    )
+    synced_all = api.local_storage_profile_tag_sync_run(profile_all)
+    assert synced_all["summary"]["matched"] == 1
+    assert {item["workspace_path"] for item in synced_all["items"]} == {"ready/channel/anime-film.mp4"}
+
+
+def test_storage_profile_youtube_enqueue_requires_status_ready_tag(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import (
+        LocalStorageProfileItemCreateRequest,
+        LocalStorageProfileYouTubeLinkRequest,
+        LocalStorageProfileYouTubePublishRequest,
+    )
+
+    root = _workspace(tmp_path)
+    relative = "edits/channel/draft.mp4"
+    _video(root, relative)
+    profile_id = _profile_id()
+    account_id = _youtube_account(channel_title="Draft Channel")
+    api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )
+    item = api.local_storage_profile_item_add(
+        profile_id,
+        LocalStorageProfileItemCreateRequest(workspace_path=relative),
+    )["item"]
+
+    data = api.local_storage_profile_youtube_enqueue(
+        profile_id,
+        LocalStorageProfileYouTubePublishRequest(item_ids=[item["id"]]),
+    )
+
+    assert data["summary"]["created"] == 0
+    assert data["summary"]["errors"] == 1
+    assert data["jobs"] == []
+    assert "тегом" in data["skipped_items"][0]["reason"]
+
+
 def test_storage_profiles_ui_is_registered():
     root = Path(__file__).resolve().parents[1]
     html = (root / "shortsfarm" / "web" / "templates" / "index.html").read_text(encoding="utf-8")
@@ -641,9 +809,22 @@ def test_storage_profiles_ui_is_registered():
 
     assert 'data-v="storage-profiles"' in html
     assert "storage-profiles-grid" in html
+    assert 'id="v-storage-profile"' in html
+    hub_html = html.split('<div id="v-storage-profiles"', 1)[1].split('<div id="v-storage-profile"', 1)[0]
+    detail_html = html.split('<div id="v-storage-profile"', 1)[1].split('<div id="v-publish"', 1)[0]
+    assert "Настройки профилей" in hub_html
+    assert "storage-profile-detail" not in hub_html
+    assert "storage-profile-detail" in detail_html
+    assert "Все профили" in detail_html
     assert "storage-profile-card create-card" in js
-    assert "/api/storage-profiles/ready-videos" in js
-    assert "/auto-import/run" in js
+    assert "openStorageProfile(profileId" in js
+    assert "openStorageProfilesHub" in js
+    assert "searchParams.set('profile'" in js
+    assert "/api/catalog/videos/search" in js
+    assert "/api/catalog/videos/random" in js
+    assert "/api/tags" in js
+    assert "/tag-rules" in js
+    assert "/tag-sync/run" in js
     assert "/youtube/link" in js
     assert "/youtube/enqueue" in js
     assert "/youtube/sync" in js
@@ -652,15 +833,20 @@ def test_storage_profiles_ui_is_registered():
     assert "Привязать YouTube" in js
     assert "Отвязать" in js
     assert "Публикация YouTube" in js
-    assert "Автоимпорт готовых видео" in js
-    assert "Синхронизировать сейчас" in js
+    assert "Теги профиля" in js
+    assert "Случайные видео" in js
+    assert "Автоимпорт готовых видео" not in js
     assert "Синхронизировать YouTube" in js
     assert "Видео на YouTube" in js
     assert "только на YouTube" in js
     assert "enqueueStorageProfileSelection" in js
     assert "addWorkspaceItemToStorageProfile" in js
     assert "storage-youtube-controls" in css
+    assert "storage-profiles-hub" in css
+    assert "storage-profile-route-head" in css
+    assert "storage-tag-panel" in css
+    assert "storage-search-panel" in css
     assert "storage-profile-publish-panel" in css
-    assert "storage-auto-panel" in css
+    assert "storage-auto-panel" not in css
     assert "storage-youtube-grid" in css
     assert "storage-video-grid" in css

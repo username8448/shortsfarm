@@ -40,6 +40,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "034_link_storage_profiles_to_publish_jobs" in versions
     assert "035_add_storage_profile_auto_import" in versions
     assert "036_create_storage_profile_youtube_sync" in versions
+    assert "037_create_tag_catalog" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -398,6 +399,9 @@ def test_local_storage_profiles_schema_exists(tmp_data_dir):
         con.execute("SELECT * FROM local_storage_profile_service_links LIMIT 0")
         con.execute("SELECT * FROM local_storage_profile_publish_jobs LIMIT 0")
         con.execute("SELECT * FROM local_storage_profile_external_videos LIMIT 0")
+        con.execute("SELECT * FROM tags LIMIT 0")
+        con.execute("SELECT * FROM workspace_tag_links LIMIT 0")
+        con.execute("SELECT * FROM local_storage_profile_tag_rules LIMIT 0")
         profile_columns = {
             row["name"]
             for row in con.execute("PRAGMA table_info(local_storage_profiles)")
@@ -448,12 +452,41 @@ def test_local_storage_profiles_schema_exists(tmp_data_dir):
                 "PRAGMA index_list(local_storage_profile_external_videos)"
             )
         }
+        tag_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(tags)")
+        }
+        tag_indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(tags)")
+        }
+        workspace_tag_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(workspace_tag_links)")
+        }
+        workspace_tag_indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(workspace_tag_links)")
+        }
+        profile_tag_rule_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(local_storage_profile_tag_rules)")
+        }
+        profile_tag_rule_indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(local_storage_profile_tag_rules)")
+        }
+        status_tags = {
+            row["slug"]
+            for row in con.execute("SELECT slug FROM tags WHERE kind='status'")
+        }
 
     assert {
         "name", "handle", "description", "avatar_initials",
         "avatar_color", "banner_color", "enabled",
         "auto_import_enabled", "auto_import_sections",
         "auto_import_prefix", "auto_import_last_scan_at",
+        "tag_match_mode",
     } <= profile_columns
     assert {"profile_id", "workspace_path", "title", "status", "added_at"} <= item_columns
     assert {
@@ -470,6 +503,14 @@ def test_local_storage_profiles_schema_exists(tmp_data_dir):
     assert "idx_local_storage_profile_service_links_unique_profile_platform" in link_indexes
     assert "idx_local_storage_profile_publish_jobs_profile" in publish_link_indexes
     assert "idx_local_storage_profile_external_videos_profile" in external_indexes
+    assert {"name", "slug", "kind", "color", "system_key", "locked", "enabled"} <= tag_columns
+    assert {"workspace_path", "item_type", "item_id", "tag_id", "source"} <= workspace_tag_columns
+    assert {"profile_id", "tag_id", "mode", "locked", "source"} <= profile_tag_rule_columns
+    assert "idx_tags_system_key" in tag_indexes
+    assert "idx_workspace_tag_links_path_tag" in workspace_tag_indexes
+    assert "idx_workspace_tag_links_item_tag" in workspace_tag_indexes
+    assert "idx_local_storage_profile_tag_rules_profile" in profile_tag_rule_indexes
+    assert {"status-draft", "status-ready", "status-queued", "status-uploaded", "status-failed"} <= status_tags
 
 
 def test_idempotent(tmp_data_dir):

@@ -779,6 +779,42 @@ WORKSPACE_ITEM_TYPES = {"segment", "clip"}
 WORKSPACE_STATUSES = {"draft", "ready", "queued", "uploaded", "failed"}
 WORKSPACE_TARGET_ASPECTS = {"original", "16x9", "9x16"}
 WORKSPACE_PREPARE_STATUSES = {"none", "queued", "processing", "done", "failed"}
+TAG_KINDS = {"user", "system", "status", "channel"}
+PROFILE_TAG_RULE_MODES = {"include", "exclude"}
+PROFILE_TAG_MATCH_MODES = {"any", "all"}
+CHANNEL_TAG_COLOR = "#f59e0b"
+STATUS_TAG_DEFINITIONS = {
+    "draft": {
+        "name": "Черновик",
+        "slug": "status-draft",
+        "color": "#64748b",
+        "description": "Системный статус: черновик",
+    },
+    "ready": {
+        "name": "Готово",
+        "slug": "status-ready",
+        "color": "#22c55e",
+        "description": "Системный статус: готово к публикации",
+    },
+    "queued": {
+        "name": "В очереди",
+        "slug": "status-queued",
+        "color": "#38bdf8",
+        "description": "Системный статус: в очереди",
+    },
+    "uploaded": {
+        "name": "Загружено",
+        "slug": "status-uploaded",
+        "color": "#a78bfa",
+        "description": "Системный статус: загружено",
+    },
+    "failed": {
+        "name": "Ошибка",
+        "slug": "status-failed",
+        "color": "#ef4444",
+        "description": "Системный статус: ошибка",
+    },
+}
 
 
 def _normalize_workspace_item_type(value: str) -> str:
@@ -1292,6 +1328,13 @@ def update_workspace_item(
                 resolved_missing_confirmed_at,
             ),
         )
+        _sync_workspace_status_tag(
+            con,
+            status=resolved_status,
+            item_type=item_type,
+            item_id=item_id,
+            now=now,
+        )
         return True
 
 
@@ -1420,6 +1463,15 @@ def _normalize_profile_item_status(value: str | None) -> str:
     return status
 
 
+def _profile_item_status_to_workspace_status(status: str) -> str | None:
+    normalized = _normalize_profile_item_status(status)
+    return {
+        "draft": "draft",
+        "ready": "ready",
+        "published": "uploaded",
+    }.get(normalized)
+
+
 def _normalize_auto_import_sections(value: Any = None) -> str:
     if value is None or value is _PROFILE_UNSET:
         sections = sorted(LOCAL_STORAGE_PROFILE_AUTO_IMPORT_SECTIONS)
@@ -1461,6 +1513,714 @@ def _normalize_auto_import_prefix(value: str | None) -> str | None:
     return relative.as_posix()
 
 
+def _normalize_tag_kind(value: str | None) -> str:
+    kind = str(value or "user").strip().lower()
+    if kind not in TAG_KINDS:
+        raise ValueError("Tag kind must be one of: user, system, status, channel.")
+    return kind
+
+
+def _normalize_tag_rule_mode(value: str | None) -> str:
+    mode = str(value or "include").strip().lower()
+    if mode not in PROFILE_TAG_RULE_MODES:
+        raise ValueError("Profile tag rule mode must be include or exclude.")
+    return mode
+
+
+def _normalize_profile_tag_match_mode(value: str | None) -> str:
+    mode = str(value or "any").strip().lower()
+    if mode not in PROFILE_TAG_MATCH_MODES:
+        raise ValueError("Profile tag match mode must be any or all.")
+    return mode
+
+
+def _normalize_tag_slug(value: str) -> str:
+    raw = re.sub(r"\s+", "-", str(value or "").strip().lower())
+    raw = raw.replace("(", "-").replace(")", "-")
+    cleaned = re.sub(r"[^\w.-]+", "-", raw, flags=re.UNICODE)
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-._")
+    return cleaned[:96] or "tag"
+
+
+def _unique_tag_slug(
+    con: sqlite3.Connection,
+    base: str,
+    *,
+    tag_id: int | None = None,
+) -> str:
+    normalized = _normalize_tag_slug(base)
+    candidate = normalized
+    suffix = 2
+    while True:
+        row = con.execute("SELECT id FROM tags WHERE slug=?", (candidate,)).fetchone()
+        if row is None or (tag_id is not None and int(row["id"]) == int(tag_id)):
+            return candidate
+        tail = f"-{suffix}"
+        candidate = f"{normalized[:96 - len(tail)]}{tail}"
+        suffix += 1
+
+
+def _normalize_tag_color(value: str | None, default: str = "#64748b") -> str:
+    return _normalize_profile_color(value, default)
+
+
+def _status_tag_system_key(status: str) -> str:
+    return f"status:{_normalize_workspace_status(status)}"
+
+
+def _ensure_status_tags(con: sqlite3.Connection) -> None:
+    now = now_utc()
+    for status, spec in STATUS_TAG_DEFINITIONS.items():
+        con.execute(
+            """
+            INSERT INTO tags
+                (name, slug, kind, color, description, system_key,
+                 locked, enabled, created_at, updated_at)
+            VALUES (?, ?, 'status', ?, ?, ?, 1, 1, ?, ?)
+            ON CONFLICT(slug) DO UPDATE SET
+                name=excluded.name,
+                slug=excluded.slug,
+                kind=excluded.kind,
+                color=excluded.color,
+                description=excluded.description,
+                locked=excluded.locked,
+                enabled=excluded.enabled,
+                updated_at=excluded.updated_at
+            """,
+            (
+                spec["name"],
+                spec["slug"],
+                spec["color"],
+                spec["description"],
+                f"status:{status}",
+                now,
+                now,
+            ),
+        )
+
+
+def ensure_system_tags() -> None:
+    with connect() as con:
+        _ensure_status_tags(con)
+
+
+def create_tag(
+    *,
+    name: str,
+    slug: str | None = None,
+    kind: str = "user",
+    color: str | None = None,
+    description: str | None = None,
+    system_key: str | None = None,
+    locked: bool = False,
+    enabled: bool = True,
+) -> int:
+    normalized_name = _normalize_local_storage_profile_name(name)
+    normalized_kind = _normalize_tag_kind(kind)
+    now = now_utc()
+    with connect() as con:
+        normalized_slug = _unique_tag_slug(con, slug or normalized_name)
+        cur = con.execute(
+            """
+            INSERT INTO tags
+                (name, slug, kind, color, description, system_key,
+                 locked, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalized_name,
+                normalized_slug,
+                normalized_kind,
+                _normalize_tag_color(color, CHANNEL_TAG_COLOR if normalized_kind == "channel" else "#64748b"),
+                _normalize_profile_text(description, max_length=2000),
+                _normalize_profile_text(system_key, max_length=240),
+                1 if locked else 0,
+                1 if enabled else 0,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def update_tag(
+    tag_id: int,
+    *,
+    name: Any = _PROFILE_UNSET,
+    slug: Any = _PROFILE_UNSET,
+    color: Any = _PROFILE_UNSET,
+    description: Any = _PROFILE_UNSET,
+    enabled: Any = _PROFILE_UNSET,
+) -> bool:
+    with connect() as con:
+        row = con.execute("SELECT * FROM tags WHERE id=?", (int(tag_id),)).fetchone()
+        if row is None:
+            return False
+        if bool(row["locked"]) and (name is not _PROFILE_UNSET or slug is not _PROFILE_UNSET):
+            raise PermissionError("Системный тег нельзя переименовать вручную.")
+        resolved_name = row["name"] if name is _PROFILE_UNSET else _normalize_local_storage_profile_name(name)
+        resolved_slug = (
+            row["slug"]
+            if slug is _PROFILE_UNSET
+            else _unique_tag_slug(con, slug or resolved_name, tag_id=int(tag_id))
+        )
+        con.execute(
+            """
+            UPDATE tags
+            SET name=?, slug=?, color=?, description=?, enabled=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                resolved_name,
+                resolved_slug,
+                row["color"] if color is _PROFILE_UNSET else _normalize_tag_color(color, row["color"]),
+                row["description"]
+                if description is _PROFILE_UNSET
+                else _normalize_profile_text(description, max_length=2000),
+                row["enabled"] if enabled is _PROFILE_UNSET else (1 if enabled else 0),
+                now_utc(),
+                int(tag_id),
+            ),
+        )
+        return True
+
+
+def disable_tag(tag_id: int) -> bool:
+    with connect() as con:
+        row = con.execute("SELECT * FROM tags WHERE id=?", (int(tag_id),)).fetchone()
+        if row is None:
+            return False
+        if bool(row["locked"]):
+            raise PermissionError("Системный тег нельзя отключить.")
+        result = con.execute(
+            "UPDATE tags SET enabled=0, updated_at=? WHERE id=?",
+            (now_utc(), int(tag_id)),
+        )
+        return result.rowcount > 0
+
+
+def get_tag(tag_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute("SELECT * FROM tags WHERE id=?", (int(tag_id),)).fetchone()
+
+
+def get_tag_by_slug(slug: str) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM tags WHERE slug=?",
+            (_normalize_tag_slug(slug),),
+        ).fetchone()
+
+
+def get_tag_by_system_key(system_key: str) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM tags WHERE system_key=?",
+            (_normalize_profile_text(system_key, max_length=240),),
+        ).fetchone()
+
+
+def list_tags(
+    *,
+    enabled: bool | None = True,
+    kind: str | None = None,
+    q: str | None = None,
+    limit: int = 500,
+) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if enabled is not None:
+        clauses.append("enabled=?")
+        params.append(1 if enabled else 0)
+    if kind:
+        clauses.append("kind=?")
+        params.append(_normalize_tag_kind(kind))
+    query = str(q or "").strip().lower()
+    if query:
+        clauses.append("(LOWER(name) LIKE ? OR LOWER(slug) LIKE ? OR LOWER(COALESCE(description,'')) LIKE ?)")
+        like = f"%{query}%"
+        params.extend([like, like, like])
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(max(1, min(int(limit or 500), 2000)))
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT *
+            FROM tags
+            {where}
+            ORDER BY
+              CASE kind
+                WHEN 'channel' THEN 0
+                WHEN 'user' THEN 1
+                WHEN 'status' THEN 2
+                ELSE 3
+              END,
+              name COLLATE NOCASE ASC,
+              id ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+
+def _status_tag_id(con: sqlite3.Connection, status: str) -> int:
+    _ensure_status_tags(con)
+    row = con.execute(
+        "SELECT id FROM tags WHERE system_key=?",
+        (_status_tag_system_key(status),),
+    ).fetchone()
+    assert row is not None
+    return int(row["id"])
+
+
+def _remove_existing_status_tag_links(
+    con: sqlite3.Connection,
+    *,
+    workspace_path: str | None = None,
+    item_type: str | None = None,
+    item_id: int | None = None,
+) -> None:
+    if workspace_path:
+        con.execute(
+            """
+            DELETE FROM workspace_tag_links
+            WHERE workspace_path=?
+              AND tag_id IN (SELECT id FROM tags WHERE kind='status')
+            """,
+            (workspace_path,),
+        )
+    if item_type is not None and item_id is not None:
+        con.execute(
+            """
+            DELETE FROM workspace_tag_links
+            WHERE item_type=? AND item_id=?
+              AND tag_id IN (SELECT id FROM tags WHERE kind='status')
+            """,
+            (item_type, int(item_id)),
+        )
+
+
+def _add_workspace_tag_link_in_con(
+    con: sqlite3.Connection,
+    tag_id: int,
+    *,
+    workspace_path: str | None = None,
+    item_type: str | None = None,
+    item_id: int | None = None,
+    source: str = "manual",
+    now: str | None = None,
+) -> None:
+    if not workspace_path and (item_type is None or item_id is None):
+        raise ValueError("Нужен workspace_path или item_type/item_id для тега видео.")
+    timestamp = now or now_utc()
+    if workspace_path:
+        con.execute(
+            """
+            INSERT INTO workspace_tag_links
+                (workspace_path, item_type, item_id, tag_id, source, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(workspace_path, tag_id) WHERE workspace_path IS NOT NULL DO UPDATE SET
+                item_type=COALESCE(excluded.item_type, workspace_tag_links.item_type),
+                item_id=COALESCE(excluded.item_id, workspace_tag_links.item_id),
+                source=excluded.source,
+                updated_at=excluded.updated_at
+            """,
+            (
+                workspace_path,
+                item_type,
+                int(item_id) if item_id is not None else None,
+                int(tag_id),
+                source,
+                timestamp,
+                timestamp,
+            ),
+        )
+    if item_type is not None and item_id is not None:
+        con.execute(
+            """
+            INSERT INTO workspace_tag_links
+                (workspace_path, item_type, item_id, tag_id, source, created_at, updated_at)
+            VALUES (NULL, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(item_type, item_id, tag_id)
+              WHERE item_type IS NOT NULL AND item_id IS NOT NULL
+            DO UPDATE SET
+                source=excluded.source,
+                updated_at=excluded.updated_at
+            """,
+            (item_type, int(item_id), int(tag_id), source, timestamp, timestamp),
+        )
+
+
+def _sync_workspace_status_tag(
+    con: sqlite3.Connection,
+    *,
+    status: str,
+    workspace_path: str | None = None,
+    item_type: str | None = None,
+    item_id: int | None = None,
+    now: str | None = None,
+) -> None:
+    normalized_status = _normalize_workspace_status(status)
+    tag_id = _status_tag_id(con, normalized_status)
+    _remove_existing_status_tag_links(
+        con,
+        workspace_path=workspace_path,
+        item_type=item_type,
+        item_id=item_id,
+    )
+    _add_workspace_tag_link_in_con(
+        con,
+        tag_id,
+        workspace_path=workspace_path,
+        item_type=item_type,
+        item_id=item_id,
+        source="workspace_status",
+        now=now,
+    )
+
+
+def add_workspace_tag_link(
+    tag_id: int,
+    *,
+    workspace_path: str | None = None,
+    item_type: str | None = None,
+    item_id: int | None = None,
+    source: str = "manual",
+) -> None:
+    with connect() as con:
+        tag = con.execute("SELECT * FROM tags WHERE id=?", (int(tag_id),)).fetchone()
+        if tag is None or not bool(tag["enabled"]):
+            raise FileNotFoundError("Тег не найден.")
+        _add_workspace_tag_link_in_con(
+            con,
+            int(tag_id),
+            workspace_path=workspace_path,
+            item_type=_normalize_workspace_item_type(item_type) if item_type else None,
+            item_id=int(item_id) if item_id is not None else None,
+            source=source,
+        )
+        if tag["kind"] == "status":
+            status = str(tag["system_key"] or "").split(":", 1)[-1]
+            if item_type and item_id is not None:
+                _upsert_workspace_status(
+                    con,
+                    _normalize_workspace_item_type(item_type),
+                    int(item_id),
+                    status,
+                    now_utc(),
+                )
+
+
+def replace_workspace_tags(
+    *,
+    workspace_path: str,
+    tag_ids: list[int],
+    item_type: str | None = None,
+    item_id: int | None = None,
+) -> None:
+    clean_ids = []
+    for raw_id in tag_ids:
+        tag_id = int(raw_id)
+        if tag_id not in clean_ids:
+            clean_ids.append(tag_id)
+    with connect() as con:
+        if clean_ids:
+            rows = con.execute(
+                f"SELECT * FROM tags WHERE enabled=1 AND id IN ({','.join('?' for _ in clean_ids)})",
+                clean_ids,
+            ).fetchall()
+        else:
+            rows = []
+        found = {int(row["id"]): row for row in rows}
+        if set(clean_ids) != set(found):
+            raise FileNotFoundError("Один или несколько тегов не найдены.")
+        con.execute("DELETE FROM workspace_tag_links WHERE workspace_path=?", (workspace_path,))
+        normalized_item_type = _normalize_workspace_item_type(item_type) if item_type else None
+        if normalized_item_type is not None and item_id is not None:
+            con.execute(
+                "DELETE FROM workspace_tag_links WHERE item_type=? AND item_id=?",
+                (normalized_item_type, int(item_id)),
+            )
+        status_to_sync = None
+        for tag_id in clean_ids:
+            tag = found[tag_id]
+            _add_workspace_tag_link_in_con(
+                con,
+                tag_id,
+                workspace_path=workspace_path,
+                item_type=normalized_item_type,
+                item_id=int(item_id) if item_id is not None else None,
+                source="manual",
+            )
+            if tag["kind"] == "status":
+                status_to_sync = str(tag["system_key"] or "").split(":", 1)[-1]
+        if status_to_sync and normalized_item_type is not None and item_id is not None:
+            # Avoid recursive DB calls by updating metadata directly.
+            _upsert_workspace_status(con, normalized_item_type, int(item_id), status_to_sync, now_utc())
+
+
+def list_workspace_tag_links(
+    *,
+    workspace_path: str | None = None,
+    item_type: str | None = None,
+    item_id: int | None = None,
+) -> list[sqlite3.Row]:
+    match_clauses: list[str] = []
+    params: list[Any] = []
+    if workspace_path:
+        match_clauses.append("wtl.workspace_path=?")
+        params.append(workspace_path)
+    if item_type is not None and item_id is not None:
+        match_clauses.append("(wtl.item_type=? AND wtl.item_id=?)")
+        params.extend([_normalize_workspace_item_type(item_type), int(item_id)])
+    if not match_clauses:
+        raise ValueError("Нужен workspace_path или item_type/item_id.")
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT DISTINCT t.*, wtl.source AS link_source
+            FROM workspace_tag_links wtl
+            JOIN tags t ON t.id=wtl.tag_id
+            WHERE ({" OR ".join(match_clauses)})
+              AND t.enabled=1
+            ORDER BY
+              CASE t.kind
+                WHEN 'channel' THEN 0
+                WHEN 'user' THEN 1
+                WHEN 'status' THEN 2
+                ELSE 3
+              END,
+              t.name COLLATE NOCASE ASC
+            """,
+            params,
+        ).fetchall()
+
+
+def _channel_tag_name(display_name: str) -> str:
+    cleaned = re.sub(r"[()]+", " ", str(display_name or "").strip())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return f"channel-{cleaned or 'youtube'}"
+
+
+def _ensure_channel_tag_in_con(
+    con: sqlite3.Connection,
+    *,
+    account_id: int,
+    display_name: str,
+) -> int:
+    now = now_utc()
+    system_key = f"youtube:{int(account_id)}"
+    name = _channel_tag_name(display_name)
+    existing = con.execute(
+        "SELECT * FROM tags WHERE system_key=?",
+        (system_key,),
+    ).fetchone()
+    if existing is not None:
+        slug = _unique_tag_slug(con, name, tag_id=int(existing["id"]))
+        con.execute(
+            """
+            UPDATE tags
+            SET name=?, slug=?, kind='channel', color=?, locked=1,
+                enabled=1, updated_at=?
+            WHERE id=?
+            """,
+            (name, slug, CHANNEL_TAG_COLOR, now, int(existing["id"])),
+        )
+        return int(existing["id"])
+    slug = _unique_tag_slug(con, name)
+    cur = con.execute(
+        """
+        INSERT INTO tags
+            (name, slug, kind, color, description, system_key,
+             locked, enabled, created_at, updated_at)
+        VALUES (?, ?, 'channel', ?, ?, ?, 1, 1, ?, ?)
+        """,
+        (
+            name,
+            slug,
+            CHANNEL_TAG_COLOR,
+            "Автоматический тег YouTube-канала",
+            system_key,
+            now,
+            now,
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def ensure_channel_tag_for_account(
+    *,
+    account_id: int,
+    display_name: str,
+) -> sqlite3.Row:
+    with connect() as con:
+        tag_id = _ensure_channel_tag_in_con(
+            con,
+            account_id=int(account_id),
+            display_name=display_name,
+        )
+        row = con.execute("SELECT * FROM tags WHERE id=?", (tag_id,)).fetchone()
+        assert row is not None
+        return row
+
+
+def list_local_storage_profile_tag_rules(profile_id: int) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT ptr.*, t.name, t.slug, t.kind, t.color, t.description,
+                   t.system_key, t.locked AS tag_locked, t.enabled AS tag_enabled
+            FROM local_storage_profile_tag_rules ptr
+            JOIN tags t ON t.id=ptr.tag_id
+            WHERE ptr.profile_id=? AND t.enabled=1
+            ORDER BY ptr.mode ASC,
+              CASE t.kind WHEN 'channel' THEN 0 WHEN 'user' THEN 1 WHEN 'status' THEN 2 ELSE 3 END,
+              t.name COLLATE NOCASE ASC
+            """,
+            (int(profile_id),),
+        ).fetchall()
+
+
+def replace_local_storage_profile_tag_rules(
+    profile_id: int,
+    *,
+    include_tag_ids: list[int],
+    exclude_tag_ids: list[int],
+    tag_match_mode: str = "any",
+) -> None:
+    mode = _normalize_profile_tag_match_mode(tag_match_mode)
+    include_ids = list(dict.fromkeys(int(tag_id) for tag_id in include_tag_ids))
+    exclude_ids = list(dict.fromkeys(int(tag_id) for tag_id in exclude_tag_ids))
+    all_ids = list(dict.fromkeys(include_ids + exclude_ids))
+    now = now_utc()
+    with connect() as con:
+        profile = con.execute(
+            "SELECT * FROM local_storage_profiles WHERE id=? AND enabled=1",
+            (int(profile_id),),
+        ).fetchone()
+        if profile is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        if all_ids:
+            rows = con.execute(
+                f"SELECT id FROM tags WHERE enabled=1 AND id IN ({','.join('?' for _ in all_ids)})",
+                all_ids,
+            ).fetchall()
+            found = {int(row["id"]) for row in rows}
+            if found != set(all_ids):
+                raise FileNotFoundError("Один или несколько тегов не найдены.")
+        con.execute(
+            """
+            DELETE FROM local_storage_profile_tag_rules
+            WHERE profile_id=? AND locked=0
+            """,
+            (int(profile_id),),
+        )
+        con.execute(
+            """
+            UPDATE local_storage_profiles
+            SET tag_match_mode=?, updated_at=?
+            WHERE id=?
+            """,
+            (mode, now, int(profile_id)),
+        )
+        for tag_id in include_ids:
+            locked = con.execute(
+                """
+                SELECT locked FROM local_storage_profile_tag_rules
+                WHERE profile_id=? AND tag_id=? AND mode='include'
+                """,
+                (int(profile_id), tag_id),
+            ).fetchone()
+            if locked is not None:
+                continue
+            con.execute(
+                """
+                INSERT OR IGNORE INTO local_storage_profile_tag_rules
+                    (profile_id, tag_id, mode, locked, source, created_at, updated_at)
+                VALUES (?, ?, 'include', 0, 'manual', ?, ?)
+                """,
+                (int(profile_id), tag_id, now, now),
+            )
+        for tag_id in exclude_ids:
+            con.execute(
+                """
+                INSERT OR IGNORE INTO local_storage_profile_tag_rules
+                    (profile_id, tag_id, mode, locked, source, created_at, updated_at)
+                VALUES (?, ?, 'exclude', 0, 'manual', ?, ?)
+                """,
+                (int(profile_id), tag_id, now, now),
+            )
+
+
+def reconcile_local_storage_profile_channel_tags(profile_id: int) -> int | None:
+    now = now_utc()
+    with connect() as con:
+        profile = con.execute(
+            "SELECT * FROM local_storage_profiles WHERE id=? AND enabled=1",
+            (int(profile_id),),
+        ).fetchone()
+        if profile is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        link = con.execute(
+            """
+            SELECT *
+            FROM local_storage_profile_service_links
+            WHERE profile_id=? AND platform='youtube' AND status='linked'
+            """,
+            (int(profile_id),),
+        ).fetchone()
+        if link is None or link["external_account_id"] is None:
+            con.execute(
+                """
+                DELETE FROM local_storage_profile_tag_rules
+                WHERE profile_id=?
+                  AND tag_id IN (SELECT id FROM tags WHERE kind='channel')
+                """,
+                (int(profile_id),),
+            )
+            return None
+        account_id = int(link["external_account_id"])
+        account = con.execute(
+            "SELECT * FROM social_accounts WHERE id=?",
+            (account_id,),
+        ).fetchone()
+        display_name = (
+            (account["channel_title"] if account is not None else None)
+            or (account["display_name"] if account is not None else None)
+            or link["display_name"]
+            or f"YouTube аккаунт #{account_id}"
+        )
+        tag_id = _ensure_channel_tag_in_con(
+            con,
+            account_id=account_id,
+            display_name=display_name,
+        )
+        con.execute(
+            """
+            DELETE FROM local_storage_profile_tag_rules
+            WHERE profile_id=?
+              AND tag_id IN (
+                SELECT id FROM tags
+                WHERE kind='channel' AND COALESCE(system_key, '') != ?
+              )
+            """,
+            (int(profile_id), f"youtube:{account_id}"),
+        )
+        con.execute(
+            """
+            INSERT INTO local_storage_profile_tag_rules
+                (profile_id, tag_id, mode, locked, source, created_at, updated_at)
+            VALUES (?, ?, 'include', 1, 'youtube_link', ?, ?)
+            ON CONFLICT(profile_id, tag_id, mode) DO UPDATE SET
+                locked=1,
+                source='youtube_link',
+                updated_at=excluded.updated_at
+            """,
+            (int(profile_id), tag_id, now, now),
+        )
+        return tag_id
+
+
 def create_local_storage_profile(
     *,
     name: str,
@@ -1472,6 +2232,7 @@ def create_local_storage_profile(
     auto_import_enabled: bool = False,
     auto_import_sections: Any = None,
     auto_import_prefix: str | None = None,
+    tag_match_mode: str = "any",
     enabled: bool = True,
 ) -> int:
     normalized_name = _normalize_local_storage_profile_name(name)
@@ -1487,8 +2248,8 @@ def create_local_storage_profile(
             INSERT INTO local_storage_profiles
                 (name, handle, description, avatar_initials, avatar_color,
                  banner_color, auto_import_enabled, auto_import_sections,
-                 auto_import_prefix, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 auto_import_prefix, tag_match_mode, enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 normalized_name,
@@ -1500,6 +2261,7 @@ def create_local_storage_profile(
                 1 if auto_import_enabled else 0,
                 _normalize_auto_import_sections(auto_import_sections),
                 _normalize_auto_import_prefix(auto_import_prefix),
+                _normalize_profile_tag_match_mode(tag_match_mode),
                 1 if enabled else 0,
                 now,
                 now,
@@ -1560,6 +2322,7 @@ def update_local_storage_profile(
     auto_import_sections: Any = _PROFILE_UNSET,
     auto_import_prefix: Any = _PROFILE_UNSET,
     auto_import_last_scan_at: Any = _PROFILE_UNSET,
+    tag_match_mode: Any = _PROFILE_UNSET,
     enabled: Any = _PROFILE_UNSET,
 ) -> bool:
     with connect() as con:
@@ -1586,7 +2349,7 @@ def update_local_storage_profile(
                 avatar_color=?, banner_color=?,
                 auto_import_enabled=?, auto_import_sections=?,
                 auto_import_prefix=?, auto_import_last_scan_at=?,
-                enabled=?, updated_at=?
+                tag_match_mode=?, enabled=?, updated_at=?
             WHERE id=?
             """,
             (
@@ -1616,6 +2379,9 @@ def update_local_storage_profile(
                 row["auto_import_last_scan_at"]
                 if auto_import_last_scan_at is _PROFILE_UNSET
                 else auto_import_last_scan_at,
+                row["tag_match_mode"]
+                if tag_match_mode is _PROFILE_UNSET
+                else _normalize_profile_tag_match_mode(tag_match_mode),
                 row["enabled"] if enabled is _PROFILE_UNSET else (1 if enabled else 0),
                 now_utc(),
                 int(profile_id),
@@ -1680,6 +2446,14 @@ def add_local_storage_profile_item(
             """,
             (int(profile_id), str(workspace_path)),
         ).fetchone()
+        workspace_status = _profile_item_status_to_workspace_status(normalized_status)
+        if workspace_status:
+            _sync_workspace_status_tag(
+                con,
+                status=workspace_status,
+                workspace_path=str(workspace_path),
+                now=now,
+            )
         return int(row["id"] if row is not None else cur.lastrowid)
 
 
@@ -1727,6 +2501,17 @@ def update_local_storage_profile_item_status(
             """,
             (normalized_status, now_utc(), int(profile_item_id)),
         )
+        row = con.execute(
+            "SELECT workspace_path FROM local_storage_profile_items WHERE id=?",
+            (int(profile_item_id),),
+        ).fetchone()
+        workspace_status = _profile_item_status_to_workspace_status(normalized_status)
+        if row is not None and workspace_status:
+            _sync_workspace_status_tag(
+                con,
+                status=workspace_status,
+                workspace_path=str(row["workspace_path"]),
+            )
         return result.rowcount > 0
 
 
@@ -2197,6 +2982,13 @@ def _upsert_workspace_status(
             updated_at=excluded.updated_at
         """,
         (item_type, item_id, workspace_status, now, now),
+    )
+    _sync_workspace_status_tag(
+        con,
+        status=workspace_status,
+        item_type=item_type,
+        item_id=item_id,
+        now=now,
     )
 
 

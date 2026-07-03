@@ -93,6 +93,34 @@ class WorkspaceYouTubeEnqueueRequest(BaseModel):
     made_for_kids: bool = False
 
 
+class TagCreateRequest(BaseModel):
+    name: str
+    slug: str | None = None
+    kind: str = "user"
+    color: str | None = None
+    description: str | None = None
+
+
+class TagUpdateRequest(BaseModel):
+    name: str | None = None
+    slug: str | None = None
+    color: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+
+
+class CatalogVideoTagsRequest(BaseModel):
+    workspace_path: str
+    tag_ids: list[int] = Field(default_factory=list)
+    mode: str = "replace"
+
+
+class LocalStorageProfileTagRulesRequest(BaseModel):
+    include_tag_ids: list[int] = Field(default_factory=list)
+    exclude_tag_ids: list[int] = Field(default_factory=list)
+    tag_match_mode: str = "any"
+
+
 class LocalStorageProfileCreateRequest(BaseModel):
     name: str
     handle: str | None = None
@@ -103,6 +131,7 @@ class LocalStorageProfileCreateRequest(BaseModel):
     auto_import_enabled: bool = False
     auto_import_sections: list[str] = Field(default_factory=lambda: ["edits", "ready", "published"])
     auto_import_prefix: str | None = None
+    tag_match_mode: str = "any"
 
 
 class LocalStorageProfileUpdateRequest(BaseModel):
@@ -115,6 +144,7 @@ class LocalStorageProfileUpdateRequest(BaseModel):
     auto_import_enabled: bool | None = None
     auto_import_sections: list[str] | None = None
     auto_import_prefix: str | None = None
+    tag_match_mode: str | None = None
     enabled: bool | None = None
 
 

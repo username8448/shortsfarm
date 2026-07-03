@@ -497,12 +497,14 @@ let currentStorageProfile = null;
 let storageProfileItems = [];
 let storageProfilePublishJobs = [];
 let storageProfileYoutubeVideos = [];
+let catalogTags = [];
 let selectedStorageProfileItemIds = new Set();
 let storageProfileCandidates = [];
+let selectedStorageCandidatePaths = new Set();
+let storageCatalogSearchQuery = '';
+let storageCatalogSearchTimer = null;
 let storageYoutubeAccounts = [];
 let storageCandidatePickerOpen = false;
-let storageAutoImportBusy = false;
-const storageAutoImportSessionDone = new Set();
 const workspaceYoutubeState = {
   selectedAccountId: null,
   busy: false,
@@ -541,19 +543,27 @@ const managedFilesState = {
   loading: false,
 };
 
-function nav(id, btn) {
+function activateView(id, btn) {
   currentView = id;
   document.querySelectorAll('.v').forEach(el => el.classList.remove('on'));
-  document.getElementById('v-' + id).classList.add('on');
+  const view = document.getElementById('v-' + id);
+  if (view) view.classList.add('on');
   document.querySelectorAll('.nb').forEach(b => b.classList.remove('on'));
   if (btn) btn.classList.add('on');
+}
+
+function nav(id, btn) {
+  activateView(id, btn);
   if (id === 'dashboard') loadDashboard();
   if (id === 'files') loadManagedFiles();
   if (id === 'split' && !fsState.currentPath) initFsBrowser();
   if (id === 'queue') loadJobs();
   if (id === 'videos') loadVideos();
   if (id === 'clips') loadClips();
-  if (id === 'storage-profiles') loadStorageProfiles();
+  if (id === 'storage-profiles') {
+    window.history.replaceState({}, '', storageProfileUrl(null));
+    loadStorageProfiles();
+  }
   if (id === 'publish') loadPublishView();
   if (id === 'editing') loadEditingView();
   if (id === 'settings') loadSettingsView();
@@ -566,8 +576,23 @@ function openWorkspaceSettings() {
 
 function activateInitialViewFromQuery() {
   const params = new URLSearchParams(window.location.search);
+  const profileId = Number(params.get('profile') || 0);
+  if (profileId) {
+    openStorageProfile(profileId, {replace: true});
+    return;
+  }
   if (params.has('batch') || params.has('project')) {
     nav('studio', document.querySelector('[data-v="studio"]'));
+  }
+}
+
+function handleProfileRouteFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  const profileId = Number(params.get('profile') || 0);
+  if (profileId) {
+    openStorageProfile(profileId, {replace: true});
+  } else if (currentView === 'storage-profile') {
+    openStorageProfilesHub({keepUrl: true});
   }
 }
 
@@ -1401,14 +1426,64 @@ function storageProfileById(id) {
 function storageProfileInitials(profile) {
   return profile?.avatar_initials || String(profile?.name || 'SF').trim().slice(0, 2).toUpperCase();
 }
+function tagPill(tag, options = {}) {
+  if (!tag) return '';
+  const cls = ['tag-pill'];
+  if (tag.kind) cls.push(`tag-${String(tag.kind)}`);
+  if (options.locked || tag.locked) cls.push('locked');
+  const color = tag.color || '#64748b';
+  const label = tag.name || tag.slug || `tag-${tag.id}`;
+  return `<span class="${cls.join(' ')}" style="--tag-color:${esc(color)}" title="${esc(tag.slug || label)}">${esc(label)}</span>`;
+}
+function tagListPills(tags) {
+  const list = Array.isArray(tags) ? tags : [];
+  return list.length ? `<div class="tag-pill-list">${list.map(tagPill).join('')}</div>` : '<div class="mono dim">тегов пока нет</div>';
+}
+async function loadCatalogTags(options = {}) {
+  if (catalogTags.length && !options.force) return catalogTags;
+  const data = await api.get('/api/tags?enabled=true&limit=1000');
+  catalogTags = data.items || [];
+  return catalogTags;
+}
+function tagOptionsHtml(selectedIds = []) {
+  const selected = new Set((selectedIds || []).map(Number));
+  return catalogTags
+    .filter(tag => tag.kind !== 'status' || tag.slug === 'status-ready')
+    .map(tag => `<option value="${Number(tag.id)}"${selected.has(Number(tag.id)) ? ' selected' : ''}>${esc(tag.name)} · ${esc(tag.slug)}</option>`)
+    .join('');
+}
+function storageProfileErrorTarget() {
+  return currentView === 'storage-profile' ? 'storage-profile-error' : 'storage-profiles-error';
+}
+function showStorageProfileError(message) {
+  showInlineError(storageProfileErrorTarget(), message);
+}
+function hideStorageProfileErrors() {
+  hideInlineError('storage-profiles-error');
+  hideInlineError('storage-profile-error');
+}
+function storageProfileUrl(profileId = null) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('batch');
+  url.searchParams.delete('project');
+  if (profileId) url.searchParams.set('profile', String(Number(profileId)));
+  else url.searchParams.delete('profile');
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+function setStorageProfileRoute(profileId, options = {}) {
+  const nextUrl = storageProfileUrl(profileId);
+  if (options.replace) window.history.replaceState({}, '', nextUrl);
+  else window.history.pushState({}, '', nextUrl);
+}
 function storageProfileCard(profile) {
-  const active = Number(profile.id) === Number(currentStorageProfileId);
+  const active = currentView === 'storage-profile' && Number(profile.id) === Number(currentStorageProfileId);
   const youtube = storageProfileYoutubeLink(profile);
   return `<button class="storage-profile-card${active ? ' active' : ''}" onclick="selectStorageProfile(${Number(profile.id)})">
     <span class="storage-profile-icon" style="background:${esc(profile.avatar_color || '#3b82f6')}">${esc(storageProfileInitials(profile))}</span>
     <span class="storage-profile-card-title">${esc(profile.name)}</span>
     <span class="mono dim">@${esc(profile.handle || `profile-${profile.id}`)} · ${Number(profile.item_count || 0)} видео</span>
     ${youtube ? `<span class="badge b-err"><i class="ti ti-brand-youtube"></i>${esc(youtube.display_name || 'YouTube')}</span>` : ''}
+    <span class="storage-profile-open-hint">Открыть профиль</span>
   </button>`;
 }
 function renderStorageProfilesGrid() {
@@ -1421,7 +1496,7 @@ function renderStorageProfilesGrid() {
   </button>${storageProfiles.map(storageProfileCard).join('')}`;
 }
 async function loadStorageProfiles(options = {}) {
-  hideInlineError('storage-profiles-error');
+  hideStorageProfileErrors();
   try {
     const data = await api.get('/api/storage-profiles');
     storageProfiles = data.items || [];
@@ -1432,13 +1507,8 @@ async function loadStorageProfiles(options = {}) {
       storageProfileItems = [];
     }
     renderStorageProfilesGrid();
-    if (currentStorageProfileId) {
-      await loadStorageProfileDetail(currentStorageProfileId);
-    } else {
-      renderStorageProfileDetail();
-    }
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось загрузить профили');
+    showStorageProfileError(err.message || 'Не удалось загрузить профили');
   }
 }
 async function createStorageProfile() {
@@ -1447,19 +1517,34 @@ async function createStorageProfile() {
   try {
     const data = await api.post('/api/storage-profiles', {name});
     const profile = data.profile;
-    currentStorageProfileId = Number(profile.id);
     showToast('Профиль создан');
     await loadStorageProfiles({selectId: profile.id});
+    await openStorageProfile(profile.id);
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось создать профиль');
+    showStorageProfileError(err.message || 'Не удалось создать профиль');
   }
 }
 async function selectStorageProfile(profileId) {
+  await openStorageProfile(profileId);
+}
+async function openStorageProfile(profileId, options = {}) {
   currentStorageProfileId = Number(profileId);
   storageCandidatePickerOpen = false;
   selectedStorageProfileItemIds.clear();
-  renderStorageProfilesGrid();
+  hideStorageProfileErrors();
+  activateView('storage-profile', document.querySelector('[data-v="storage-profiles"]'));
+  setStorageProfileRoute(currentStorageProfileId, {replace: Boolean(options.replace)});
   await loadStorageProfileDetail(currentStorageProfileId);
+}
+async function openStorageProfilesHub(options = {}) {
+  hideStorageProfileErrors();
+  activateView('storage-profiles', document.querySelector('[data-v="storage-profiles"]'));
+  if (!options.keepUrl) {
+    const nextUrl = storageProfileUrl(null);
+    if (options.replace) window.history.replaceState({}, '', nextUrl);
+    else window.history.pushState({}, '', nextUrl);
+  }
+  await loadStorageProfiles();
 }
 async function loadStorageProfileDetail(profileId = currentStorageProfileId) {
   if (!profileId) {
@@ -1472,6 +1557,7 @@ async function loadStorageProfileDetail(profileId = currentStorageProfileId) {
       api.get(`/api/storage-profiles/${Number(profileId)}/publish-jobs?limit=200`).catch(() => ({jobs: []})),
       api.get(`/api/storage-profiles/${Number(profileId)}/youtube/videos?limit=200`).catch(() => ({videos: []})),
       loadStorageYoutubeAccounts().catch(() => null),
+      loadCatalogTags().catch(() => null),
     ]);
     currentStorageProfile = data.profile;
     currentStorageProfileId = Number(data.profile.id);
@@ -1481,9 +1567,8 @@ async function loadStorageProfileDetail(profileId = currentStorageProfileId) {
     selectedStorageProfileItemIds = new Set(Array.from(selectedStorageProfileItemIds).filter(id => storageProfileItems.some(item => Number(item.id) === Number(id))));
     renderStorageProfilesGrid();
     renderStorageProfileDetail();
-    maybeAutoImportStorageProfile(currentStorageProfile);
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось загрузить профиль');
+    showStorageProfileError(err.message || 'Не удалось загрузить профиль');
   }
 }
 async function loadStorageYoutubeAccounts() {
@@ -1521,6 +1606,131 @@ function storageProfileServiceLinks(profile) {
     : '<b>YouTube не привязан</b><p>Выберите уже подключённый канал. После привязки можно будет отправлять выбранные видео в очередь и на таймер прямо отсюда.</p>';
   return `<div class="storage-service-note storage-youtube-link"><i class="ti ti-brand-youtube"></i><div>${status}${accountControls}</div></div>`;
 }
+function storageProfileRulesByMode(mode) {
+  return (currentStorageProfile?.tag_rules || []).filter(rule => rule.mode === mode);
+}
+function storageProfileTagRulesPanel(profile) {
+  const includeRules = storageProfileRulesByMode('include');
+  const excludeRules = storageProfileRulesByMode('exclude');
+  const includeIds = includeRules.map(rule => Number(rule.tag_id));
+  const excludeIds = excludeRules.map(rule => Number(rule.tag_id));
+  const matchMode = profile?.tag_match_mode || 'any';
+  const includePills = includeRules.length
+    ? includeRules.map(rule => `${tagPill(rule.tag, {locked: rule.locked})}${rule.locked ? '' : `<button class="tag-remove" onclick="removeStorageProfileTagRule(${Number(rule.tag_id)}, 'include')">×</button>`}`).join('')
+    : '<span class="mono dim">Добавьте теги, по которым профиль будет собирать видео.</span>';
+  const excludePills = excludeRules.length
+    ? excludeRules.map(rule => `${tagPill(rule.tag)}<button class="tag-remove" onclick="removeStorageProfileTagRule(${Number(rule.tag_id)}, 'exclude')">×</button>`).join('')
+    : '<span class="mono dim">Исключающих тегов нет.</span>';
+  return `<div class="storage-tag-panel">
+    <div class="storage-tag-panel-head">
+      <div>
+        <div class="storage-section-title inline-title">Теги профиля</div>
+        <div class="mono dim">Профиль подключает теги, а не папки. Channel-тег YouTube создаётся автоматически и заблокирован.</div>
+      </div>
+      <div class="row-actions">
+        <button class="btn-secondary" onclick="runStorageProfileTagSync()">Обновить по тегам</button>
+        <button class="btn-mini" onclick="createStorageCatalogTag()">Создать тег</button>
+      </div>
+    </div>
+    <div class="storage-tag-rule-grid">
+      <div class="storage-tag-rule-box">
+        <div class="field-lbl">Include tags</div>
+        <div class="tag-pill-list">${includePills}</div>
+        <div class="storage-tag-add">
+          <select id="storage-profile-include-tag">${tagOptionsHtml(includeIds.concat(excludeIds))}</select>
+          <button class="btn-secondary" onclick="addStorageProfileTagRule('include')">Добавить</button>
+        </div>
+      </div>
+      <div class="storage-tag-rule-box">
+        <div class="field-lbl">Exclude tags</div>
+        <div class="tag-pill-list">${excludePills}</div>
+        <div class="storage-tag-add">
+          <select id="storage-profile-exclude-tag">${tagOptionsHtml(includeIds.concat(excludeIds))}</select>
+          <button class="btn-secondary" onclick="addStorageProfileTagRule('exclude')">Исключить</button>
+        </div>
+      </div>
+      <div class="storage-tag-rule-box compact">
+        <div class="field-lbl">Режим совпадения</div>
+        <select id="storage-profile-tag-match-mode" onchange="saveStorageProfileTagRules()">
+          <option value="any"${matchMode === 'any' ? ' selected' : ''}>Любой include-тег</option>
+          <option value="all"${matchMode === 'all' ? ' selected' : ''}>Все include-теги</option>
+        </select>
+      </div>
+    </div>
+  </div>`;
+}
+function storageProfileRuleIds(mode) {
+  return storageProfileRulesByMode(mode).map(rule => Number(rule.tag_id));
+}
+async function saveStorageProfileTagRules(next = {}) {
+  if (!currentStorageProfileId) return;
+  const include = next.include || storageProfileRuleIds('include');
+  const exclude = next.exclude || storageProfileRuleIds('exclude');
+  const mode = next.mode || document.getElementById('storage-profile-tag-match-mode')?.value || currentStorageProfile?.tag_match_mode || 'any';
+  try {
+    const data = await api.patch(`/api/storage-profiles/${Number(currentStorageProfileId)}/tag-rules`, {
+      include_tag_ids: include,
+      exclude_tag_ids: exclude,
+      tag_match_mode: mode,
+    });
+    currentStorageProfile = data.profile || currentStorageProfile;
+    renderStorageProfileDetail();
+    showToast('Теги профиля сохранены');
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось сохранить теги профиля');
+  }
+}
+async function addStorageProfileTagRule(mode) {
+  const selectId = mode === 'exclude' ? 'storage-profile-exclude-tag' : 'storage-profile-include-tag';
+  const tagId = Number(document.getElementById(selectId)?.value || 0);
+  if (!tagId) return;
+  const include = storageProfileRuleIds('include');
+  const exclude = storageProfileRuleIds('exclude');
+  if (mode === 'exclude') {
+    await saveStorageProfileTagRules({
+      include: include.filter(id => id !== tagId),
+      exclude: Array.from(new Set(exclude.concat([tagId]))),
+    });
+  } else {
+    await saveStorageProfileTagRules({
+      include: Array.from(new Set(include.concat([tagId]))),
+      exclude: exclude.filter(id => id !== tagId),
+    });
+  }
+}
+async function removeStorageProfileTagRule(tagId, mode) {
+  const include = storageProfileRuleIds('include');
+  const exclude = storageProfileRuleIds('exclude');
+  await saveStorageProfileTagRules({
+    include: mode === 'include' ? include.filter(id => id !== Number(tagId)) : include,
+    exclude: mode === 'exclude' ? exclude.filter(id => id !== Number(tagId)) : exclude,
+  });
+}
+async function createStorageCatalogTag() {
+  const name = prompt('Название нового тега:');
+  if (!name) return;
+  try {
+    const data = await api.post('/api/tags', {name, kind: 'user'});
+    catalogTags.push(data.tag);
+    renderStorageProfileDetail();
+    showToast('Тег создан');
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось создать тег');
+  }
+}
+async function runStorageProfileTagSync() {
+  if (!currentStorageProfileId) return;
+  try {
+    const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/tag-sync/run`, {});
+    if (data.profile) currentStorageProfile = data.profile;
+    if (data.items) storageProfileItems = data.items;
+    renderStorageProfilesGrid();
+    renderStorageProfileDetail();
+    showToast(`Обновлено по тегам · добавлено: ${data.summary?.added || 0} · найдено: ${data.summary?.matched || 0}`);
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось обновить профиль по тегам');
+  }
+}
 async function linkStorageProfileYoutube() {
   if (!currentStorageProfileId) return;
   const accountId = Number(document.getElementById('storage-profile-youtube-account')?.value || 0);
@@ -1536,7 +1746,7 @@ async function linkStorageProfileYoutube() {
     renderStorageProfileDetail();
     showToast('YouTube-канал привязан к профилю');
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось привязать YouTube-канал');
+    showStorageProfileError(err.message || 'Не удалось привязать YouTube-канал');
   }
 }
 async function unlinkStorageProfileYoutube() {
@@ -1549,86 +1759,13 @@ async function unlinkStorageProfileYoutube() {
     renderStorageProfileDetail();
     showToast('YouTube-канал отвязан');
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось отвязать YouTube-канал');
+    showStorageProfileError(err.message || 'Не удалось отвязать YouTube-канал');
   }
 }
 function openStorageProfileYoutubeSettings() {
   nav('publish', document.querySelector('[data-v="publish"]'));
   const tab = document.querySelector('[data-pub-tab="accounts"]');
   if (typeof setPublishTab === 'function' && tab) setPublishTab('accounts', tab);
-}
-function storageProfileAutoImportSettings(profile = currentStorageProfile) {
-  const auto = profile?.auto_import || {};
-  return {
-    enabled: Boolean(auto.enabled),
-    sections: Array.isArray(auto.sections) && auto.sections.length ? auto.sections : ['edits', 'ready', 'published'],
-    prefix: auto.prefix || '',
-    lastScanAt: auto.last_scan_at || '',
-  };
-}
-function storageProfileAutoImportControls(profile) {
-  const settings = storageProfileAutoImportSettings(profile);
-  const sectionLabels = {
-    edits: 'Результаты монтажа',
-    ready: 'Готовые',
-    published: 'Опубликованные',
-  };
-  const checks = STORAGE_PROFILE_VIDEO_FOLDERS.map(section => (
-    `<label class="storage-auto-check"><input type="checkbox" data-storage-auto-section="${esc(section)}" ${settings.sections.includes(section) ? 'checked' : ''}> ${esc(sectionLabels[section] || section)}</label>`
-  )).join('');
-  const scan = settings.lastScanAt ? `Последнее сканирование: ${formatMtime(settings.lastScanAt)}` : 'Ещё не сканировали.';
-  return `<div class="storage-auto-panel">
-    <div>
-      <div class="storage-section-title inline-title">Автоимпорт готовых видео</div>
-      <div class="mono dim">Автоматически добавляет новые видео из workspace в этот локальный профиль. Файлы не копируются.</div>
-      <div class="mono dim">${esc(scan)}</div>
-    </div>
-    <div class="storage-auto-form">
-      <label class="storage-auto-check"><input id="storage-auto-enabled" type="checkbox" ${settings.enabled ? 'checked' : ''}> Включить</label>
-      <div class="storage-auto-sections">${checks}</div>
-      <input id="storage-auto-prefix" type="text" value="${esc(settings.prefix)}" placeholder="Префикс папки, например edits/channel-1">
-      <button class="btn-secondary" onclick="saveStorageProfile()">Сохранить правила</button>
-      <button class="btn-primary" ${storageAutoImportBusy ? 'disabled' : ''} onclick="runStorageProfileAutoImport(true)">Синхронизировать сейчас</button>
-    </div>
-  </div>`;
-}
-function storageProfileAutoImportPayload() {
-  const sections = Array.from(document.querySelectorAll('[data-storage-auto-section]'))
-    .filter(input => input.checked)
-    .map(input => input.dataset.storageAutoSection || input.getAttribute('data-storage-auto-section'))
-    .filter(Boolean);
-  return {
-    auto_import_enabled: Boolean(document.getElementById('storage-auto-enabled')?.checked),
-    auto_import_sections: sections.length ? sections : ['edits', 'ready', 'published'],
-    auto_import_prefix: document.getElementById('storage-auto-prefix')?.value || '',
-  };
-}
-async function runStorageProfileAutoImport(force = false, options = {}) {
-  if (!currentStorageProfileId || storageAutoImportBusy) return;
-  storageAutoImportBusy = true;
-  const silent = Boolean(options.silent);
-  try {
-    const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/auto-import/run`, {force});
-    if (data.profile) currentStorageProfile = data.profile;
-    if (data.items) storageProfileItems = data.items;
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
-    const added = Number(data.summary?.added || 0);
-    if (!silent || added) {
-      showToast(added ? `Автоимпорт добавил видео: ${added}` : 'Новых видео для автоимпорта нет');
-    }
-  } catch (err) {
-    if (!silent) showInlineError('storage-profiles-error', err.message || 'Не удалось выполнить автоимпорт');
-  } finally {
-    storageAutoImportBusy = false;
-  }
-}
-function maybeAutoImportStorageProfile(profile) {
-  const id = Number(profile?.id || 0);
-  if (!id || storageAutoImportSessionDone.has(id)) return;
-  if (!storageProfileAutoImportSettings(profile).enabled) return;
-  storageAutoImportSessionDone.add(id);
-  runStorageProfileAutoImport(false, {silent: true});
 }
 async function syncStorageProfileYoutube() {
   if (!currentStorageProfileId) return;
@@ -1643,7 +1780,7 @@ async function syncStorageProfileYoutube() {
     renderStorageProfileDetail();
     showToast(`YouTube синхронизирован · найдено: ${data.summary?.fetched || 0} · связано: ${data.summary?.matched_profile_items || 0}`);
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось синхронизировать YouTube для профиля');
+    showStorageProfileError(err.message || 'Не удалось синхронизировать YouTube для профиля');
   }
 }
 function selectedStorageProfileItems() {
@@ -1659,7 +1796,7 @@ function setAllStorageProfileItemSelection(checked) {
   selectedStorageProfileItemIds.clear();
   if (checked) {
     storageProfileItems
-      .filter(item => item.file_exists)
+      .filter(item => item.file_exists && item.is_publish_ready)
       .forEach(item => selectedStorageProfileItemIds.add(Number(item.id)));
   }
   renderStorageProfileDetail();
@@ -1692,18 +1829,21 @@ function storageProfilePublishStatus(item) {
 }
 function storageProfilePublishControls() {
   const youtube = storageProfileLinkedYoutube();
-  const selected = selectedStorageProfileItems().filter(item => item.file_exists);
+  const selected = selectedStorageProfileItems().filter(item => item.file_exists && item.is_publish_ready);
   const selectedCount = selected.length;
   const disabled = !youtube || !selectedCount;
-  const allSelected = storageProfileItems.length && storageProfileItems.filter(item => item.file_exists).every(item => selectedStorageProfileItemIds.has(Number(item.id)));
+  const publishableItems = storageProfileItems.filter(item => item.file_exists && item.is_publish_ready);
+  const allSelected = publishableItems.length && publishableItems.every(item => selectedStorageProfileItemIds.has(Number(item.id)));
   const note = youtube
     ? `Канал: ${esc(storageAccountTitle(youtube.youtube_account) || youtube.display_name || 'YouTube')}`
     : 'Сначала привяжите YouTube-канал к профилю.';
+  const blocked = storageProfileItems.filter(item => item.file_exists && !item.is_publish_ready).length;
   return `<div class="storage-profile-publish-panel">
     <div>
       <div class="storage-section-title inline-title">Публикация YouTube</div>
       <div class="mono dim">${note}</div>
-      <div class="mono dim">${selectedCount ? `Выбрано видео: ${selectedCount}` : 'Отметьте видео галочками, чтобы отправить их в очередь или на таймер.'}</div>
+      <div class="mono dim">${selectedCount ? `Выбрано готовых видео: ${selectedCount}` : 'Отметьте видео с тегом «Готово», чтобы отправить их в очередь или на таймер.'}</div>
+      ${blocked ? `<div class="mono warn">Не готовы к публикации без тега «Готово»: ${blocked}</div>` : ''}
     </div>
     <div class="row-actions">
       <button class="btn-secondary" onclick="setAllStorageProfileItemSelection(${allSelected ? 'false' : 'true'})">${allSelected ? 'Снять выбор' : 'Выбрать все'}</button>
@@ -1790,9 +1930,9 @@ async function refreshStorageProfilePublishState() {
 }
 async function enqueueStorageProfileSelection(mode = 'queue') {
   if (!currentStorageProfileId) return;
-  const selected = selectedStorageProfileItems().filter(item => item.file_exists);
+  const selected = selectedStorageProfileItems().filter(item => item.file_exists && item.is_publish_ready);
   if (!selected.length) {
-    showToast('Выберите видео профиля для публикации', 'err');
+    showToast('Выберите видео профиля с тегом «Готово»', 'err');
     return;
   }
   try {
@@ -1815,7 +1955,7 @@ async function enqueueStorageProfileSelection(mode = 'queue') {
       showToast(`В очереди YouTube: создано ${data.summary?.created || 0}, обновлено ${data.summary?.updated || 0}`);
     }
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось добавить видео профиля в YouTube-очередь');
+    showStorageProfileError(err.message || 'Не удалось добавить видео профиля в YouTube-очередь');
   }
 }
 async function openStorageProfileScheduleForJobs(jobIds) {
@@ -1844,22 +1984,28 @@ async function runStorageProfilePublishJobsNow(jobIds) {
     showToast(`Запущено: ${data.summary?.processed || 0} · ошибок: ${data.summary?.errors || 0}`);
     await refreshStorageProfilePublishState();
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось запустить загрузку из профиля');
+    showStorageProfileError(err.message || 'Не удалось запустить загрузку из профиля');
   }
 }
 function storageProfileItemCard(item) {
   const title = item.title || item.file_name || item.workspace_path;
   const missing = !item.file_exists;
   const selected = selectedStorageProfileItemIds.has(Number(item.id));
+  const ready = Boolean(item.is_publish_ready);
+  const publishNote = ready
+    ? ''
+    : '<div class="mono warn storage-video-publish-status">YouTube: нужен тег «Готово»</div>';
   return `<article class="storage-video-card${missing ? ' missing' : ''}">
-    <label class="storage-video-select"><input type="checkbox" ${selected ? 'checked' : ''} ${missing ? 'disabled' : ''} onchange="toggleStorageProfileItemSelection(${Number(item.id)}, this.checked)"> <span>Выбрать</span></label>
+    <label class="storage-video-select"><input type="checkbox" ${selected ? 'checked' : ''} ${missing || !ready ? 'disabled' : ''} onchange="toggleStorageProfileItemSelection(${Number(item.id)}, this.checked)"> <span>Выбрать для YouTube</span></label>
     <div class="storage-video-thumb">${missing ? videoThumb(item.workspace_path, title) : videoWatchThumb(item.workspace_path, title)}</div>
     <div class="storage-video-title" title="${esc(title)}">${esc(title)}</div>
     <div class="mono dim storage-video-path" title="${esc(item.workspace_path)}">${esc(workspaceDisplayPath(item.workspace_path))}</div>
+    ${tagListPills(item.catalog_tags || [])}
     <div class="storage-video-meta">
       <span>${missing ? badge('failed') : storageProfilePublishBadge(item)}</span>
       <span class="mono dim">${esc(workspaceFolderLabel(item.section || ''))}</span>
     </div>
+    ${publishNote}
     ${storageProfilePublishStatus(item)}
     <div class="row-actions">
       ${missing ? `<button class="btn-mini" disabled title="${esc(item.path_error || 'Файл отсутствует')}">Смотреть</button>` : webPlayerButton(item.workspace_path, 'Смотреть')}
@@ -1871,18 +2017,29 @@ function renderStorageCandidatePicker() {
   if (!storageCandidatePickerOpen) return '';
   const existing = new Set(storageProfileItems.map(item => item.workspace_path));
   const candidates = storageProfileCandidates.filter(item => !existing.has(item.workspace_path));
+  const selectedCount = Array.from(selectedStorageCandidatePaths).filter(path => candidates.some(item => item.workspace_path === path)).length;
   const body = candidates.length
-    ? `<div class="storage-candidate-list">${candidates.map(item => `<div class="storage-candidate-row">
+    ? `<div class="storage-candidate-list">${candidates.map(item => {
+        const checked = selectedStorageCandidatePaths.has(item.workspace_path);
+        return `<div class="storage-candidate-row">
+        <label class="storage-video-select"><input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleStorageCandidateSelection('${esc(item.workspace_path)}', this.checked)"></label>
         ${videoWatchThumb(item.workspace_path, item.title || item.file_name)}
         <div style="min-width:0;flex:1">
           <div class="mono txt ov">${esc(item.title || item.file_name)}</div>
           <div class="mono dim ov">${esc(workspaceDisplayPath(item.workspace_path))}</div>
+          ${tagListPills(item.tags || [])}
         </div>
         <button class="btn-secondary" data-path="${esc(item.workspace_path)}" onclick="addCandidateToStorageProfile(this.dataset.path)">Добавить</button>
-      </div>`).join('')}</div>`
-    : '<div class="empty">Готовых видео для добавления не найдено или все уже добавлены в профиль.</div>';
+      </div>`;
+      }).join('')}</div>`
+    : '<div class="empty">Начните писать название, путь или тег — результаты появятся автоматически. Можно нажать «Случайные видео».</div>';
   return `<div class="storage-candidates">
-    <div class="box-head"><span>Добавить готовое видео</span><button class="btn-mini" onclick="toggleStorageCandidatePicker()">Скрыть</button></div>
+    <div class="box-head"><span>Добавить видео из каталога</span><button class="btn-mini" onclick="toggleStorageCandidatePicker()">Скрыть</button></div>
+    <div class="storage-search-panel">
+      <input id="storage-video-search-input" type="text" placeholder="Искать по названию, тегу или пути…" value="${esc(storageCatalogSearchQuery || '')}" oninput="onStorageCatalogSearchInput(this.value)" autofocus>
+      <button class="btn-secondary" onclick="loadRandomStorageCatalogVideos()">Случайные видео</button>
+      <button class="btn-primary" ${selectedCount ? '' : 'disabled'} onclick="addSelectedCatalogVideosToStorageProfile()">Добавить выбранные (${selectedCount})</button>
+    </div>
     ${body}
   </div>`;
 }
@@ -1891,9 +2048,21 @@ function renderStorageProfileDetail() {
   if (!el) return;
   const profile = currentStorageProfile;
   if (!profile) {
+    const title = document.getElementById('storage-profile-view-title');
+    const subtitle = document.getElementById('storage-profile-view-subtitle');
+    const headTitle = document.getElementById('storage-profile-page-head-title');
+    if (title) title.textContent = 'Профиль';
+    if (subtitle) subtitle.textContent = 'отдельная страница локального канала';
+    if (headTitle) headTitle.textContent = 'Витрина профиля';
     el.innerHTML = '<div class="empty">Создайте профиль кнопкой «+» или выберите существующий.</div>';
     return;
   }
+  const title = document.getElementById('storage-profile-view-title');
+  const subtitle = document.getElementById('storage-profile-view-subtitle');
+  const headTitle = document.getElementById('storage-profile-page-head-title');
+  if (title) title.textContent = profile.name || 'Профиль';
+  if (subtitle) subtitle.textContent = `@${profile.handle || `profile-${profile.id}`} · отдельная страница локального канала`;
+  if (headTitle) headTitle.textContent = `Витрина: ${profile.name || `Профиль #${profile.id}`}`;
   const videos = storageProfileItems.length
     ? `<div class="storage-video-grid">${storageProfileItems.map(storageProfileItemCard).join('')}</div>`
     : '<div class="empty">В профиле пока нет видео. Добавьте готовый файл из «Результатов монтажа», «Готовых» или «Опубликованных».</div>';
@@ -1912,7 +2081,7 @@ function renderStorageProfileDetail() {
       </div>
     </div>
     ${storageProfileServiceLinks(profile)}
-    ${storageProfileAutoImportControls(profile)}
+    ${storageProfileTagRulesPanel(profile)}
     ${storageProfilePublishControls()}
     <div class="storage-profile-edit">
       <div class="field-grid">
@@ -1945,7 +2114,6 @@ async function saveStorageProfile() {
       avatar_initials: document.getElementById('storage-profile-initials')?.value || '',
       avatar_color: document.getElementById('storage-profile-avatar-color')?.value || '',
       banner_color: document.getElementById('storage-profile-banner-color')?.value || '',
-      ...storageProfileAutoImportPayload(),
     });
     currentStorageProfile = data.profile;
     storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(data.profile.id) ? data.profile : profile);
@@ -1953,7 +2121,7 @@ async function saveStorageProfile() {
     renderStorageProfileDetail();
     showToast('Профиль сохранён');
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось сохранить профиль');
+    showStorageProfileError(err.message || 'Не удалось сохранить профиль');
   }
 }
 async function disableStorageProfile() {
@@ -1965,14 +2133,46 @@ async function disableStorageProfile() {
     currentStorageProfile = null;
     storageProfileItems = [];
     showToast('Профиль отключён');
-    await loadStorageProfiles();
+    await openStorageProfilesHub({replace: true});
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось отключить профиль');
+    showStorageProfileError(err.message || 'Не удалось отключить профиль');
   }
 }
-async function loadStorageCandidates() {
-  const data = await api.get('/api/storage-profiles/ready-videos');
+async function searchStorageCatalogVideos(query = storageCatalogSearchQuery) {
+  storageCatalogSearchQuery = String(query || '');
+  const data = await api.get(`/api/catalog/videos/search?q=${encodeURIComponent(storageCatalogSearchQuery)}&limit=60`);
   storageProfileCandidates = data.items || [];
+  selectedStorageCandidatePaths = new Set(Array.from(selectedStorageCandidatePaths).filter(path => storageProfileCandidates.some(item => item.workspace_path === path)));
+}
+function onStorageCatalogSearchInput(value) {
+  storageCatalogSearchQuery = value || '';
+  if (storageCatalogSearchTimer) clearTimeout(storageCatalogSearchTimer);
+  storageCatalogSearchTimer = setTimeout(async () => {
+    try {
+      await searchStorageCatalogVideos(storageCatalogSearchQuery);
+      renderStorageProfileDetail();
+      setTimeout(() => {
+        const input = document.getElementById('storage-video-search-input');
+        if (input) {
+          input.focus();
+          input.setSelectionRange(input.value.length, input.value.length);
+        }
+      }, 0);
+    } catch (err) {
+      showStorageProfileError(err.message || 'Не удалось выполнить поиск видео');
+    }
+  }, 220);
+}
+async function loadRandomStorageCatalogVideos() {
+  try {
+    storageCatalogSearchQuery = '';
+    const data = await api.get('/api/catalog/videos/random?limit=24');
+    storageProfileCandidates = data.items || [];
+    selectedStorageCandidatePaths.clear();
+    renderStorageProfileDetail();
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось загрузить случайные видео');
+  }
 }
 async function toggleStorageCandidatePicker() {
   if (!currentStorageProfileId) {
@@ -1982,26 +2182,57 @@ async function toggleStorageCandidatePicker() {
   storageCandidatePickerOpen = !storageCandidatePickerOpen;
   if (storageCandidatePickerOpen) {
     try {
-      await loadStorageCandidates();
+      await searchStorageCatalogVideos('');
     } catch (err) {
-      showInlineError('storage-profiles-error', err.message || 'Не удалось загрузить готовые видео');
+      showStorageProfileError(err.message || 'Не удалось загрузить каталог видео');
     }
+  } else {
+    selectedStorageCandidatePaths.clear();
   }
+  renderStorageProfileDetail();
+}
+function toggleStorageCandidateSelection(workspacePath, checked) {
+  if (checked) selectedStorageCandidatePaths.add(workspacePath);
+  else selectedStorageCandidatePaths.delete(workspacePath);
   renderStorageProfileDetail();
 }
 async function addCandidateToStorageProfile(workspacePath) {
   if (!currentStorageProfileId) return;
   try {
+    const candidate = storageProfileCandidates.find(item => item.workspace_path === workspacePath);
     const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/items`, {
       workspace_path: workspacePath,
+      status: candidate?.is_publish_ready ? 'ready' : 'draft',
     });
     currentStorageProfile = data.profile || currentStorageProfile;
     showToast('Видео добавлено в профиль');
     await loadStorageProfileDetail(currentStorageProfileId);
     await loadStorageProfiles({selectId: currentStorageProfileId});
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось добавить видео');
+    showStorageProfileError(err.message || 'Не удалось добавить видео');
   }
+}
+async function addSelectedCatalogVideosToStorageProfile() {
+  const paths = Array.from(selectedStorageCandidatePaths);
+  if (!paths.length) return;
+  let added = 0;
+  let errors = 0;
+  for (const path of paths) {
+    try {
+      const candidate = storageProfileCandidates.find(item => item.workspace_path === path);
+      await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/items`, {
+        workspace_path: path,
+        status: candidate?.is_publish_ready ? 'ready' : 'draft',
+      });
+      added += 1;
+    } catch {
+      errors += 1;
+    }
+  }
+  selectedStorageCandidatePaths.clear();
+  await loadStorageProfileDetail(currentStorageProfileId);
+  await loadStorageProfiles({selectId: currentStorageProfileId});
+  showToast(`Добавлено видео: ${added}${errors ? ` · ошибок: ${errors}` : ''}`, errors ? 'err' : 'ok');
 }
 async function removeStorageProfileItem(itemId) {
   if (!currentStorageProfileId) return;
@@ -2011,9 +2242,10 @@ async function removeStorageProfileItem(itemId) {
     storageProfileItems = storageProfileItems.filter(item => Number(item.id) !== Number(itemId));
     selectedStorageProfileItemIds.delete(Number(itemId));
     showToast('Видео убрано из профиля');
+    renderStorageProfileDetail();
     await loadStorageProfiles({selectId: currentStorageProfileId});
   } catch (err) {
-    showInlineError('storage-profiles-error', err.message || 'Не удалось убрать видео');
+    showStorageProfileError(err.message || 'Не удалось убрать видео');
   }
 }
 async function ensureStorageProfilesLoaded() {
@@ -2050,7 +2282,9 @@ async function addWorkspacePathToStorageProfile(path) {
     if (!profileId) return;
     await api.post(`/api/storage-profiles/${Number(profileId)}/items`, {workspace_path: workspacePath});
     showToast('Видео добавлено в локальный профиль');
-    if (currentView === 'storage-profiles') {
+    if (currentView === 'storage-profile' && Number(currentStorageProfileId) === Number(profileId)) {
+      await loadStorageProfileDetail(profileId);
+    } else if (currentView === 'storage-profiles') {
       currentStorageProfileId = Number(profileId);
       await loadStorageProfiles({selectId: profileId});
     }
@@ -3119,7 +3353,7 @@ async function refreshPublishJobs() {
       await refreshWorkspaceList();
       renderWorkspaceListAndDetail();
     }
-    if (currentView === 'storage-profiles' && currentStorageProfileId) {
+    if ((currentView === 'storage-profiles' || currentView === 'storage-profile') && currentStorageProfileId) {
       await refreshStorageProfilePublishState();
     }
   } catch (err) {
@@ -4611,6 +4845,9 @@ window.addEventListener('DOMContentLoaded', () => {
   initFsBrowser();
   onPublishModeChange();
   activateInitialViewFromQuery();
+});
+window.addEventListener('popstate', () => {
+  handleProfileRouteFromLocation();
 });
 window.addEventListener('message', event => {
   if (event.origin !== window.location.origin) return;
