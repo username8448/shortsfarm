@@ -26,8 +26,9 @@
       <button class="nb" data-v="queue" onclick="nav('queue', this)"><i class="ti ti-list"></i><span>Очередь</span><span id="nav-jobs" class="badge-pill" style="background:var(--acc-bg);color:var(--acc);"></span></button>
       <button class="nb" data-v="videos" onclick="nav('videos', this)"><i class="ti ti-video"></i><span>Видео</span><span id="nav-videos" class="badge-pill" style="background:var(--s2);color:var(--mid);"></span></button>
       <button class="nb" data-v="clips" onclick="nav('clips', this)"><i class="ti ti-player-play"></i><span>Клипы</span><span id="nav-clips" class="badge-pill" style="background:var(--warn-bg);color:var(--warn);"></span></button>
+      <button class="nb" data-v="tags" onclick="nav('tags', this)"><i class="ti ti-tags"></i><span>Теги</span></button>
       <button class="nb" data-v="storage-profiles" onclick="nav('storage-profiles', this)"><i class="ti ti-user-square-rounded"></i><span>Профили</span></button>
-      <button class="nb" data-v="publish" onclick="nav('publish', this)"><i class="ti ti-upload"></i><span>Публикация</span></button>
+      <button class="nb" data-v="integrations" onclick="nav('integrations', this)"><i class="ti ti-plug-connected"></i><span>Интеграции</span></button>
       <button class="nb" data-v="editing" onclick="nav('editing', this)"><i class="ti ti-layout-collage"></i><span>Монтаж</span></button>
       <button class="nb" data-v="studio" onclick="nav('studio', this)"><i class="ti ti-movie"></i><span>Template Studio</span></button>
       <button class="nb" data-v="settings" onclick="nav('settings', this)"><i class="ti ti-settings"></i><span>Настройки</span></button>
@@ -202,7 +203,7 @@
           </div>
           <button class="btn-secondary" onclick="bulkAddCatalogTagToWorkspaceItems()">Добавить тег</button>
           <button class="btn-mini" onclick="bulkRemoveCatalogTagFromWorkspaceItems()">Снять тег</button>
-          <button class="btn-mini" onclick="createStorageCatalogTag()">Создать тег</button>
+          <button class="btn-mini" onclick="openGlobalTagsView()">Открыть Теги</button>
           <div class="mono dim workspace-youtube-state">Каталоговые теги используются профилями и поиском. Статус “Готово” меняется отдельно.</div>
         </div>
         <div class="workspace-editing-panel">
@@ -222,27 +223,9 @@
           <button class="btn-secondary" id="workspace-editing-plan-btn" onclick="planSelectedWorkspaceEditing()">Добавить в очередь монтажа</button>
           <div id="workspace-editing-state" class="mono dim workspace-youtube-state"></div>
         </div>
-        <div class="workspace-youtube-panel">
-          <div class="field mini-field">
-            <label class="field-lbl">YouTube аккаунт</label>
-            <select id="workspace-youtube-account" onchange="onWorkspaceYoutubeAccountChange(this.value)"></select>
-          </div>
-          <div class="field mini-field">
-            <label class="field-lbl">Видимость</label>
-            <select id="workspace-youtube-mode">
-              <option value="private">private · приватно</option>
-              <option value="unlisted">unlisted · по ссылке</option>
-              <option value="public">public · публично</option>
-            </select>
-          </div>
-          <div class="field mini-field short">
-            <label class="field-lbl">ID категории</label>
-            <input id="workspace-youtube-category" type="text" value="22">
-          </div>
-          <label class="toggle-label workspace-youtube-toggle"><input id="workspace-youtube-made-for-kids" type="checkbox"> Для детей</label>
-          <button class="btn-secondary" id="workspace-youtube-enqueue-btn" onclick="enqueueSelectedWorkspaceToYouTube(false)">Добавить выбранные в очередь YouTube</button>
-          <button class="btn-primary" id="workspace-youtube-upload-btn" onclick="enqueueSelectedWorkspaceToYouTube(true)">Загрузить выбранные сейчас</button>
-          <div id="workspace-youtube-state" class="mono dim workspace-youtube-state"></div>
+        <div class="workspace-profile-publish-note">
+          <i class="ti ti-user-square-rounded"></i>
+          <span>Публикация в YouTube теперь выполняется только из выбранного профиля. Добавьте видео в профиль и настройте канал там.</span>
         </div>
         <div class="row-actions">
           <button class="btn-danger" onclick="retryFailedClips()"><i class="ti ti-refresh" style="font-size:12px;vertical-align:-1px"></i> Повторить ошибки</button>
@@ -256,6 +239,21 @@
           <div id="workspace-detail"><div class="empty">Выберите сегмент или клип</div></div>
         </aside>
       </div>
+    </div>
+
+    <div id="v-tags" class="v">
+      <div class="ph"><h1>Теги</h1><p>глобальный каталог тегов для видео, профилей, каналов, жанров, тем и статусов</p></div>
+      <div id="tags-error" class="err-line" style="display:none;margin-bottom:14px"></div>
+      <section class="box">
+        <div class="box-head">
+          <span>Менеджер тегов</span>
+          <div class="row-actions">
+            <button class="btn-secondary" onclick="createGlobalCatalogTag()">Создать тег</button>
+            <button class="btn-mini" onclick="loadTagsView()">Обновить</button>
+          </div>
+        </div>
+        <div id="tags-manager"></div>
+      </section>
     </div>
 
     <div id="v-storage-profiles" class="v">
@@ -291,19 +289,18 @@
               <i class="ti ti-brand-youtube"></i>
               <div>
                 <b>YouTube подключается отдельно</b>
-                <p>Сами аккаунты YouTube настраиваются в разделе «Публикация», а привязка к конкретному профилю — внутри страницы этого профиля.</p>
+                <p>Сами аккаунты YouTube и Google API auth настраиваются в разделе «Интеграции», а привязка к конкретному профилю — внутри страницы этого профиля.</p>
               </div>
             </div>
             <div class="storage-settings-card">
               <i class="ti ti-tags"></i>
               <div>
-                <b>Теги — основной способ отбора</b>
-                <p>Создавайте теги для каналов, жанров и тем. Профиль подключает теги, а не папки.</p>
-                <button class="btn-secondary" onclick="createStorageCatalogTag()">Создать тег</button>
+                <b>Профили используют глобальные теги</b>
+                <p>Теги создаются и редактируются в отдельном разделе «Теги». Профиль только подключает include/exclude правила.</p>
+                <button class="btn-secondary" onclick="openGlobalTagsView()">Открыть Теги</button>
               </div>
             </div>
           </div>
-          <div id="storage-tags-manager"></div>
         </section>
       </div>
     </div>
@@ -329,170 +326,50 @@
       </section>
     </div>
 
-    <div id="v-publish" class="v">
-      <div class="ph"><h1>Публикация</h1><p>YouTube-каналы, готовые клипы, очередь публикации и синхронная/фоновая загрузка</p></div>
-      <div class="tabs">
-        <button class="tab on" data-pub-tab="youtube" onclick="setPublishTab('youtube', this)">YouTube</button>
-        <button class="tab" data-pub-tab="accounts" onclick="setPublishTab('accounts', this)">Аккаунты</button>
-        <button class="tab" data-pub-tab="upload-queue" onclick="setPublishTab('upload-queue', this)">Очередь загрузки</button>
-        <button class="tab" data-pub-tab="templates" onclick="setPublishTab('templates', this)">Шаблоны</button>
-      </div>
-
-      <div id="pub-youtube" class="pub-tab on">
-        <div id="publish-error" class="err-line" style="display:none;margin-bottom:14px"></div>
-        <div class="publish-grid">
-          <div class="box">
-            <div class="box-head">
-              <span>Канал и клип</span>
-              <div class="row-actions">
-                <button class="btn-mini" onclick="loadPublishView()">Обновить</button>
-                <button class="btn-primary" id="publish-connect-btn" style="padding:6px 14px;font-size:11px" onclick="startYouTubeConnect()">
-                  <i class="ti ti-brand-youtube" style="font-size:12px;vertical-align:-1px"></i> Подключить канал
-                </button>
-              </div>
-            </div>
-            <div id="publish-state"></div>
-            <div class="form-body">
-              <div class="field">
-                <label class="field-lbl">Google OAuth-клиент</label>
-                <select id="publish-profile-select" onchange="onPublishProfileChange(this.value)"></select>
-                <div id="publish-profile-meta" class="settings-meta" style="margin-top:8px"></div>
-              </div>
-              <div class="field">
-                <label class="field-lbl">YouTube канал</label>
-                <select id="publish-account-select" onchange="onPublishAccountChange(this.value)"></select>
-                <div id="publish-account-meta" class="settings-meta" style="margin-top:8px"></div>
-              </div>
-              <div class="field">
-                <label class="field-lbl">Готовые клипы</label>
-                <div id="publish-ready-clips"></div>
-              </div>
-              <div id="publish-selected-clip" class="selection-card"><div class="empty">Выберите готовый клип для публикации</div></div>
-            </div>
-          </div>
-
-          <div class="box">
-            <div class="box-head">
-              <span>Параметры публикации</span>
-            </div>
-            <div class="form-body">
-              <div id="publish-form-error" class="err-line" style="display:none"></div>
-              <div id="publish-form-ok" class="ok-line" style="display:none"></div>
-
-              <div class="field">
-                <label class="field-lbl">Заголовок</label>
-                <input id="publish-title" type="text" placeholder="Название ролика на YouTube" oninput="updatePublishButtons()">
-              </div>
-
-              <div class="field">
-                <label class="field-lbl">Описание</label>
-                <textarea id="publish-description" rows="6" placeholder="Описание ролика"></textarea>
-              </div>
-
-              <div class="field">
-                <label class="field-lbl">Теги</label>
-                <input id="publish-tags" type="text" placeholder="через запятую: shorts, gaming, highlight">
-              </div>
-
-              <div class="field-grid">
-                <div class="field">
-                  <label class="field-lbl">Категория</label>
-                  <input id="publish-category" type="text" value="22" oninput="updatePublishButtons()">
-                </div>
-                <div class="field">
-                  <label class="field-lbl">Режим</label>
-                  <select id="publish-mode" onchange="onPublishModeChange()">
-                    <option value="private">private · приватно</option>
-                    <option value="unlisted">unlisted · по ссылке</option>
-                    <option value="public">public · публично</option>
-                    <option value="schedule">schedule · по времени</option>
-                  </select>
-                </div>
-              </div>
-
-              <div class="field" id="publish-at-field" style="display:none">
-                <label class="field-lbl">Время публикации (ISO)</label>
-                <input id="publish-at" type="text" placeholder="2026-06-15T18:00:00Z" oninput="updatePublishButtons()">
-              </div>
-
-              <div class="toggles">
-                <label class="toggle-label"><input id="publish-made-for-kids" type="checkbox"> Для детей</label>
-              </div>
-
-              <div class="action-row">
-                <button class="btn-secondary" id="publish-enqueue-btn" onclick="submitPublish('enqueue')">Добавить в очередь</button>
-                <button class="btn-primary" id="publish-upload-btn" onclick="submitPublish('upload')">Загрузить сейчас</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="box">
+    <div id="v-integrations" class="v">
+      <div class="ph"><h1>Интеграции</h1><p>Google API auth, подключённые YouTube-каналы и связь аккаунтов с локальными профилями</p></div>
+      <div id="integrations-error" class="err-line" style="display:none;margin-bottom:14px"></div>
+      <div class="publish-grid integrations-grid">
+        <section class="box">
           <div class="box-head">
-            <span>Очередь публикации</span>
+            <span>Google API auth</span>
             <div class="row-actions">
-              <button class="btn-mini" onclick="refreshPublishJobs()">Обновить очередь</button>
-              <button class="btn-mini" onclick="runPublishWorkerBatch(1)">Запустить 1</button>
-              <button class="btn-mini" onclick="runPublishWorkerBatch(3)">Запустить 3</button>
-              <button class="btn-secondary" onclick="runSelectedPublishJobs()">Запустить выбранные</button>
-              <button class="btn-secondary" onclick="openPublishScheduleEditor()">Настроить расписание</button>
-              <button class="btn-mini" onclick="retryFailedPublishJobs()">Повторить ошибки</button>
-              <button class="btn-danger" onclick="cancelSelectedPublishJobs()">Отменить выбранные в очереди</button>
-              <button class="btn-mini" onclick="hideDonePublishJobs()">Скрыть завершённые</button>
+              <button class="btn-mini" onclick="loadIntegrationsView()">Обновить</button>
+              <button class="btn-secondary" onclick="createIntegrationOAuthProfile('json')">Импорт JSON</button>
+              <button class="btn-secondary" onclick="createIntegrationOAuthProfile('manual')">Создать вручную</button>
             </div>
           </div>
-          <div class="publish-queue-toolbar">
-            <div class="mono dim" style="width:100%">Автоматические таймеры обрабатывает команда: shortsfarm publish-worker</div>
-            <div class="tabs compact-tabs schedule-tabs" style="margin:0">
-              <button class="tab on" data-schedule-filter="untimed" onclick="filterPublishSchedule(this,'untimed')">Без таймера<span class="cnt" id="schedule-cnt-untimed"></span></button>
-              <button class="tab" data-schedule-filter="scheduled" onclick="filterPublishSchedule(this,'scheduled')">Запланировано<span class="cnt" id="schedule-cnt-scheduled"></span></button>
-              <button class="tab" data-schedule-filter="overdue" onclick="filterPublishSchedule(this,'overdue')">Просрочено<span class="cnt" id="schedule-cnt-overdue"></span></button>
-              <button class="tab" data-schedule-filter="all" onclick="filterPublishSchedule(this,'all')">Все<span class="cnt" id="schedule-cnt-all"></span></button>
-            </div>
-            <div class="tabs compact-tabs" style="margin:0">
-              <button class="tab on" data-publish-filter="all" onclick="filterPublishJobs(this,'all')">Все<span class="cnt" id="pubjob-cnt-all"></span></button>
-              <button class="tab" data-publish-filter="queued" onclick="filterPublishJobs(this,'queued')">В очереди<span class="cnt" id="pubjob-cnt-queued"></span></button>
-              <button class="tab" data-publish-filter="uploading" onclick="filterPublishJobs(this,'uploading')">Загружается<span class="cnt" id="pubjob-cnt-uploading"></span></button>
-              <button class="tab" data-publish-filter="done" onclick="filterPublishJobs(this,'done')">Загружено<span class="cnt" id="pubjob-cnt-done"></span></button>
-              <button class="tab" data-publish-filter="failed" onclick="filterPublishJobs(this,'failed')">Ошибки<span class="cnt" id="pubjob-cnt-failed"></span></button>
-              <button class="tab" data-publish-filter="cancelled" onclick="filterPublishJobs(this,'cancelled')">Отменено<span class="cnt" id="pubjob-cnt-cancelled"></span></button>
-            </div>
-            <label class="toggle-label">batch size
-              <select id="publish-batch-size" onchange="publishBatchSize=Number(this.value)||3">
-                <option value="1">1</option>
-                <option value="3" selected>3</option>
-                <option value="5">5</option>
-                <option value="10">10</option>
-              </select>
-            </label>
-          </div>
-          <div id="publish-jobs"></div>
-        </div>
-      </div>
+          <div id="integrations-oauth-profiles"></div>
+        </section>
 
-      <div id="pub-upload-queue" class="pub-tab">
-        <div class="box"><div class="box-head">Очередь загрузки</div><div class="empty">Основная очередь публикации уже доступна во вкладке «YouTube».</div></div>
-      </div>
-
-      <div id="pub-accounts" class="pub-tab">
-        <div class="box">
+        <section class="box">
           <div class="box-head">
-            <span>YouTube каналы</span>
-            <div class="row-actions">
-              <button class="btn-mini" onclick="loadPublishView()">Обновить</button>
-              <button class="btn-primary" id="publish-connect-btn-accounts" style="padding:6px 14px;font-size:11px" onclick="startYouTubeConnect()">
-                <i class="ti ti-brand-youtube" style="font-size:12px;vertical-align:-1px"></i> Подключить канал
-              </button>
-            </div>
+            <span>Подключение YouTube</span>
+            <button class="btn-primary" id="integrations-connect-btn" onclick="startYouTubeConnect()">
+              <i class="ti ti-brand-youtube"></i> Подключить канал
+            </button>
           </div>
-          <div id="publish-accounts-state"></div>
-          <div id="publish-accounts-list"></div>
-        </div>
+          <div class="form-body">
+            <div class="field">
+              <label class="field-lbl">Google API auth для нового подключения</label>
+              <select id="integrations-profile-select" onchange="onIntegrationOAuthProfileChange(this.value)"></select>
+              <div id="integrations-profile-meta" class="settings-meta" style="margin-top:8px"></div>
+            </div>
+            <div id="integrations-connect-state"></div>
+          </div>
+        </section>
       </div>
 
-      <div id="pub-templates" class="pub-tab">
-        <div class="box"><div class="box-head">Шаблоны</div><div class="empty">Шаблоны title/description появятся следующим шагом.</div></div>
-      </div>
+      <section class="box">
+        <div class="box-head">
+          <span>YouTube-аккаунты</span>
+          <div class="row-actions">
+            <input id="integrations-search" class="compact-input" type="text" placeholder="Поиск канала, OAuth или профиля…" oninput="renderIntegrationsAccountsPanel()">
+            <button class="btn-mini" onclick="loadIntegrationsView()">Обновить</button>
+          </div>
+        </div>
+        <div id="integrations-accounts-list"></div>
+      </section>
     </div>
 
     <div id="v-editing" class="v">
@@ -661,86 +538,15 @@
     </div>
 
     <div id="v-settings" class="v">
-      <div class="ph"><h1>Настройки</h1><p>рабочая папка ShortsFarm и OAuth-клиент для YouTube-каналов</p></div>
+      <div class="ph"><h1>Настройки</h1><p>рабочая папка ShortsFarm и локальные параметры приложения</p></div>
       <div class="tabs">
-        <button class="tab on" data-settings-tab="youtube-oauth" onclick="setSettingsTab('youtube-oauth', this)">YouTube OAuth</button>
-        <button class="tab" data-settings-tab="workspace" onclick="setSettingsTab('workspace', this)">Workspace</button>
+        <button class="tab on" data-settings-tab="workspace" onclick="setSettingsTab('workspace', this)">Workspace</button>
       </div>
 
       <div id="settings-error" class="err-line" style="display:none;margin-bottom:14px"></div>
       <div id="settings-ok" class="ok-line" style="display:none;margin-bottom:14px"></div>
 
-      <div id="settings-youtube-oauth" class="settings-tab on">
-        <div class="settings-grid">
-          <div class="box">
-            <div class="box-head">
-              <span>OAuth профили</span>
-              <div class="row-actions">
-                <button class="btn-mini" onclick="loadSettingsView()">Обновить</button>
-                <button class="btn-secondary" onclick="startNewOAuthProfile()">Новый профиль</button>
-              </div>
-            </div>
-            <div id="settings-oauth-profiles"></div>
-          </div>
-
-          <div class="box">
-            <div class="box-head">
-              <span id="settings-oauth-form-title">Импорт JSON OAuth-клиента</span>
-              <div class="row-actions">
-                <button class="btn-mini" onclick="setOAuthManualMode('json')">JSON</button>
-                <button class="btn-mini" onclick="setOAuthManualMode('manual')">Ручной ввод</button>
-              </div>
-            </div>
-            <div class="form-body settings-form">
-              <div class="hint-box">
-                <ol style="padding-left:18px;line-height:1.6">
-                  <li>Создайте OAuth-клиент в Google Cloud.</li>
-                  <li>Вставьте JSON OAuth-клиента ниже.</li>
-                  <li>После импорта перейдите к подключению YouTube-канала.</li>
-                </ol>
-              </div>
-
-              <div class="field">
-                <label class="field-lbl">Название профиля</label>
-                <input id="settings-oauth-name" type="text" placeholder="Main YouTube OAuth">
-              </div>
-
-              <div id="settings-oauth-json-wrap" class="field">
-                <label class="field-lbl">JSON OAuth-клиента</label>
-                <textarea id="settings-oauth-json" rows="8" placeholder='{"web":{"client_id":"...","client_secret":"...","redirect_uris":["http://127.0.0.1:8000/api/publish/youtube/oauth/callback"]}}'></textarea>
-              </div>
-
-              <div id="settings-oauth-manual-wrap" style="display:none">
-                <div class="field">
-                  <label class="field-lbl">client_id</label>
-                  <input id="settings-oauth-client-id" type="text" placeholder="client_id из Google OAuth">
-                </div>
-                <div class="field">
-                  <label class="field-lbl">client_secret</label>
-                  <input id="settings-oauth-client-secret" type="password" placeholder="client_secret из Google OAuth">
-                </div>
-                <div class="field">
-                  <label class="field-lbl">Redirect URI</label>
-                  <input id="settings-oauth-redirect-uri" type="text" value="http://127.0.0.1:8000/api/publish/youtube/oauth/callback">
-                </div>
-              </div>
-
-              <div class="toggles">
-                <label class="toggle-label"><input id="settings-oauth-default" type="checkbox" checked> Использовать по умолчанию</label>
-              </div>
-
-              <div class="action-row">
-                <button class="btn-primary" id="settings-oauth-save-btn" onclick="saveOAuthProfile()">Сохранить OAuth-клиент</button>
-                <button class="btn-secondary" onclick="startNewOAuthProfile()">Очистить форму</button>
-                <button class="btn-danger" id="settings-oauth-delete-btn" style="display:none" onclick="deleteOAuthProfile()">Удалить профиль</button>
-              </div>
-              <div id="settings-oauth-status" class="settings-meta"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div id="settings-workspace" class="settings-tab">
+      <div id="settings-workspace" class="settings-tab on">
         <div class="box">
           <div class="box-head"><span>Рабочая папка ShortsFarm</span></div>
           <div class="form-body settings-form">

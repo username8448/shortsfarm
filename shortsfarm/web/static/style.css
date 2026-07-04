@@ -862,28 +862,28 @@ body.video-lightbox-open { overflow: hidden; }
   gap: 7px;
   margin-top: 10px;
 }
-.storage-tags-manager {
+.tags-manager {
   margin-top: 14px;
   padding: 12px;
   border: 1px solid rgba(59,130,246,.32);
   border-radius: 12px;
   background: rgba(15,23,42,.28);
 }
-.storage-tag-manager-grid {
+.tags-manager-grid {
   display: grid;
   grid-template-columns: minmax(280px, .72fr) minmax(360px, 1fr);
   gap: 12px;
   margin-top: 12px;
 }
-.storage-tag-list-box,
-.storage-tag-video-box {
+.tags-list-box,
+.tags-video-box {
   min-width: 0;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: rgba(15,23,42,.34);
 }
-.storage-tag-assign-row {
+.tags-assign-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
@@ -1108,6 +1108,24 @@ body.video-lightbox-open { overflow: hidden; }
   border-radius: 8px;
   background: rgba(15,23,42,.38);
 }
+.workspace-profile-publish-note {
+  width: 100%;
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(245,158,11,.35);
+  border-radius: 8px;
+  background: rgba(245,158,11,.08);
+  color: var(--mid);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.workspace-profile-publish-note i {
+  color: #f59e0b;
+  font-size: 18px;
+}
 .workspace-prepare-panel {
   width: 100%;
   display: grid;
@@ -1242,6 +1260,20 @@ body.video-lightbox-open { overflow: hidden; }
   align-self: center;
   line-height: 1.5;
 }
+.integrations-grid {
+  align-items: stretch;
+}
+.storage-profile-publish-settings {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid rgba(59,130,246,.28);
+  border-radius: 12px;
+  background: rgba(59,130,246,.07);
+}
+.storage-publish-kids {
+  align-self: end;
+  min-height: 38px;
+}
 .workspace-layout {
   display: grid; grid-template-columns: minmax(0, 1fr) 360px;
   gap: 14px; align-items: start;
@@ -1365,9 +1397,9 @@ body.video-lightbox-open { overflow: hidden; }
   .storage-profiles-layout,
   .storage-profiles-hub,
   .storage-tag-rule-grid,
-  .storage-tag-manager-grid,
+  .tags-manager-grid,
   .storage-search-panel,
-  .storage-tag-assign-row,
+  .tags-assign-row,
   .tag-manager-create-row,
   .workspace-tag-editor,
   .editing-layout,
@@ -1377,7 +1409,8 @@ body.video-lightbox-open { overflow: hidden; }
   .workspace-prepare-panel,
   .workspace-tags-panel,
   .workspace-editing-panel,
-  .workspace-youtube-panel {
+  .workspace-youtube-panel,
+  .workspace-profile-publish-note {
     grid-template-columns: 1fr;
   }
   .workspace-detail {

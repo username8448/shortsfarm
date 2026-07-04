@@ -2573,7 +2573,7 @@ def upsert_local_storage_profile_service_link(
                 external_account_id=excluded.external_account_id,
                 display_name=excluded.display_name,
                 status=excluded.status,
-                settings_json=excluded.settings_json,
+                settings_json=COALESCE(excluded.settings_json, local_storage_profile_service_links.settings_json),
                 updated_at=excluded.updated_at
             """,
             (
@@ -2595,6 +2595,26 @@ def upsert_local_storage_profile_service_link(
             (int(profile_id), normalized_platform),
         ).fetchone()
         return int(row["id"] if row is not None else cur.lastrowid)
+
+
+def update_local_storage_profile_service_link_settings(
+    profile_id: int,
+    platform: str,
+    settings_json: str,
+) -> bool:
+    normalized_platform = str(platform or "").strip().lower()
+    if not normalized_platform:
+        raise ValueError("platform не может быть пустым.")
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE local_storage_profile_service_links
+            SET settings_json=?, updated_at=?
+            WHERE profile_id=? AND platform=?
+            """,
+            (settings_json, now_utc(), int(profile_id), normalized_platform),
+        )
+        return result.rowcount > 0
 
 
 def update_local_storage_profile_service_link_sync(
@@ -2627,6 +2647,28 @@ def update_local_storage_profile_service_link_sync(
             params,
         )
         return result.rowcount > 0
+
+
+def list_local_storage_profiles_for_service_account(
+    *,
+    platform: str,
+    external_account_id: int,
+) -> list[sqlite3.Row]:
+    normalized_platform = str(platform or "").strip().lower()
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT lsp.*
+            FROM local_storage_profiles lsp
+            JOIN local_storage_profile_service_links link ON link.profile_id=lsp.id
+            WHERE link.platform=?
+              AND link.external_account_id=?
+              AND link.status='linked'
+              AND lsp.enabled=1
+            ORDER BY lsp.name COLLATE NOCASE ASC, lsp.id ASC
+            """,
+            (normalized_platform, int(external_account_id)),
+        ).fetchall()
 
 
 def remove_local_storage_profile_service_link(profile_id: int, platform: str) -> bool:

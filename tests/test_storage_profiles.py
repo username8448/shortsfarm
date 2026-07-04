@@ -144,6 +144,84 @@ def test_storage_profile_youtube_link_updates_existing_link(tmp_path):
     assert updated["service_links"][0]["display_name"] == "Second"
 
 
+def test_storage_profile_publish_settings_persist_and_apply_defaults(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import (
+        LocalStorageProfileItemCreateRequest,
+        LocalStorageProfilePublishSettingsRequest,
+        LocalStorageProfileYouTubeLinkRequest,
+        LocalStorageProfileYouTubePublishRequest,
+    )
+
+    root = _workspace(tmp_path)
+    relative = "edits/channel/defaults.mp4"
+    _video(root, relative)
+    profile_id = _profile_id(name="Hello World")
+
+    saved = api.local_storage_profile_publish_settings_update(
+        profile_id,
+        LocalStorageProfilePublishSettingsRequest(
+            publish_mode="unlisted",
+            category_id="24",
+            made_for_kids=True,
+            title_template="{profile} · {stem}",
+            description_template="Профиль {profile}: {file_name}",
+            tags_template="shorts, {handle}",
+            default_action="schedule",
+        ),
+    )
+
+    assert saved["settings"]["publish_mode"] == "unlisted"
+    assert saved["settings"]["category_id"] == "24"
+    assert saved["profile"]["service_links"][0]["status"] == "not_connected"
+
+    account_id = _youtube_account(channel_title="Defaults Channel")
+    linked = api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )["profile"]
+
+    assert linked["service_links"][0]["settings_json"]
+
+    item = api.local_storage_profile_item_add(
+        profile_id,
+        LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
+    )["item"]
+    data = api.local_storage_profile_youtube_enqueue(
+        profile_id,
+        LocalStorageProfileYouTubePublishRequest(item_ids=[item["id"]]),
+    )
+    job = data["jobs"][0]
+
+    assert job["title"] == "Hello World · defaults"
+    assert job["description"] == "Профиль Hello World: defaults.mp4"
+    assert job["category_id"] == "24"
+    assert job["privacy_status"] == "unlisted"
+    assert job["publish_mode"] == "unlisted"
+    assert job["made_for_kids"] is True
+    assert "shorts" in job["tags"]
+
+
+def test_youtube_accounts_include_oauth_and_linked_storage_profiles(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileYouTubeLinkRequest
+
+    _workspace(tmp_path)
+    profile_id = _profile_id(name="Linked Local Profile")
+    account_id = _youtube_account(channel_title="Mapped Channel")
+    api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )
+
+    accounts = api.youtube_accounts()["accounts"]
+    account = next(item for item in accounts if item["id"] == account_id)
+
+    assert account["oauth_profile"]["name"].startswith("OAuth")
+    assert account["profile_name"] == account["oauth_profile"]["name"]
+    assert [profile["id"] for profile in account["linked_storage_profiles"]] == [profile_id]
+
+
 def test_storage_profile_youtube_link_rejects_inactive_account(tmp_path):
     from shortsfarm.web import api
     from shortsfarm.web.schemas import LocalStorageProfileYouTubeLinkRequest
@@ -819,17 +897,40 @@ def test_storage_profiles_ui_is_registered():
     css = (root / "shortsfarm" / "web" / "static" / "style.css").read_text(encoding="utf-8")
 
     assert 'data-v="storage-profiles"' in html
+    assert 'data-v="tags"' in html
+    assert 'data-v="integrations"' in html
+    assert 'data-v="publish"' not in html
+    assert 'id="v-publish"' not in html
+    assert 'id="v-integrations"' in html
+    assert 'id="settings-youtube-oauth"' not in html
+    assert 'data-settings-tab="youtube-oauth"' not in html
+    assert "workspace-youtube-account" not in html
+    assert "workspace-youtube-enqueue-btn" not in html
+    assert "workspace-youtube-upload-btn" not in html
     assert "storage-profiles-grid" in html
+    assert 'id="v-tags"' in html
+    assert 'id="tags-manager"' in html
     assert 'id="v-storage-profile"' in html
+    tags_html = html.split('<div id="v-tags"', 1)[1].split('<div id="v-storage-profiles"', 1)[0]
     hub_html = html.split('<div id="v-storage-profiles"', 1)[1].split('<div id="v-storage-profile"', 1)[0]
-    detail_html = html.split('<div id="v-storage-profile"', 1)[1].split('<div id="v-publish"', 1)[0]
+    detail_html = html.split('<div id="v-storage-profile"', 1)[1].split('<div id="v-integrations"', 1)[0]
     assert "Настройки профилей" in hub_html
+    assert "Менеджер тегов" in tags_html
+    assert "Создать тег" in tags_html
+    assert "Менеджер тегов" not in hub_html
+    assert "createGlobalCatalogTag" not in hub_html
     assert "storage-profile-detail" not in hub_html
     assert "storage-profile-detail" in detail_html
     assert "Все профили" in detail_html
+    assert "Интеграции" in html
+    assert "integrations-oauth-profiles" in html
+    assert "integrations-accounts-list" in html
     assert "storage-profile-card create-card" in js
     assert "openStorageProfile(profileId" in js
     assert "openStorageProfilesHub" in js
+    assert "openGlobalTagsView" in js
+    assert "loadTagsView" in js
+    assert "renderGlobalTagsManager" in js
     assert "searchParams.set('profile'" in js
     assert "/api/catalog/videos/search" in js
     assert "/api/catalog/videos/random" in js
@@ -841,15 +942,17 @@ def test_storage_profiles_ui_is_registered():
     assert "/youtube/sync" in js
     assert "/youtube/videos" in js
     assert "/publish-jobs" in js
+    assert "/publish-settings" in js
     assert "Привязать YouTube" in js
     assert "Отвязать" in js
     assert "Публикация YouTube" in js
+    assert "Настройки публикации профиля" in js
     assert "Теги профиля" in js
     assert "Случайные видео" in js
     assert "Менеджер тегов" in js
     assert "Добавить теги в видео" in js
     assert "Поиск тегов" in js
-    assert "storage-tag-create-color" in js
+    assert "tags-create-color" in js
     assert "updateCatalogTagColor" in js
     assert "scope=all" in js
     assert "workspace-catalog-tags-panel" in js
@@ -861,19 +964,24 @@ def test_storage_profiles_ui_is_registered():
     assert "workspaceFilterExcludeTagIds" in js
     assert "bulkAddCatalogTagToWorkspaceItems" in js
     assert "bulkRemoveCatalogTagFromWorkspaceItems" in js
+    assert "createStorageCatalogTag" not in js
     assert "assignTagToSelectedVideos" in js
     assert "Автоимпорт готовых видео" not in js
     assert "Синхронизировать YouTube" in js
     assert "Видео на YouTube" in js
     assert "только на YouTube" in js
     assert "enqueueStorageProfileSelection" in js
+    assert "loadIntegrationsView" in js
+    assert "renderIntegrationsAccountsPanel" in js
     assert "addWorkspaceItemToStorageProfile" in js
     assert "storage-youtube-controls" in css
     assert "storage-profiles-hub" in css
     assert "storage-profile-route-head" in css
     assert "storage-tag-panel" in css
-    assert "storage-tags-manager" in css
-    assert "storage-tag-manager-grid" in css
+    assert "tags-manager" in css
+    assert "tags-manager-grid" in css
+    assert "storage-tags-manager" not in css
+    assert "storage-tag-manager-grid" not in css
     assert "tag-color-input" in css
     assert "workspace-filter-panel" in css
     assert "filter-query-chip" in css

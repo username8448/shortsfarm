@@ -163,9 +163,22 @@ class LocalStorageProfileYouTubeLinkRequest(BaseModel):
 class LocalStorageProfileYouTubePublishRequest(BaseModel):
     item_ids: list[int] = Field(default_factory=list)
     account_id: int | None = None
-    publish_mode: str = "private"
-    category_id: str = "22"
-    made_for_kids: bool = False
+    publish_mode: str | None = None
+    category_id: str | None = None
+    made_for_kids: bool | None = None
+    title_template: str | None = None
+    description_template: str | None = None
+    tags_template: str | None = None
+
+
+class LocalStorageProfilePublishSettingsRequest(BaseModel):
+    publish_mode: str | None = None
+    category_id: str | None = None
+    made_for_kids: bool | None = None
+    title_template: str | None = None
+    description_template: str | None = None
+    tags_template: str | None = None
+    default_action: str | None = None
 
 
 class LocalStorageProfileAutoImportRunRequest(BaseModel):

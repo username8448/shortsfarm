@@ -513,6 +513,7 @@ let tagManagerSearchTimer = null;
 let tagManagerTagQuery = '';
 let storageYoutubeAccounts = [];
 let storageCandidatePickerOpen = false;
+let integrationsSearchQuery = '';
 const workspaceYoutubeState = {
   selectedAccountId: null,
   busy: false,
@@ -568,11 +569,12 @@ function nav(id, btn) {
   if (id === 'queue') loadJobs();
   if (id === 'videos') loadVideos();
   if (id === 'clips') loadClips();
+  if (id === 'tags') loadTagsView();
   if (id === 'storage-profiles') {
     window.history.replaceState({}, '', storageProfileUrl(null));
     loadStorageProfiles();
   }
-  if (id === 'publish') loadPublishView();
+  if (id === 'integrations') loadIntegrationsView();
   if (id === 'editing') loadEditingView();
   if (id === 'settings') loadSettingsView();
 }
@@ -1337,20 +1339,17 @@ function renderVideosTable(rows) {
 
 async function loadClips() {
   try {
-    const [data, accountsData, profilesData, templatesData, reactionsData] = await Promise.all([
+    const [data, profilesData, templatesData, reactionsData] = await Promise.all([
       api.get('/api/workspace/clips'),
-      api.get('/api/publish/youtube/accounts'),
       api.get('/api/editing/channel-profiles?enabled=true'),
       api.get('/api/editing/templates?enabled=true'),
       api.get('/api/editing/reactions?enabled=true'),
       loadCatalogTags().catch(() => null),
     ]);
     lastClips = data.items || [];
-    lastYoutubeAccounts = accountsData.accounts || lastYoutubeAccounts || [];
     editingProfiles = profilesData.items || editingProfiles || [];
     editingTemplates = templatesData.items || editingTemplates || [];
     editingReactions = reactionsData.items || editingReactions || [];
-    syncWorkspaceYoutubeSelection();
     syncWorkspaceEditingSelection();
     if (currentWorkspaceItemKey && !workspaceItemByKey(currentWorkspaceItemKey)) {
       currentWorkspaceItemKey = null;
@@ -1358,7 +1357,6 @@ async function loadClips() {
     renderClipCounts(data.counts || {});
     renderWorkspaceTagControls();
     renderWorkspaceEditingControls();
-    renderWorkspaceYoutubeControls();
     renderClipsTable(getVisibleWorkspaceItems());
     if (!workspaceDetailDirty) renderWorkspaceDetail();
   } catch (err) {
@@ -1599,7 +1597,6 @@ async function loadStorageProfiles(options = {}) {
       storageProfileItems = [];
     }
     renderStorageProfilesGrid();
-    renderStorageTagManager();
   } catch (err) {
     showStorageProfileError(err.message || 'Не удалось загрузить профили');
   }
@@ -1722,7 +1719,7 @@ function storageProfileTagRulesPanel(profile) {
       </div>
       <div class="row-actions">
         <button class="btn-secondary" onclick="runStorageProfileTagSync()">Обновить по тегам</button>
-        <button class="btn-mini" onclick="createStorageCatalogTag()">Создать тег</button>
+        <button class="btn-mini" onclick="openGlobalTagsView()">Открыть Теги</button>
       </div>
     </div>
     <div class="storage-tag-rule-grid">
@@ -1799,11 +1796,28 @@ async function removeStorageProfileTagRule(tagId, mode) {
     exclude: mode === 'exclude' ? exclude.filter(id => id !== Number(tagId)) : exclude,
   });
 }
-async function createStorageCatalogTag() {
+function openGlobalTagsView() {
+  nav('tags', document.querySelector('[data-v="tags"]'));
+}
+async function createGlobalCatalogTag() {
   const name = prompt('Название нового тега:');
   if (!name) return;
   const color = prompt('Цвет тега в формате #RRGGBB:', '#64748b') || '#64748b';
   await createCatalogTag({name, color});
+}
+async function loadTagsView(options = {}) {
+  const {silent = false} = options;
+  if (!silent) hideInlineError('tags-error');
+  try {
+    await loadCatalogTags({force: true});
+    renderGlobalTagsManager();
+  } catch (err) {
+    if (!silent) showInlineError('tags-error', err.message || 'Не удалось загрузить теги');
+  }
+}
+function showGlobalTagsError(message) {
+  if (currentView === 'tags') showInlineError('tags-error', message);
+  else showStorageProfileError(message);
 }
 async function createCatalogTag({name, color = '#64748b'} = {}) {
   const cleanName = String(name || '').trim();
@@ -1812,7 +1826,7 @@ async function createCatalogTag({name, color = '#64748b'} = {}) {
     const data = await api.post('/api/tags', {name: cleanName, color, kind: 'user'});
     catalogTags = catalogTags.concat([data.tag]);
     renderStorageProfileDetail();
-    renderStorageTagManager();
+    renderGlobalTagsManager();
     renderWorkspaceTagControls();
     if (currentView === 'clips') renderWorkspaceListAndDetail();
     showToast('Тег создан');
@@ -1822,7 +1836,7 @@ async function createCatalogTag({name, color = '#64748b'} = {}) {
     return null;
   }
 }
-function storageTagManagerTagRow(tag) {
+function globalTagManagerTagRow(tag) {
   const locked = tag.locked || tag.kind === 'status' || tag.kind === 'channel';
   const actions = locked
     ? '<span class="mono dim">служебный</span>'
@@ -1837,8 +1851,8 @@ function storageTagManagerTagRow(tag) {
     <td><div class="row-actions">${actions}</div></td>
   </tr>`;
 }
-function renderStorageTagManager() {
-  const el = document.getElementById('storage-tags-manager');
+function renderGlobalTagsManager() {
+  const el = document.getElementById('tags-manager');
   if (!el) return;
   const tags = catalogTags || [];
   const q = String(tagManagerTagQuery || '').trim().toLowerCase();
@@ -1864,36 +1878,36 @@ function renderStorageTagManager() {
         </label>`;
       }).join('')
     : '<div class="empty compact">Начните писать название, путь или тег — видео появятся автоматически. Можно нажать «Случайные».</div>';
-  el.innerHTML = `<div class="storage-tags-manager">
+  el.innerHTML = `<div class="tags-manager">
     <div class="storage-tag-panel-head">
       <div>
         <div class="storage-section-title inline-title">Менеджер тегов</div>
         <div class="mono dim">Создавайте теги, ищите видео по всему workspace и назначайте теги выбранным роликам. Профили потом подключают эти теги.</div>
       </div>
       <div class="row-actions">
-        <button class="btn-secondary" onclick="createStorageCatalogTag()">Создать тег</button>
+        <button class="btn-secondary" onclick="createGlobalCatalogTag()">Создать тег</button>
         <button class="btn-mini" onclick="reloadCatalogTagsForUi()">Обновить</button>
       </div>
     </div>
-    <div class="storage-tag-manager-grid">
-      <div class="storage-tag-list-box">
+    <div class="tags-manager-grid">
+      <div class="tags-list-box">
         <div class="tag-manager-create-row">
-          <input id="storage-tag-create-name" type="text" placeholder="Новый тег">
-          <input id="storage-tag-create-color" class="tag-color-input" type="color" value="#64748b" title="Цвет нового тега">
+          <input id="tags-create-name" type="text" placeholder="Новый тег">
+          <input id="tags-create-color" class="tag-color-input" type="color" value="#64748b" title="Цвет нового тега">
           <button class="btn-secondary" onclick="createCatalogTagFromManager()">Создать</button>
         </div>
         <div class="field" style="margin-top:10px">
           <label class="field-lbl">Поиск тегов</label>
-          <input id="storage-tag-manager-search" type="text" value="${esc(tagManagerTagQuery)}" placeholder="Название, slug, тип…" oninput="onStorageTagManagerSearchInput(this.value)">
+          <input id="tags-manager-search" type="text" value="${esc(tagManagerTagQuery)}" placeholder="Название, slug, тип…" oninput="onGlobalTagManagerSearchInput(this.value)">
         </div>
         <div class="field-lbl">Пользовательские теги</div>
-        ${userTags.length ? `<table class="tbl compact"><tbody>${userTags.map(storageTagManagerTagRow).join('')}</tbody></table>` : '<div class="empty compact">Пользовательских тегов пока нет.</div>'}
+        ${userTags.length ? `<table class="tbl compact"><tbody>${userTags.map(globalTagManagerTagRow).join('')}</tbody></table>` : '<div class="empty compact">Пользовательских тегов пока нет.</div>'}
         <div class="field-lbl" style="margin-top:12px">Channel-теги</div>
         ${channelTags.length ? tagListPills(channelTags) : '<div class="mono dim">Появятся автоматически при привязке YouTube к профилю.</div>'}
         <div class="field-lbl" style="margin-top:12px">Статусы</div>
         ${statusTags.length ? tagListPills(statusTags) : '<div class="mono dim">Системные статусы ещё не загружены.</div>'}
       </div>
-      <div class="storage-tag-video-box">
+      <div class="tags-video-box">
         <div class="storage-search-panel">
           <div>
             <div class="field-lbl">Добавить теги в видео</div>
@@ -1901,7 +1915,7 @@ function renderStorageTagManager() {
           </div>
           <button class="btn-secondary" onclick="loadRandomTagManagerVideos()">Случайные</button>
         </div>
-        <div class="storage-tag-assign-row">
+        <div class="tags-assign-row">
           <select id="tag-manager-assign-tag">${assignOptions}</select>
           <button class="btn-secondary" ${selectedCount ? '' : 'disabled'} onclick="assignTagToSelectedVideos()">Добавить выбранным (${selectedCount})</button>
           <button class="btn-mini" ${selectedCount ? '' : 'disabled'} onclick="removeTagFromSelectedVideos()">Снять выбранным</button>
@@ -1912,21 +1926,21 @@ function renderStorageTagManager() {
   </div>`;
 }
 async function createCatalogTagFromManager() {
-  const nameInput = document.getElementById('storage-tag-create-name');
-  const colorInput = document.getElementById('storage-tag-create-color');
+  const nameInput = document.getElementById('tags-create-name');
+  const colorInput = document.getElementById('tags-create-color');
   const tag = await createCatalogTag({
     name: nameInput?.value || '',
     color: colorInput?.value || '#64748b',
   });
   if (tag && nameInput) nameInput.value = '';
 }
-function onStorageTagManagerSearchInput(value) {
+function onGlobalTagManagerSearchInput(value) {
   tagManagerTagQuery = String(value || '');
-  renderStorageTagManager();
+  renderGlobalTagsManager();
 }
 async function reloadCatalogTagsForUi() {
   await loadCatalogTags({force: true});
-  renderStorageTagManager();
+  renderGlobalTagsManager();
   renderStorageProfileDetail();
   renderWorkspaceTagControls();
   renderWorkspaceListAndDetail();
@@ -1943,11 +1957,11 @@ async function renameCatalogTag(tagId) {
   try {
     const data = await api.patch(`/api/tags/${Number(tagId)}`, {name});
     catalogTags = catalogTags.map(item => Number(item.id) === Number(tagId) ? data.tag : item);
-    renderStorageTagManager();
+    renderGlobalTagsManager();
     renderWorkspaceListAndDetail();
     showToast('Тег обновлён');
   } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось изменить тег');
+    showGlobalTagsError(err.message || 'Не удалось изменить тег');
   }
 }
 async function recolorCatalogTag(tagId) {
@@ -1963,12 +1977,12 @@ async function updateCatalogTagColor(tagId, color) {
   try {
     const data = await api.patch(`/api/tags/${Number(tagId)}`, {color});
     catalogTags = catalogTags.map(item => Number(item.id) === Number(tagId) ? data.tag : item);
-    renderStorageTagManager();
+    renderGlobalTagsManager();
     renderWorkspaceListAndDetail();
     renderWorkspaceFilterControls();
     showToast('Цвет тега обновлён');
   } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось изменить цвет тега');
+    showGlobalTagsError(err.message || 'Не удалось изменить цвет тега');
   }
 }
 async function disableCatalogTag(tagId) {
@@ -1978,11 +1992,11 @@ async function disableCatalogTag(tagId) {
   try {
     await api.del(`/api/tags/${Number(tagId)}`);
     catalogTags = catalogTags.filter(item => Number(item.id) !== Number(tagId));
-    renderStorageTagManager();
+    renderGlobalTagsManager();
     renderWorkspaceListAndDetail();
     showToast('Тег отключён');
   } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось отключить тег');
+    showGlobalTagsError(err.message || 'Не удалось отключить тег');
   }
 }
 async function searchTagManagerVideos() {
@@ -1990,9 +2004,9 @@ async function searchTagManagerVideos() {
     const data = await api.get(`/api/catalog/videos/search?q=${encodeURIComponent(tagManagerSearchQuery)}&scope=all&limit=80`);
     tagManagerVideoResults = data.items || [];
     selectedTagManagerVideoPaths = new Set(Array.from(selectedTagManagerVideoPaths).filter(path => tagManagerVideoResults.some(item => item.workspace_path === path)));
-    renderStorageTagManager();
+    renderGlobalTagsManager();
   } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось найти видео');
+    showGlobalTagsError(err.message || 'Не удалось найти видео');
   }
 }
 function onTagManagerVideoSearchInput(value) {
@@ -2005,15 +2019,15 @@ async function loadRandomTagManagerVideos() {
     const data = await api.get('/api/catalog/videos/random?scope=all&limit=32');
     tagManagerVideoResults = data.items || [];
     selectedTagManagerVideoPaths.clear();
-    renderStorageTagManager();
+    renderGlobalTagsManager();
   } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось загрузить случайные видео');
+    showGlobalTagsError(err.message || 'Не удалось загрузить случайные видео');
   }
 }
 function toggleTagManagerVideoSelection(workspacePath, checked) {
   if (checked) selectedTagManagerVideoPaths.add(workspacePath);
   else selectedTagManagerVideoPaths.delete(workspacePath);
-  renderStorageTagManager();
+  renderGlobalTagsManager();
 }
 async function updateVideoCatalogTags(workspacePath, tagIds) {
   const data = await api.post('/api/catalog/videos/tags', {
@@ -2041,11 +2055,11 @@ async function assignTagToSelectedVideos() {
       await updateVideoCatalogTags(path, ids);
       updated += 1;
     }
-    renderStorageTagManager();
+    renderGlobalTagsManager();
     renderWorkspaceListAndDetail();
     showToast(`Тег добавлен к видео: ${updated}`);
   } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось добавить тег к видео');
+    showGlobalTagsError(err.message || 'Не удалось добавить тег к видео');
   }
 }
 async function removeTagFromSelectedVideos() {
@@ -2064,11 +2078,11 @@ async function removeTagFromSelectedVideos() {
       await updateVideoCatalogTags(path, ids);
       updated += 1;
     }
-    renderStorageTagManager();
+    renderGlobalTagsManager();
     renderWorkspaceListAndDetail();
     showToast(`Тег снят с видео: ${updated}`);
   } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось снять тег с видео');
+    showGlobalTagsError(err.message || 'Не удалось снять тег с видео');
   }
 }
 async function runStorageProfileTagSync() {
@@ -2116,9 +2130,7 @@ async function unlinkStorageProfileYoutube() {
   }
 }
 function openStorageProfileYoutubeSettings() {
-  nav('publish', document.querySelector('[data-v="publish"]'));
-  const tab = document.querySelector('[data-pub-tab="accounts"]');
-  if (typeof setPublishTab === 'function' && tab) setPublishTab('accounts', tab);
+  nav('integrations', document.querySelector('[data-v="integrations"]'));
 }
 async function syncStorageProfileYoutube() {
   if (!currentStorageProfileId) return;
@@ -2208,6 +2220,93 @@ function storageProfilePublishControls() {
     </div>
   </div>`;
 }
+function storageProfilePublishSettings() {
+  const link = currentStorageProfile?.service_links?.find(item => item.platform === 'youtube') || null;
+  let raw = {};
+  try {
+    raw = link?.settings_json ? JSON.parse(link.settings_json) : {};
+  } catch {
+    raw = {};
+  }
+  const settings = raw.publish || raw || {};
+  return {
+    publish_mode: settings.publish_mode || 'private',
+    category_id: settings.category_id || '22',
+    made_for_kids: Boolean(settings.made_for_kids),
+    title_template: settings.title_template || '',
+    description_template: settings.description_template || '',
+    tags_template: settings.tags_template || '',
+    default_action: settings.default_action || 'queue',
+  };
+}
+function storageProfilePublishSettingsPanel() {
+  const settings = storageProfilePublishSettings();
+  return `<div class="storage-profile-publish-settings">
+    <div class="storage-tag-panel-head">
+      <div>
+        <div class="storage-section-title inline-title">Настройки публикации профиля</div>
+        <div class="mono dim">Эти defaults применяются только к этому локальному профилю. Очередь и таймер доступны ниже.</div>
+      </div>
+      <button class="btn-secondary" onclick="saveStorageProfilePublishSettings()">Сохранить настройки публикации</button>
+    </div>
+    <div class="field-grid">
+      <div class="field">
+        <label class="field-lbl">Видимость YouTube</label>
+        <select id="storage-publish-mode">
+          <option value="private"${settings.publish_mode === 'private' ? ' selected' : ''}>private · приватно</option>
+          <option value="unlisted"${settings.publish_mode === 'unlisted' ? ' selected' : ''}>unlisted · по ссылке</option>
+          <option value="public"${settings.publish_mode === 'public' ? ' selected' : ''}>public · публично</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="field-lbl">ID категории</label>
+        <input id="storage-publish-category" type="text" value="${esc(settings.category_id || '22')}">
+      </div>
+      <div class="field">
+        <label class="field-lbl">Действие по умолчанию</label>
+        <select id="storage-publish-default-action">
+          <option value="queue"${settings.default_action === 'queue' ? ' selected' : ''}>В очередь</option>
+          <option value="schedule"${settings.default_action === 'schedule' ? ' selected' : ''}>Таймер</option>
+          <option value="run"${settings.default_action === 'run' ? ' selected' : ''}>Загрузить сейчас</option>
+        </select>
+      </div>
+      <label class="toggle-label storage-publish-kids"><input id="storage-publish-made-for-kids" type="checkbox" ${settings.made_for_kids ? 'checked' : ''}> Для детей</label>
+    </div>
+    <div class="field-grid">
+      <div class="field"><label class="field-lbl">Шаблон title</label><input id="storage-publish-title-template" type="text" value="${esc(settings.title_template)}" placeholder="{title}"></div>
+      <div class="field"><label class="field-lbl">Шаблон tags</label><input id="storage-publish-tags-template" type="text" value="${esc(settings.tags_template)}" placeholder="shorts, {profile}"></div>
+    </div>
+    <div class="field">
+      <label class="field-lbl">Шаблон description</label>
+      <textarea id="storage-publish-description-template" rows="3" placeholder="Описание для роликов этого профиля">${esc(settings.description_template)}</textarea>
+    </div>
+    <div class="mono dim">Доступные переменные: {title}, {file_name}, {stem}, {path}, {profile}, {handle}.</div>
+  </div>`;
+}
+function readStorageProfilePublishSettingsForm() {
+  return {
+    publish_mode: document.getElementById('storage-publish-mode')?.value || 'private',
+    category_id: document.getElementById('storage-publish-category')?.value || '22',
+    made_for_kids: Boolean(document.getElementById('storage-publish-made-for-kids')?.checked),
+    title_template: document.getElementById('storage-publish-title-template')?.value || '',
+    description_template: document.getElementById('storage-publish-description-template')?.value || '',
+    tags_template: document.getElementById('storage-publish-tags-template')?.value || '',
+    default_action: document.getElementById('storage-publish-default-action')?.value || 'queue',
+  };
+}
+async function saveStorageProfilePublishSettings() {
+  if (!currentStorageProfileId) return;
+  try {
+    const data = await api.patch(`/api/storage-profiles/${Number(currentStorageProfileId)}/publish-settings`, readStorageProfilePublishSettingsForm());
+    currentStorageProfile = data.profile || currentStorageProfile;
+    storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(currentStorageProfile.id) ? currentStorageProfile : profile);
+    renderStorageProfilesGrid();
+    renderStorageProfileDetail();
+    showToast('Настройки публикации профиля сохранены');
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось сохранить настройки публикации профиля');
+  }
+}
 function storageProfilePublishJobsPanel() {
   if (!storageProfilePublishJobs.length) {
     return '<div class="storage-profile-jobs empty">Задач публикации для этого профиля пока нет.</div>';
@@ -2283,6 +2382,7 @@ async function refreshStorageProfilePublishState() {
 }
 async function enqueueStorageProfileSelection(mode = 'queue') {
   if (!currentStorageProfileId) return;
+  const publishSettings = readStorageProfilePublishSettingsForm();
   const selected = selectedStorageProfileItems().filter(item => item.file_exists && item.is_publish_ready);
   if (!selected.length) {
     showToast('Выберите видео профиля с тегом «Готово»', 'err');
@@ -2291,9 +2391,12 @@ async function enqueueStorageProfileSelection(mode = 'queue') {
   try {
     const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/youtube/enqueue`, {
       item_ids: selected.map(item => Number(item.id)),
-      publish_mode: 'private',
-      category_id: '22',
-      made_for_kids: false,
+      publish_mode: publishSettings.publish_mode,
+      category_id: publishSettings.category_id,
+      made_for_kids: publishSettings.made_for_kids,
+      title_template: publishSettings.title_template,
+      description_template: publishSettings.description_template,
+      tags_template: publishSettings.tags_template,
     });
     if (data.profile) currentStorageProfile = data.profile;
     if (data.profile_items) storageProfileItems = data.profile_items;
@@ -2434,6 +2537,7 @@ function renderStorageProfileDetail() {
       </div>
     </div>
     ${storageProfileServiceLinks(profile)}
+    ${storageProfilePublishSettingsPanel()}
     ${storageProfileTagRulesPanel(profile)}
     ${storageProfilePublishControls()}
     <div class="storage-profile-edit">
@@ -2948,7 +3052,7 @@ async function setCatalogTagForWorkspaceItems(itemKeys, tagId, action = 'add') {
       updated += 1;
     }
     renderWorkspaceListAndDetail();
-    renderStorageTagManager();
+    renderGlobalTagsManager();
     showToast(action === 'remove' ? `Тег снят с видео: ${updated}` : `Тег добавлен к видео: ${updated}`);
   } catch (err) {
     showToast(err.message || 'Не удалось обновить теги видео', 'err');
@@ -3278,7 +3382,7 @@ function workspaceCatalogTagsPanel(item) {
         <div class="field-lbl">Каталоговые теги</div>
         <div class="mono dim">Эти теги используются профилями, поиском и будущей автоматикой. Статусные теги появляются автоматически.</div>
       </div>
-      <button class="btn-mini" onclick="createStorageCatalogTag()">Создать тег</button>
+      <button class="btn-mini" onclick="openGlobalTagsView()">Открыть Теги</button>
     </div>
     ${tagListPills(tags)}
     <div class="workspace-tag-editor">
@@ -3547,7 +3651,7 @@ function syncPublishSelections() {
 
 function renderPublishConnectButton() {
   const html = '<i class="ti ti-brand-youtube" style="font-size:12px;vertical-align:-1px"></i> Подключить канал';
-  ['publish-connect-btn', 'publish-connect-btn-accounts'].forEach(id => {
+  ['publish-connect-btn', 'publish-connect-btn-accounts', 'integrations-connect-btn'].forEach(id => {
     const btn = document.getElementById(id);
     if (!btn) return;
     btn.disabled = publishState.busy;
@@ -4079,6 +4183,208 @@ async function runSelectedPublishJobs() {
   }
 }
 
+function renderIntegrationsError(message) {
+  if (message) showInlineError('integrations-error', message);
+  else hideInlineError('integrations-error');
+}
+function integrationLinkedProfiles(account) {
+  return account?.linked_storage_profiles || [];
+}
+function integrationAccountSearchText(account) {
+  return [
+    account.id,
+    account.display_name,
+    account.account_email,
+    account.channel_id,
+    account.channel_title,
+    account.profile_name,
+    ...(integrationLinkedProfiles(account).map(profile => `${profile.name} ${profile.handle}`)),
+  ].join(' ').toLowerCase();
+}
+function renderIntegrationsOAuthSelect() {
+  const select = document.getElementById('integrations-profile-select');
+  const meta = document.getElementById('integrations-profile-meta');
+  if (!select) return;
+  const profiles = getActiveOAuthProfiles();
+  if (!profiles.length) {
+    select.innerHTML = '<option value="">OAuth profile не найден</option>';
+    select.disabled = true;
+    if (meta) meta.innerHTML = '<div>Создайте или импортируйте Google API auth слева.</div>';
+    return;
+  }
+  if (!profiles.some(profile => Number(profile.id) === Number(publishState.selectedProfileId))) {
+    const defaultProfile = profiles.find(profile => profile.is_default) || profiles[0];
+    publishState.selectedProfileId = Number(defaultProfile.id);
+  }
+  select.disabled = false;
+  select.innerHTML = profiles.map(profile => {
+    const suffix = [profile.is_default ? 'по умолчанию' : '', oauthProfileSourceLabel(profile)].filter(Boolean).join(' · ');
+    return `<option value="${Number(profile.id)}"${Number(profile.id) === Number(publishState.selectedProfileId) ? ' selected' : ''}>${esc(profile.name || `OAuth #${profile.id}`)}${suffix ? ` · ${esc(suffix)}` : ''}</option>`;
+  }).join('');
+  const selected = getSelectedProfile();
+  if (meta && selected) {
+    meta.innerHTML = `<div>${esc(oauthProfileSourceLabel(selected))} · ${selected.client_secret_set ? 'secret сохранён' : 'secret не задан'}</div><div>Redirect URI: <span class="mono">${esc(selected.redirect_uri || '—')}</span></div>`;
+  }
+}
+function renderIntegrationsConnectState() {
+  const el = document.getElementById('integrations-connect-state');
+  if (!el) return;
+  const profiles = getActiveOAuthProfiles();
+  if (!profiles.length) {
+    el.innerHTML = `<div class="setup-panel">${badge('error')} <span class="mono txt">Нет активного Google API auth</span><p>Импортируйте OAuth Client JSON или создайте auth вручную.</p></div>`;
+    return;
+  }
+  const accountCount = (lastYoutubeAccounts || []).filter(account => (account.status || 'active') === 'active').length;
+  el.innerHTML = `<div class="setup-panel">${badge('active')} <span class="mono txt">Готово к подключению YouTube</span><p>Подключённых каналов: ${accountCount}. Выберите Google API auth и нажмите «Подключить канал».</p></div>`;
+}
+function renderIntegrationsOAuthProfilesPanel() {
+  const el = document.getElementById('integrations-oauth-profiles');
+  if (!el) return;
+  const rows = lastYoutubeProfiles || [];
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">Google API auth пока нет. Импортируйте JSON OAuth-клиента или создайте профиль вручную.</div>';
+    return;
+  }
+  el.innerHTML = `<table class="tbl compact"><thead><tr><th>#</th><th>Название</th><th>Client</th><th>Redirect</th><th>Статус</th><th>Действие</th></tr></thead><tbody>${rows.map(profile => {
+    const mode = `${oauthProfileSourceLabel(profile)}${profile.is_default ? ' · по умолчанию' : ''}`;
+    const actions = [
+      `<button class="btn-mini" onclick="editIntegrationOAuthProfile(${Number(profile.id)})">Редактировать</button>`,
+      profile.is_default ? '' : `<button class="btn-mini" onclick="setIntegrationDefaultOAuthProfile(${Number(profile.id)})">По умолчанию</button>`,
+      isEnvOAuthProfile(profile) ? '' : `<button class="btn-danger" onclick="deleteIntegrationOAuthProfile(${Number(profile.id)})">Удалить</button>`,
+    ].filter(Boolean).join('');
+    return `<tr><td class="mono dim">#${profile.id}</td><td><div class="mono txt">${esc(profile.name || `OAuth #${profile.id}`)}</div><div class="mono dim">${esc(mode)}</div></td><td class="mono dim ov">${esc(profile.client_id || '—')}</td><td class="mono dim ov">${esc(profile.redirect_uri || '—')}</td><td>${badge(profile.status || 'active')}</td><td><div class="row-actions">${actions}</div></td></tr>`;
+  }).join('')}</tbody></table>`;
+}
+function renderIntegrationsAccountsPanel() {
+  const el = document.getElementById('integrations-accounts-list');
+  if (!el) return;
+  const input = document.getElementById('integrations-search');
+  integrationsSearchQuery = (input?.value || integrationsSearchQuery || '').trim().toLowerCase();
+  const accounts = (lastYoutubeAccounts || []).filter(account => !integrationsSearchQuery || integrationAccountSearchText(account).includes(integrationsSearchQuery));
+  if (!accounts.length) {
+    el.innerHTML = '<div class="empty">YouTube-аккаунты не найдены. Подключите канал или измените поиск.</div>';
+    return;
+  }
+  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>YouTube канал</th><th>Google API auth</th><th>Локальные профили</th><th>Статус</th><th>Обновлён</th><th>Действие</th></tr></thead><tbody>${accounts.map(account => {
+    const displayName = account.channel_title || account.display_name || `YouTube #${account.id}`;
+    const oauth = account.oauth_profile?.name || account.profile_name || (account.oauth_profile_id ? `OAuth #${account.oauth_profile_id}` : 'не указан');
+    const linked = integrationLinkedProfiles(account);
+    const linkedHtml = linked.length
+      ? linked.map(profile => `<button class="link-video mono" onclick="openStorageProfile(${Number(profile.id)})">${esc(profile.name || `Профиль #${profile.id}`)}</button>`).join('<span class="mono dim">, </span>')
+      : '<span class="mono dim">не привязан</span>';
+    const disabled = account.status === 'disconnected';
+    const error = account.error ? `<div class="mono err">${esc(shortErrorText(account.error))}</div>` : '';
+    return `<tr><td class="mono dim">#${account.id}</td><td><div class="mono txt">${esc(displayName)}</div><div class="mono dim">${esc(account.account_email || account.channel_id || '')}</div>${error}</td><td class="mono dim">${esc(oauth)}</td><td>${linkedHtml}</td><td>${badge(account.status || 'active')}</td><td class="mono dim">${esc(formatMtime(account.updated_at || account.created_at))}</td><td><button class="btn-danger" ${disabled ? 'disabled' : ''} onclick="disconnectYouTubeAccount(${Number(account.id)})">Отключить</button></td></tr>`;
+  }).join('')}</tbody></table>`;
+}
+function renderIntegrationsView() {
+  renderPublishConnectButton();
+  renderIntegrationsOAuthSelect();
+  renderIntegrationsConnectState();
+  renderIntegrationsOAuthProfilesPanel();
+  renderIntegrationsAccountsPanel();
+}
+async function loadIntegrationsView(options = {}) {
+  const {silent = false} = options;
+  renderIntegrationsError('');
+  try {
+    const [profilesData, accountsData, storageProfilesData] = await Promise.all([
+      api.get('/api/publish/youtube/oauth-profiles'),
+      api.get('/api/publish/youtube/accounts'),
+      api.get('/api/storage-profiles').catch(() => ({items: storageProfiles || []})),
+    ]);
+    lastYoutubeProfiles = profilesData.profiles || [];
+    lastYoutubeAccounts = accountsData.accounts || [];
+    storageProfiles = storageProfilesData.items || storageProfiles || [];
+    syncPublishSelections();
+    renderIntegrationsView();
+  } catch (err) {
+    if (!silent) renderIntegrationsError(`Не удалось загрузить интеграции:\n${err.message || err}`);
+  }
+}
+function onIntegrationOAuthProfileChange(value) {
+  publishState.selectedProfileId = value ? Number(value) : null;
+  renderIntegrationsView();
+}
+async function createIntegrationOAuthProfile(mode = 'json') {
+  renderIntegrationsError('');
+  try {
+    let data;
+    if (mode === 'manual') {
+      const name = prompt('Название Google API auth:', 'YouTube OAuth');
+      if (!name) return;
+      const clientId = prompt('client_id:');
+      if (!clientId) return;
+      const clientSecret = prompt('client_secret:');
+      if (!clientSecret) return;
+      const redirectUri = prompt('Redirect URI:', 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback') || 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback';
+      data = await api.post('/api/publish/youtube/oauth-profiles', {
+        name,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        is_default: !(lastYoutubeProfiles || []).length,
+      });
+    } else {
+      const name = prompt('Название Google API auth:', 'Imported YouTube OAuth') || '';
+      const jsonText = prompt('Вставьте OAuth Client JSON:');
+      if (!jsonText) return;
+      data = await api.post('/api/publish/youtube/oauth-profiles/import-client-json', {
+        name,
+        json_text: jsonText,
+        is_default: !(lastYoutubeProfiles || []).length,
+      });
+    }
+    if (data?.profile?.id) publishState.selectedProfileId = Number(data.profile.id);
+    showToast('Google API auth сохранён');
+    await loadIntegrationsView({silent: true});
+  } catch (err) {
+    renderIntegrationsError(err.message || 'Не удалось сохранить Google API auth');
+  }
+}
+async function editIntegrationOAuthProfile(profileId) {
+  const profile = settingsProfileById(profileId);
+  if (!profile) return;
+  const name = prompt('Название Google API auth:', profile.name || '');
+  if (!name) return;
+  const redirectUri = prompt('Redirect URI:', profile.redirect_uri || 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback') || profile.redirect_uri;
+  const payload = {name, redirect_uri: redirectUri, status: profile.status || 'active'};
+  if (!isEnvOAuthProfile(profile)) {
+    const clientId = prompt('client_id:', profile.client_id || '');
+    if (!clientId) return;
+    const clientSecret = prompt('client_secret (оставьте пустым, чтобы не менять):', '');
+    payload.client_id = clientId;
+    if (clientSecret) payload.client_secret = clientSecret;
+  }
+  try {
+    await api.patch(`/api/publish/youtube/oauth-profiles/${Number(profileId)}`, payload);
+    showToast('Google API auth обновлён');
+    await loadIntegrationsView({silent: true});
+  } catch (err) {
+    renderIntegrationsError(err.message || 'Не удалось обновить Google API auth');
+  }
+}
+async function setIntegrationDefaultOAuthProfile(profileId) {
+  try {
+    await api.post(`/api/publish/youtube/oauth-profiles/${Number(profileId)}/set-default`, {});
+    publishState.selectedProfileId = Number(profileId);
+    showToast('Google API auth выбран по умолчанию');
+    await loadIntegrationsView({silent: true});
+  } catch (err) {
+    renderIntegrationsError(err.message || 'Не удалось выбрать Google API auth по умолчанию');
+  }
+}
+async function deleteIntegrationOAuthProfile(profileId) {
+  if (!confirm(`Удалить Google API auth #${profileId}?`)) return;
+  try {
+    await api.del(`/api/publish/youtube/oauth-profiles/${Number(profileId)}`);
+    showToast('Google API auth удалён');
+    await loadIntegrationsView({silent: true});
+  } catch (err) {
+    renderIntegrationsError(err.message || 'Не удалось удалить Google API auth');
+  }
+}
+
 async function retryFailedPublishJobs() {
   const selected = selectedPublishJobList().filter(job => job.status === 'failed' || job.status === 'cancelled');
   const jobs = selected.length ? selected : getVisiblePublishJobs().filter(job => job.status === 'failed');
@@ -4126,8 +4432,13 @@ async function startYouTubeConnect() {
   if (!selectedProfile) {
     const message = 'OAuth-клиент не найден. Создайте OAuth профиль в настройках.';
     publishState.onboardingHint = message;
-    renderPublishView();
-    renderPublishError(message);
+    if (currentView === 'integrations') {
+      renderIntegrationsView();
+      renderIntegrationsError(message);
+    } else {
+      renderPublishView();
+      renderPublishError(message);
+    }
     showToast(message, 'err');
     return;
   }
@@ -4139,6 +4450,7 @@ async function startYouTubeConnect() {
     } catch {}
   }
   renderPublishError('');
+  renderIntegrationsError('');
   publishState.busy = true;
   renderPublishConnectButton();
   try {
@@ -4157,7 +4469,8 @@ async function startYouTubeConnect() {
       popup.close();
     }
     const message = err.message || 'Не удалось начать подключение YouTube';
-    renderPublishError(message);
+    if (currentView === 'integrations') renderIntegrationsError(message);
+    else renderPublishError(message);
     showToast(message, 'err');
   } finally {
     publishState.busy = false;
@@ -4168,12 +4481,17 @@ async function startYouTubeConnect() {
 async function disconnectYouTubeAccount(accountId) {
   if (!accountId) return;
   renderPublishError('');
+  renderIntegrationsError('');
   try {
     await api.post(`/api/publish/youtube/accounts/${accountId}/disconnect`, {});
     showToast('YouTube канал отключён');
-    await loadPublishView({silent: true});
+    if (currentView === 'integrations') await loadIntegrationsView({silent: true});
+    else if (currentView === 'storage-profile') await loadStorageProfileDetail(currentStorageProfileId);
+    else await loadPublishView({silent: true});
   } catch (err) {
-    renderPublishError(`Не удалось отключить канал:\n${err.message || err}`);
+    const message = `Не удалось отключить канал:\n${err.message || err}`;
+    if (currentView === 'integrations') renderIntegrationsError(message);
+    else renderPublishError(message);
   }
 }
 
@@ -4186,9 +4504,7 @@ function setSettingsTab(id, btn) {
 }
 
 function openYouTubeSettings() {
-  const btn = document.querySelector('[data-v="settings"]');
-  nav('settings', btn);
-  setSettingsTab('youtube-oauth', document.querySelector('[data-settings-tab="youtube-oauth"]'));
+  nav('integrations', document.querySelector('[data-v="integrations"]'));
 }
 
 function settingsProfileById(profileId) {
@@ -4362,19 +4678,7 @@ async function loadSettingsView(options = {}) {
   const {silent = false} = options;
   if (!silent) showSettingsError('');
   await loadWorkspaceSettings({silent: true});
-  try {
-    const data = await api.get('/api/publish/youtube/oauth-profiles');
-    lastYoutubeProfiles = data.profiles || [];
-    renderOAuthProfilesSettings();
-    renderPublishView();
-    if (!editingOAuthProfileId && currentView === 'settings') {
-      const name = document.getElementById('settings-oauth-name');
-      const json = document.getElementById('settings-oauth-json');
-      if (name && json && !name.value && !json.value) startNewOAuthProfile();
-    }
-  } catch (err) {
-    if (!silent) showSettingsError(`Не удалось загрузить YouTube OAuth:\n${err.message || err}`);
-  }
+  return null;
 }
 
 async function saveOAuthProfile() {
@@ -4605,12 +4909,16 @@ function handleOAuthEvent(payload) {
     showToast('YouTube канал подключён. Обновляю список каналов...');
   } else {
     showToast(message || 'Подключение YouTube не завершено. Попробуйте ещё раз.', 'err');
-    if (currentView === 'publish') {
+    if (currentView === 'integrations') {
+      renderIntegrationsError(message || 'Подключение YouTube не завершено. Попробуйте ещё раз.');
+    } else if (currentView === 'publish') {
       renderPublishError(message || 'Подключение YouTube не завершено. Попробуйте ещё раз.');
     }
   }
   loadSettingsView({silent: true});
-  loadPublishView({silent: true});
+  if (currentView === 'integrations') loadIntegrationsView({silent: true});
+  else loadPublishView({silent: true});
+  if (currentView === 'storage-profile') loadStorageProfileDetail(currentStorageProfileId);
 }
 
 function editingError(message = '') {
@@ -5352,9 +5660,7 @@ window.addEventListener('DOMContentLoaded', () => {
   loadVideos();
   loadClips();
   loadOutputs();
-  loadPublishView();
   initFsBrowser();
-  onPublishModeChange();
   activateInitialViewFromQuery();
 });
 window.addEventListener('popstate', () => {
@@ -5379,5 +5685,5 @@ setInterval(() => {
   if (currentView === 'dashboard') loadDashboard();
   if (currentView === 'queue') loadJobs();
   if (currentView === 'clips') loadClips();
-  if (currentView === 'publish') loadPublishView({silent: true});
+  if (currentView === 'integrations') loadIntegrationsView({silent: true});
 }, 5000);

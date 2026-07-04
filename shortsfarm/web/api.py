@@ -97,6 +97,7 @@ from .schemas import (
     LocalStorageProfileAutoImportRunRequest,
     LocalStorageProfileCreateRequest,
     LocalStorageProfileItemCreateRequest,
+    LocalStorageProfilePublishSettingsRequest,
     LocalStorageProfileTagRulesRequest,
     LocalStorageProfileUpdateRequest,
     LocalStorageProfileYouTubeLinkRequest,
@@ -941,12 +942,21 @@ def _delete_workspace_item(item_key: str) -> dict[str, Any]:
     return result
 
 
-def _social_account_dict(row: Any) -> dict[str, Any]:
-    return {
+def _social_account_dict(row: Any, *, include_profile_links: bool = False) -> dict[str, Any]:
+    oauth_profile_id = _row(row, "oauth_profile_id")
+    data = {
         "id": int(row["id"]),
         "platform": row["platform"],
-        "oauth_profile_id": _row(row, "oauth_profile_id"),
+        "oauth_profile_id": oauth_profile_id,
         "profile_name": _row(row, "profile_name", "") or "",
+        "oauth_profile": (
+            {
+                "id": int(oauth_profile_id),
+                "name": _row(row, "profile_name", "") or f"OAuth Profile #{int(oauth_profile_id)}",
+            }
+            if oauth_profile_id is not None
+            else None
+        ),
         "display_name": _row(row, "display_name", "") or "",
         "account_email": _row(row, "account_email", "") or "",
         "channel_id": _row(row, "channel_id", "") or "",
@@ -958,6 +968,15 @@ def _social_account_dict(row: Any) -> dict[str, Any]:
         "last_connected_at": _row(row, "last_connected_at"),
         "error": _row(row, "error"),
     }
+    if include_profile_links:
+        data["linked_storage_profiles"] = [
+            _local_storage_profile_dict(profile)
+            for profile in db.list_local_storage_profiles_for_service_account(
+                platform=_row(row, "platform", "youtube") or "youtube",
+                external_account_id=int(row["id"]),
+            )
+        ]
+    return data
 
 
 def _youtube_oauth_profile_dict(row: Any) -> dict[str, Any]:
@@ -2062,7 +2081,7 @@ def youtube_accounts() -> dict[str, Any]:
     try:
         _init()
         rows = db.list_social_accounts(platform="youtube")
-        return {"accounts": [_social_account_dict(row) for row in rows]}
+        return {"accounts": [_social_account_dict(row, include_profile_links=True) for row in rows]}
     except Exception as exc:
         raise _fail(exc)
 
@@ -4257,6 +4276,101 @@ def _profile_item_has_status_ready_tag(item: Any) -> bool:
     return any(_row(tag, "slug") == "status-ready" for tag in tags)
 
 
+PROFILE_PUBLISH_DEFAULTS = {
+    "publish_mode": "private",
+    "category_id": "22",
+    "made_for_kids": False,
+    "title_template": "",
+    "description_template": "",
+    "tags_template": "",
+    "default_action": "queue",
+}
+
+
+def _normalize_profile_publish_settings(value: dict[str, Any] | None = None) -> dict[str, Any]:
+    raw = dict(PROFILE_PUBLISH_DEFAULTS)
+    if value:
+        raw.update(value)
+    publish_mode = str(raw.get("publish_mode") or "private").strip().lower()
+    if publish_mode not in {"private", "unlisted", "public"}:
+        raise ValueError("publish_mode должен быть private, unlisted или public. Таймер задаётся отдельным расписанием профиля.")
+    default_action = str(raw.get("default_action") or "queue").strip().lower()
+    if default_action not in {"queue", "run", "schedule"}:
+        raise ValueError("default_action должен быть queue, run или schedule.")
+    category_id = str(raw.get("category_id") or "22").strip() or "22"
+    result = {
+        "publish_mode": publish_mode,
+        "category_id": category_id,
+        "made_for_kids": bool(raw.get("made_for_kids", False)),
+        "title_template": str(raw.get("title_template") or "").strip()[:200],
+        "description_template": str(raw.get("description_template") or "").strip()[:5000],
+        "tags_template": str(raw.get("tags_template") or "").strip()[:500],
+        "default_action": default_action,
+    }
+    validate_publish_options(
+        title="ShortsFarm",
+        publish_mode=result["publish_mode"],
+        publish_at=None,
+        category_id=result["category_id"],
+    )
+    return result
+
+
+def _storage_profile_publish_settings(profile_id: int) -> dict[str, Any]:
+    link = db.get_local_storage_profile_service_link(profile_id, "youtube")
+    if link is None:
+        return dict(PROFILE_PUBLISH_DEFAULTS)
+    settings_json = _row(link, "settings_json")
+    if not settings_json:
+        return dict(PROFILE_PUBLISH_DEFAULTS)
+    try:
+        payload = json.loads(str(settings_json))
+    except json.JSONDecodeError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return _normalize_profile_publish_settings(payload.get("publish") if isinstance(payload.get("publish"), dict) else payload)
+
+
+def _storage_profile_publish_settings_payload(settings: dict[str, Any]) -> str:
+    return json.dumps({"publish": _normalize_profile_publish_settings(settings)}, ensure_ascii=False, sort_keys=True)
+
+
+def _request_publish_settings(
+    profile_id: int,
+    req: LocalStorageProfileYouTubePublishRequest,
+) -> dict[str, Any]:
+    settings = _storage_profile_publish_settings(profile_id)
+    overrides: dict[str, Any] = {}
+    for key in ("publish_mode", "category_id", "made_for_kids", "title_template", "description_template", "tags_template"):
+        value = getattr(req, key, None)
+        if value is not None:
+            overrides[key] = value
+    if overrides:
+        settings.update(overrides)
+    return _normalize_profile_publish_settings(settings)
+
+
+def _render_profile_publish_template(template: str, *, item: Any, profile: Any | None, fallback: str) -> str:
+    text = str(template or "").strip()
+    if not text:
+        return fallback
+    workspace_path = _row(item, "workspace_path", "") or ""
+    context = {
+        "title": _storage_profile_publish_title(item),
+        "file_name": Path(workspace_path).name,
+        "stem": Path(workspace_path).stem,
+        "path": workspace_path,
+        "profile": _row(profile, "name", "") if profile is not None else "",
+        "handle": _row(profile, "handle", "") if profile is not None else "",
+    }
+    try:
+        rendered = text.format(**context).strip()
+    except (KeyError, ValueError):
+        rendered = text
+    return rendered or fallback
+
+
 def _create_publish_job_from_storage_profile_item(
     *,
     profile_id: int,
@@ -4267,7 +4381,27 @@ def _create_publish_job_from_storage_profile_item(
     workspace_path, abs_path = _validate_local_storage_workspace_video(_row(item, "workspace_path"))
     if not _profile_item_has_status_ready_tag(item):
         raise ValueError("Публикация доступна только для видео с тегом «Готово».")
-    title = _storage_profile_publish_title(item)
+    profile = db.get_local_storage_profile(profile_id)
+    settings = _request_publish_settings(profile_id, req)
+    base_title = _storage_profile_publish_title(item)
+    title = _render_profile_publish_template(
+        settings.get("title_template", ""),
+        item=item,
+        profile=profile,
+        fallback=base_title,
+    )
+    description = _render_profile_publish_template(
+        settings.get("description_template", ""),
+        item=item,
+        profile=profile,
+        fallback=_row(item, "description", "") or "",
+    )
+    tags_text = _render_profile_publish_template(
+        settings.get("tags_template", ""),
+        item=item,
+        profile=profile,
+        fallback=_row(item, "tags") or "",
+    )
     clip_id = db.get_or_create_publish_clip_for_file(
         abs_path,
         title=title,
@@ -4275,22 +4409,22 @@ def _create_publish_job_from_storage_profile_item(
     existing_job = db.get_publish_job_for_clip(account_id=account_id, clip_id=clip_id)
     validated = validate_publish_options(
         title=title,
-        publish_mode=req.publish_mode,
+        publish_mode=settings["publish_mode"],
         publish_at=None,
-        category_id=req.category_id,
+        category_id=settings["category_id"],
     )
-    tags = parse_tags(_row(item, "tags") or "")
+    tags = parse_tags(tags_text)
     job_id = db.create_publish_job(
         account_id=account_id,
         clip_id=clip_id,
         title=title,
-        description=_row(item, "description", "") or "",
+        description=description,
         tags=json.dumps(tags, ensure_ascii=False),
-        category_id=req.category_id,
+        category_id=settings["category_id"],
         privacy_status=str(validated["privacy_status"]),
-        publish_mode=req.publish_mode,
+        publish_mode=settings["publish_mode"],
         publish_at=validated["publish_at"],
-        made_for_kids=req.made_for_kids,
+        made_for_kids=bool(settings["made_for_kids"]),
         platform="youtube",
     )
     db.link_local_storage_profile_publish_job(
@@ -4345,6 +4479,65 @@ def local_storage_profile_youtube_unlink(profile_id: int) -> dict[str, Any]:
         profile = db.get_local_storage_profile(profile_id)
         assert profile is not None
         return {"profile": _local_storage_profile_dict(profile, include_links=True)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.get("/storage-profiles/{profile_id}/publish-settings")
+def local_storage_profile_publish_settings(profile_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        profile = db.get_local_storage_profile(profile_id)
+        if profile is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        return {
+            "settings": _storage_profile_publish_settings(profile_id),
+            "profile": _local_storage_profile_dict(profile, include_links=True),
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.patch("/storage-profiles/{profile_id}/publish-settings")
+def local_storage_profile_publish_settings_update(
+    profile_id: int,
+    req: LocalStorageProfilePublishSettingsRequest,
+) -> dict[str, Any]:
+    try:
+        _init()
+        profile = db.get_local_storage_profile(profile_id)
+        if profile is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        current = _storage_profile_publish_settings(profile_id)
+        raw_update = req.model_dump(exclude_unset=True)
+        current.update({key: value for key, value in raw_update.items() if value is not None})
+        settings = _normalize_profile_publish_settings(current)
+        settings_json = _storage_profile_publish_settings_payload(settings)
+        link = db.get_local_storage_profile_service_link(profile_id, "youtube")
+        if link is None:
+            db.upsert_local_storage_profile_service_link(
+                profile_id,
+                platform="youtube",
+                display_name="",
+                status="not_connected",
+                settings_json=settings_json,
+            )
+        else:
+            db.update_local_storage_profile_service_link_settings(
+                profile_id,
+                "youtube",
+                settings_json,
+            )
+        profile = db.get_local_storage_profile(profile_id)
+        assert profile is not None
+        return {
+            "settings": settings,
+            "profile": _local_storage_profile_dict(profile, include_links=True),
+        }
     except FileNotFoundError as exc:
         raise _fail(exc, status_code=404)
     except Exception as exc:
