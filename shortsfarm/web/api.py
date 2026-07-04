@@ -425,8 +425,16 @@ def _workspace_counts(items: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def _workspace_items_response(items: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"items": items, "counts": _workspace_counts(items)}
+def _workspace_items_response(
+    items: list[dict[str, Any]],
+    *,
+    counts_items: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    enriched = _workspace_items_with_catalog_tags(items)
+    return {
+        "items": enriched,
+        "counts": _workspace_counts(counts_items if counts_items is not None else items),
+    }
 
 
 LOCAL_STORAGE_PROFILE_VIDEO_FOLDERS = {"edits", "ready", "published"}
@@ -662,6 +670,45 @@ def _catalog_video_dict(path: Path, root: Path) -> dict[str, Any]:
     }
 
 
+def _workspace_relative_path_for_item(item: dict[str, Any]) -> str:
+    raw = str(item.get("path") or item.get("prepared_path") or "")
+    if not raw:
+        return ""
+    try:
+        if "/" in raw and not raw.startswith("/") and not (len(raw) >= 3 and raw[1:3] == ":/"):
+            relative = PurePosixPath(raw)
+            if relative.parts and relative.parts[0] in set(SYSTEM_FOLDERS):
+                return relative.as_posix()
+        root = get_workspace_root()
+        if root is None:
+            return ""
+        resolved = Path(raw).expanduser().resolve()
+        return resolved.relative_to(root.resolve()).as_posix()
+    except Exception:
+        return ""
+
+
+def _workspace_item_with_catalog_tags(item: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(item)
+    relative = _workspace_relative_path_for_item(payload)
+    payload["workspace_path"] = relative
+    if not relative:
+        payload["catalog_tags"] = []
+        payload["is_publish_ready"] = payload.get("workspace_status") == "ready"
+        return payload
+    try:
+        tags = _catalog_tags_for_video(relative, payload)
+    except Exception:
+        tags = []
+    payload["catalog_tags"] = tags
+    payload["is_publish_ready"] = any(tag.get("slug") == "status-ready" for tag in tags)
+    return payload
+
+
+def _workspace_items_with_catalog_tags(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_workspace_item_with_catalog_tags(item) for item in items]
+
+
 def _catalog_video_matches_query(item: dict[str, Any], query: str) -> bool:
     if not query:
         return True
@@ -700,13 +747,15 @@ def _list_catalog_videos(
     tags: str | None = None,
     limit: int = 100,
     randomize: bool = False,
+    scope: str = "ready",
 ) -> list[dict[str, Any]]:
     root = get_workspace_root()
     if root is None:
         raise ValueError("workspace_root не настроен.")
     tag_filter = _parse_tag_filter(tags)
     items: list[dict[str, Any]] = []
-    for folder_name in ("edits", "ready", "published"):
+    folders = tuple(SYSTEM_FOLDERS) if str(scope or "").lower() == "all" else ("edits", "ready", "published")
+    for folder_name in folders:
         folder = root / folder_name
         if not folder.exists() or folder.is_symlink() or not folder.is_dir():
             continue
@@ -3293,10 +3342,7 @@ def workspace_clips(status: str | None = None, limit: int = 1000) -> dict[str, A
             items = [item for item in all_items if item["workspace_status"] == status]
         else:
             items = all_items
-        return {
-            "items": items,
-            "counts": _workspace_counts(all_items),
-        }
+        return _workspace_items_response(items, counts_items=all_items)
     except Exception as exc:
         raise _fail(exc)
 
@@ -3309,7 +3355,7 @@ def workspace_clip_detail(item_key: str) -> dict[str, Any]:
         item = db.get_workspace_item(item_type, item_id)
         if item is None:
             raise FileNotFoundError("Элемент рабочего пространства не найден.")
-        return {"item": item}
+        return {"item": _workspace_item_with_catalog_tags(item)}
     except FileNotFoundError as exc:
         raise _fail(exc, status_code=404)
     except Exception as exc:
@@ -3322,12 +3368,7 @@ def workspace_clip_delete(item_key: str) -> dict[str, Any]:
         _init()
         result = _delete_workspace_item(item_key)
         items = db.list_workspace_items(limit=1000)
-        return {
-            "status": "ok",
-            "result": result,
-            "items": items,
-            "counts": _workspace_counts(items),
-        }
+        return {"status": "ok", "result": result, **_workspace_items_response(items)}
     except FileNotFoundError as exc:
         raise _fail(exc, status_code=404)
     except PermissionError as exc:
@@ -3353,7 +3394,7 @@ def workspace_clip_update(item_key: str, req: WorkspaceItemUpdateRequest) -> dic
         if not ok:
             raise FileNotFoundError("Элемент рабочего пространства не найден.")
         item = db.get_workspace_item(item_type, item_id)
-        return {"item": item}
+        return {"item": _workspace_item_with_catalog_tags(item)}
     except FileNotFoundError as exc:
         raise _fail(exc, status_code=404)
     except Exception as exc:
@@ -3369,7 +3410,7 @@ def workspace_clip_prepare(item_key: str, req: WorkspacePrepareRequest) -> dict[
         item = db.get_workspace_item(item_type, item_id)
         return {
             "status": "ok",
-            "item": item,
+            "item": _workspace_item_with_catalog_tags(item) if item else None,
             "prepared_path": str(path),
             "prepare_status": item["prepare_status"] if item else "done",
         }
@@ -3401,7 +3442,7 @@ def workspace_clips_bulk_prepare(req: WorkspaceBulkPrepareRequest) -> dict[str, 
                 prepare_workspace_video(item_type, item_id, req.target_aspect)
                 updated = db.get_workspace_item(item_type, item_id)
                 if updated:
-                    items.append(updated)
+                    items.append(_workspace_item_with_catalog_tags(updated))
                 summary["prepared"] += 1
             except Exception as exc:
                 summary["errors"] += 1
@@ -3449,13 +3490,7 @@ def workspace_clips_bulk_delete(req: WorkspaceBulkDeleteRequest) -> dict[str, An
                     "error": str(exc) or exc.__class__.__name__,
                 })
         items = db.list_workspace_items(limit=1000)
-        return {
-            "status": "ok",
-            "summary": summary,
-            "results": results,
-            "items": items,
-            "counts": _workspace_counts(items),
-        }
+        return {"status": "ok", "summary": summary, "results": results, **_workspace_items_response(items)}
     except Exception as exc:
         raise _fail(exc)
 
@@ -3475,8 +3510,7 @@ def workspace_clips_cleanup_missing() -> dict[str, Any]:
                 "hidden": hidden,
                 "errors": 0,
             },
-            "items": items,
-            "counts": _workspace_counts(items),
+            **_workspace_items_response(items),
         }
     except Exception as exc:
         raise _fail(exc)
@@ -3491,7 +3525,7 @@ def workspace_clips_scan_missing() -> dict[str, Any]:
         return {
             "status": "ok",
             "missing": len(missing),
-            "items": missing,
+            "items": _workspace_items_with_catalog_tags(missing),
         }
     except Exception as exc:
         raise _fail(exc)
@@ -3504,12 +3538,7 @@ def workspace_clips_bulk_status(req: WorkspaceBulkStatusRequest) -> dict[str, An
         parsed = [_parse_workspace_key(item) for item in req.items]
         updated = db.bulk_update_workspace_status(parsed, req.workspace_status)
         items = db.list_workspace_items(limit=1000)
-        return {
-            "status": "ok",
-            "updated": updated,
-            "items": items,
-            "counts": _workspace_counts(items),
-        }
+        return {"status": "ok", "updated": updated, **_workspace_items_response(items)}
     except Exception as exc:
         raise _fail(exc)
 
@@ -3830,10 +3859,11 @@ def catalog_videos_search(
     q: str = "",
     tags: str | None = None,
     limit: int = 60,
+    scope: str = "ready",
 ) -> dict[str, Any]:
     try:
         _init()
-        items = _list_catalog_videos(q=q, tags=tags, limit=limit)
+        items = _list_catalog_videos(q=q, tags=tags, limit=limit, scope=scope)
         return {"items": items, "count": len(items)}
     except Exception as exc:
         raise _fail(exc)
@@ -3843,10 +3873,11 @@ def catalog_videos_search(
 def catalog_videos_random(
     tags: str | None = None,
     limit: int = 24,
+    scope: str = "ready",
 ) -> dict[str, Any]:
     try:
         _init()
-        items = _list_catalog_videos(tags=tags, limit=limit, randomize=True)
+        items = _list_catalog_videos(tags=tags, limit=limit, randomize=True, scope=scope)
         return {"items": items, "count": len(items)}
     except Exception as exc:
         raise _fail(exc)

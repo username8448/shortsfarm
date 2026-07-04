@@ -169,6 +169,20 @@
           <button class="btn-secondary stub-action" onclick="futureFeature('Субтитры')">Субтитры</button>
           <button class="btn-secondary stub-action" onclick="futureFeature('Уникализация')">Уникализация</button>
         </div>
+        <div class="workspace-filter-panel">
+          <div class="field mini-field">
+            <label class="field-lbl">Поиск клипов</label>
+            <input id="workspace-search-input" type="text" placeholder="Название, путь, исходник или тег…" oninput="onWorkspaceSearchInput(this.value)">
+          </div>
+          <div class="field mini-field">
+            <label class="field-lbl">Фильтр по тегу</label>
+            <select id="workspace-filter-tag-select"></select>
+          </div>
+          <button class="btn-secondary" onclick="addWorkspaceFilterTag('include')">Показать с тегом</button>
+          <button class="btn-mini" onclick="addWorkspaceFilterTag('exclude')">Исключить тег</button>
+          <button class="btn-mini" onclick="clearWorkspaceTagFilters()">Сбросить фильтры</button>
+          <div id="workspace-filter-active-tags" class="workspace-filter-active mono dim"></div>
+        </div>
         <div class="workspace-prepare-panel">
           <div class="field mini-field">
             <label class="field-lbl">Формат подготовки</label>
@@ -180,6 +194,16 @@
           </div>
           <button class="btn-secondary" onclick="prepareSelectedWorkspaceItems()">Подготовить выбранные</button>
           <div class="mono dim workspace-youtube-state">Подготовка создаёт отдельный файл в папке «Подготовленные».</div>
+        </div>
+        <div class="workspace-tags-panel">
+          <div class="field mini-field">
+            <label class="field-lbl">Тег для выбранных</label>
+            <select id="workspace-bulk-catalog-tag"></select>
+          </div>
+          <button class="btn-secondary" onclick="bulkAddCatalogTagToWorkspaceItems()">Добавить тег</button>
+          <button class="btn-mini" onclick="bulkRemoveCatalogTagFromWorkspaceItems()">Снять тег</button>
+          <button class="btn-mini" onclick="createStorageCatalogTag()">Создать тег</button>
+          <div class="mono dim workspace-youtube-state">Каталоговые теги используются профилями и поиском. Статус “Готово” меняется отдельно.</div>
         </div>
         <div class="workspace-editing-panel">
           <div class="field mini-field">
@@ -279,6 +303,7 @@
               </div>
             </div>
           </div>
+          <div id="storage-tags-manager"></div>
         </section>
       </div>
     </div>

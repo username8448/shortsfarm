@@ -456,6 +456,9 @@ let lastJobs = [];
 let lastVideos = [];
 let lastClips = [];
 let workspaceFilter = 'all';
+let workspaceSearchQuery = '';
+let workspaceFilterIncludeTagIds = new Set();
+let workspaceFilterExcludeTagIds = new Set();
 let selectedWorkspaceKeys = new Set();
 let currentWorkspaceItemKey = null;
 let workspaceDetailDirty = false;
@@ -503,6 +506,11 @@ let storageProfileCandidates = [];
 let selectedStorageCandidatePaths = new Set();
 let storageCatalogSearchQuery = '';
 let storageCatalogSearchTimer = null;
+let tagManagerVideoResults = [];
+let selectedTagManagerVideoPaths = new Set();
+let tagManagerSearchQuery = '';
+let tagManagerSearchTimer = null;
+let tagManagerTagQuery = '';
 let storageYoutubeAccounts = [];
 let storageCandidatePickerOpen = false;
 const workspaceYoutubeState = {
@@ -1335,6 +1343,7 @@ async function loadClips() {
       api.get('/api/editing/channel-profiles?enabled=true'),
       api.get('/api/editing/templates?enabled=true'),
       api.get('/api/editing/reactions?enabled=true'),
+      loadCatalogTags().catch(() => null),
     ]);
     lastClips = data.items || [];
     lastYoutubeAccounts = accountsData.accounts || lastYoutubeAccounts || [];
@@ -1347,6 +1356,7 @@ async function loadClips() {
       currentWorkspaceItemKey = null;
     }
     renderClipCounts(data.counts || {});
+    renderWorkspaceTagControls();
     renderWorkspaceEditingControls();
     renderWorkspaceYoutubeControls();
     renderClipsTable(getVisibleWorkspaceItems());
@@ -1375,14 +1385,46 @@ function filterClips(tab, status) {
   workspaceFilter = status || 'all';
   tab.closest('.tabs').querySelectorAll('.tab').forEach(item => item.classList.remove('on'));
   tab.classList.add('on');
+  renderWorkspaceFilterControls();
   renderClipsTable(getVisibleWorkspaceItems());
   renderWorkspaceDetail();
 }
+function workspaceItemSearchText(item) {
+  return [
+    item?.id,
+    item?.title,
+    item?.file_name,
+    item?.video_title,
+    item?.path,
+    item?.workspace_path,
+    item?.source_path,
+    item?.tags,
+    item?.workspace_status,
+    ...(workspaceCatalogTags(item).map(tag => `${tag.name || ''} ${tag.slug || ''} ${tag.description || ''}`)),
+  ].join(' ').toLowerCase();
+}
+function workspaceItemMatchesText(item) {
+  const query = String(workspaceSearchQuery || '').trim().toLowerCase();
+  if (!query) return true;
+  return query.split(/\s+/).every(part => workspaceItemSearchText(item).includes(part));
+}
+function workspaceItemMatchesTagFilters(item) {
+  const ids = new Set(workspaceCatalogTags(item).map(tag => Number(tag.id)));
+  for (const tagId of workspaceFilterIncludeTagIds) {
+    if (!ids.has(Number(tagId))) return false;
+  }
+  for (const tagId of workspaceFilterExcludeTagIds) {
+    if (ids.has(Number(tagId))) return false;
+  }
+  return true;
+}
 function getVisibleWorkspaceItems() {
-  if (workspaceFilter === 'missing') return lastClips.filter(item => item.missing);
-  return workspaceFilter === 'all'
-    ? lastClips
-    : lastClips.filter(item => item.workspace_status === workspaceFilter);
+  const byStatus = workspaceFilter === 'missing'
+    ? lastClips.filter(item => item.missing)
+    : workspaceFilter === 'all'
+      ? lastClips
+      : lastClips.filter(item => item.workspace_status === workspaceFilter);
+  return byStatus.filter(item => workspaceItemMatchesText(item) && workspaceItemMatchesTagFilters(item));
 }
 function workspaceTypeLabel(item) {
   return item?.item_type === 'clip' ? 'Клип' : 'Сегмент';
@@ -1445,12 +1487,59 @@ async function loadCatalogTags(options = {}) {
   catalogTags = data.items || [];
   return catalogTags;
 }
-function tagOptionsHtml(selectedIds = []) {
+function tagKindLabel(kind) {
+  const value = String(kind || 'user');
+  if (value === 'status') return 'статус';
+  if (value === 'channel') return 'канал';
+  if (value === 'system') return 'системный';
+  return 'пользовательский';
+}
+function catalogAssignableTags() {
+  return (catalogTags || []).filter(tag => tag.enabled !== false && tag.kind !== 'status');
+}
+function tagOptionsHtml(selectedIds = [], options = {}) {
   const selected = new Set((selectedIds || []).map(Number));
-  return catalogTags
-    .filter(tag => tag.kind !== 'status' || tag.slug === 'status-ready')
+  let tags = options.assignableOnly ? catalogAssignableTags() : catalogTags.filter(tag => tag.kind !== 'status' || tag.slug === 'status-ready');
+  if (options.onlySelected) tags = tags.filter(tag => selected.has(Number(tag.id)));
+  const empty = options.emptyLabel ? `<option value="">${esc(options.emptyLabel)}</option>` : '';
+  return empty + tags
     .map(tag => `<option value="${Number(tag.id)}"${selected.has(Number(tag.id)) ? ' selected' : ''}>${esc(tag.name)} · ${esc(tag.slug)}</option>`)
     .join('');
+}
+function catalogTagIds(tags, options = {}) {
+  const includeStatus = options.includeStatus !== false;
+  return (tags || [])
+    .filter(tag => includeStatus || tag.kind !== 'status')
+    .map(tag => Number(tag.id))
+    .filter(Boolean);
+}
+function workspaceCatalogTags(item) {
+  return Array.isArray(item?.catalog_tags) ? item.catalog_tags : [];
+}
+function workspaceCatalogPath(item) {
+  return String(item?.workspace_path || '').trim();
+}
+function updateWorkspaceItemCatalogTags(workspacePath, tags, updatedItem = null) {
+  if (!workspacePath) return;
+  lastClips = lastClips.map(item => {
+    if (workspaceCatalogPath(item) !== workspacePath) return item;
+    const next = {...item, catalog_tags: tags || []};
+    if (updatedItem?.workspace_status) next.workspace_status = updatedItem.workspace_status;
+    if (updatedItem?.title !== undefined) next.title = updatedItem.title || next.title;
+    return next;
+  });
+  if (currentWorkspaceItemKey) {
+    const current = workspaceItemByKey(currentWorkspaceItemKey);
+    if (current && workspaceCatalogPath(current) === workspacePath && updatedItem?.workspace_status) {
+      current.workspace_status = updatedItem.workspace_status;
+    }
+  }
+  tagManagerVideoResults = tagManagerVideoResults.map(item => (
+    item.workspace_path === workspacePath ? {...item, tags: tags || [], is_publish_ready: (tags || []).some(tag => tag.slug === 'status-ready')} : item
+  ));
+  storageProfileCandidates = storageProfileCandidates.map(item => (
+    item.workspace_path === workspacePath ? {...item, tags: tags || [], is_publish_ready: (tags || []).some(tag => tag.slug === 'status-ready')} : item
+  ));
 }
 function storageProfileErrorTarget() {
   return currentView === 'storage-profile' ? 'storage-profile-error' : 'storage-profiles-error';
@@ -1498,7 +1587,10 @@ function renderStorageProfilesGrid() {
 async function loadStorageProfiles(options = {}) {
   hideStorageProfileErrors();
   try {
-    const data = await api.get('/api/storage-profiles');
+    const [data] = await Promise.all([
+      api.get('/api/storage-profiles'),
+      loadCatalogTags().catch(() => null),
+    ]);
     storageProfiles = data.items || [];
     if (options.selectId) currentStorageProfileId = Number(options.selectId);
     if (currentStorageProfileId && !storageProfileById(currentStorageProfileId)) {
@@ -1507,6 +1599,7 @@ async function loadStorageProfiles(options = {}) {
       storageProfileItems = [];
     }
     renderStorageProfilesGrid();
+    renderStorageTagManager();
   } catch (err) {
     showStorageProfileError(err.message || 'Не удалось загрузить профили');
   }
@@ -1709,13 +1802,273 @@ async function removeStorageProfileTagRule(tagId, mode) {
 async function createStorageCatalogTag() {
   const name = prompt('Название нового тега:');
   if (!name) return;
+  const color = prompt('Цвет тега в формате #RRGGBB:', '#64748b') || '#64748b';
+  await createCatalogTag({name, color});
+}
+async function createCatalogTag({name, color = '#64748b'} = {}) {
+  const cleanName = String(name || '').trim();
+  if (!cleanName) return null;
   try {
-    const data = await api.post('/api/tags', {name, kind: 'user'});
-    catalogTags.push(data.tag);
+    const data = await api.post('/api/tags', {name: cleanName, color, kind: 'user'});
+    catalogTags = catalogTags.concat([data.tag]);
     renderStorageProfileDetail();
+    renderStorageTagManager();
+    renderWorkspaceTagControls();
+    if (currentView === 'clips') renderWorkspaceListAndDetail();
     showToast('Тег создан');
+    return data.tag;
   } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось создать тег');
+    showToast(err.message || 'Не удалось создать тег', 'err');
+    return null;
+  }
+}
+function storageTagManagerTagRow(tag) {
+  const locked = tag.locked || tag.kind === 'status' || tag.kind === 'channel';
+  const actions = locked
+    ? '<span class="mono dim">служебный</span>'
+    : `<input class="tag-color-input" type="color" value="${esc(tag.color || '#64748b')}" title="Цвет тега" onchange="updateCatalogTagColor(${Number(tag.id)}, this.value)">
+       <button class="btn-mini" onclick="renameCatalogTag(${Number(tag.id)})">Название</button>
+       <button class="btn-danger" onclick="disableCatalogTag(${Number(tag.id)})">Отключить</button>`;
+  return `<tr>
+    <td>${tagPill(tag, {locked})}</td>
+    <td class="mono dim">${esc(tagKindLabel(tag.kind))}</td>
+    <td class="mono dim ov">${esc(tag.slug || '—')}</td>
+    <td class="mono dim ov">${esc(tag.description || '')}</td>
+    <td><div class="row-actions">${actions}</div></td>
+  </tr>`;
+}
+function renderStorageTagManager() {
+  const el = document.getElementById('storage-tags-manager');
+  if (!el) return;
+  const tags = catalogTags || [];
+  const q = String(tagManagerTagQuery || '').trim().toLowerCase();
+  const matchesTagQuery = tag => !q || [tag.name, tag.slug, tag.description, tag.kind].join(' ').toLowerCase().includes(q);
+  const userTags = tags.filter(tag => tag.kind === 'user' && matchesTagQuery(tag));
+  const channelTags = tags.filter(tag => tag.kind === 'channel' && matchesTagQuery(tag));
+  const statusTags = tags.filter(tag => tag.kind === 'status' && matchesTagQuery(tag));
+  const selectedCount = selectedTagManagerVideoPaths.size;
+  const assignOptions = tagOptionsHtml([], {assignableOnly: true, emptyLabel: 'Выберите тег'});
+  const results = tagManagerVideoResults.length
+    ? tagManagerVideoResults.map(item => {
+        const selected = selectedTagManagerVideoPaths.has(item.workspace_path);
+        const title = item.title || item.file_name || item.workspace_path;
+        return `<label class="tag-video-row">
+          <input type="checkbox" data-path="${esc(item.workspace_path)}" ${selected ? 'checked' : ''} onchange="toggleTagManagerVideoSelection(this.dataset.path, this.checked)">
+          <div class="tag-video-thumb">${videoThumb(item.workspace_path, title)}</div>
+          <div class="tag-video-main">
+            <b title="${esc(title)}">${esc(title)}</b>
+            <span class="mono dim" title="${esc(item.workspace_path)}">${esc(workspaceDisplayPath(item.workspace_path))}</span>
+            ${tagListPills(item.tags || [])}
+          </div>
+          <button type="button" class="btn-mini" data-path="${esc(item.workspace_path)}" data-title="${esc(title)}" onclick="event.preventDefault();openWebPlayer(this.dataset.path,{title:this.dataset.title||''})">Смотреть</button>
+        </label>`;
+      }).join('')
+    : '<div class="empty compact">Начните писать название, путь или тег — видео появятся автоматически. Можно нажать «Случайные».</div>';
+  el.innerHTML = `<div class="storage-tags-manager">
+    <div class="storage-tag-panel-head">
+      <div>
+        <div class="storage-section-title inline-title">Менеджер тегов</div>
+        <div class="mono dim">Создавайте теги, ищите видео по всему workspace и назначайте теги выбранным роликам. Профили потом подключают эти теги.</div>
+      </div>
+      <div class="row-actions">
+        <button class="btn-secondary" onclick="createStorageCatalogTag()">Создать тег</button>
+        <button class="btn-mini" onclick="reloadCatalogTagsForUi()">Обновить</button>
+      </div>
+    </div>
+    <div class="storage-tag-manager-grid">
+      <div class="storage-tag-list-box">
+        <div class="tag-manager-create-row">
+          <input id="storage-tag-create-name" type="text" placeholder="Новый тег">
+          <input id="storage-tag-create-color" class="tag-color-input" type="color" value="#64748b" title="Цвет нового тега">
+          <button class="btn-secondary" onclick="createCatalogTagFromManager()">Создать</button>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label class="field-lbl">Поиск тегов</label>
+          <input id="storage-tag-manager-search" type="text" value="${esc(tagManagerTagQuery)}" placeholder="Название, slug, тип…" oninput="onStorageTagManagerSearchInput(this.value)">
+        </div>
+        <div class="field-lbl">Пользовательские теги</div>
+        ${userTags.length ? `<table class="tbl compact"><tbody>${userTags.map(storageTagManagerTagRow).join('')}</tbody></table>` : '<div class="empty compact">Пользовательских тегов пока нет.</div>'}
+        <div class="field-lbl" style="margin-top:12px">Channel-теги</div>
+        ${channelTags.length ? tagListPills(channelTags) : '<div class="mono dim">Появятся автоматически при привязке YouTube к профилю.</div>'}
+        <div class="field-lbl" style="margin-top:12px">Статусы</div>
+        ${statusTags.length ? tagListPills(statusTags) : '<div class="mono dim">Системные статусы ещё не загружены.</div>'}
+      </div>
+      <div class="storage-tag-video-box">
+        <div class="storage-search-panel">
+          <div>
+            <div class="field-lbl">Добавить теги в видео</div>
+            <input id="tag-manager-video-search" type="text" value="${esc(tagManagerSearchQuery)}" placeholder="Название, путь или тег…" oninput="onTagManagerVideoSearchInput(this.value)">
+          </div>
+          <button class="btn-secondary" onclick="loadRandomTagManagerVideos()">Случайные</button>
+        </div>
+        <div class="storage-tag-assign-row">
+          <select id="tag-manager-assign-tag">${assignOptions}</select>
+          <button class="btn-secondary" ${selectedCount ? '' : 'disabled'} onclick="assignTagToSelectedVideos()">Добавить выбранным (${selectedCount})</button>
+          <button class="btn-mini" ${selectedCount ? '' : 'disabled'} onclick="removeTagFromSelectedVideos()">Снять выбранным</button>
+        </div>
+        <div class="tag-video-results">${results}</div>
+      </div>
+    </div>
+  </div>`;
+}
+async function createCatalogTagFromManager() {
+  const nameInput = document.getElementById('storage-tag-create-name');
+  const colorInput = document.getElementById('storage-tag-create-color');
+  const tag = await createCatalogTag({
+    name: nameInput?.value || '',
+    color: colorInput?.value || '#64748b',
+  });
+  if (tag && nameInput) nameInput.value = '';
+}
+function onStorageTagManagerSearchInput(value) {
+  tagManagerTagQuery = String(value || '');
+  renderStorageTagManager();
+}
+async function reloadCatalogTagsForUi() {
+  await loadCatalogTags({force: true});
+  renderStorageTagManager();
+  renderStorageProfileDetail();
+  renderWorkspaceTagControls();
+  renderWorkspaceListAndDetail();
+  showToast('Теги обновлены');
+}
+function catalogTagById(tagId) {
+  return (catalogTags || []).find(tag => Number(tag.id) === Number(tagId)) || null;
+}
+async function renameCatalogTag(tagId) {
+  const tag = catalogTagById(tagId);
+  if (!tag || tag.locked) return;
+  const name = prompt('Новое название тега:', tag.name || '');
+  if (!name) return;
+  try {
+    const data = await api.patch(`/api/tags/${Number(tagId)}`, {name});
+    catalogTags = catalogTags.map(item => Number(item.id) === Number(tagId) ? data.tag : item);
+    renderStorageTagManager();
+    renderWorkspaceListAndDetail();
+    showToast('Тег обновлён');
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось изменить тег');
+  }
+}
+async function recolorCatalogTag(tagId) {
+  const tag = catalogTagById(tagId);
+  if (!tag || tag.locked) return;
+  const color = prompt('Цвет тега в формате #RRGGBB:', tag.color || '#64748b');
+  if (!color) return;
+  await updateCatalogTagColor(tagId, color);
+}
+async function updateCatalogTagColor(tagId, color) {
+  const tag = catalogTagById(tagId);
+  if (!tag || tag.locked) return;
+  try {
+    const data = await api.patch(`/api/tags/${Number(tagId)}`, {color});
+    catalogTags = catalogTags.map(item => Number(item.id) === Number(tagId) ? data.tag : item);
+    renderStorageTagManager();
+    renderWorkspaceListAndDetail();
+    renderWorkspaceFilterControls();
+    showToast('Цвет тега обновлён');
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось изменить цвет тега');
+  }
+}
+async function disableCatalogTag(tagId) {
+  const tag = catalogTagById(tagId);
+  if (!tag || tag.locked) return;
+  if (!confirm(`Отключить тег «${tag.name}»? Он исчезнет из выбора, но история связей останется в базе.`)) return;
+  try {
+    await api.del(`/api/tags/${Number(tagId)}`);
+    catalogTags = catalogTags.filter(item => Number(item.id) !== Number(tagId));
+    renderStorageTagManager();
+    renderWorkspaceListAndDetail();
+    showToast('Тег отключён');
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось отключить тег');
+  }
+}
+async function searchTagManagerVideos() {
+  try {
+    const data = await api.get(`/api/catalog/videos/search?q=${encodeURIComponent(tagManagerSearchQuery)}&scope=all&limit=80`);
+    tagManagerVideoResults = data.items || [];
+    selectedTagManagerVideoPaths = new Set(Array.from(selectedTagManagerVideoPaths).filter(path => tagManagerVideoResults.some(item => item.workspace_path === path)));
+    renderStorageTagManager();
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось найти видео');
+  }
+}
+function onTagManagerVideoSearchInput(value) {
+  tagManagerSearchQuery = String(value || '');
+  clearTimeout(tagManagerSearchTimer);
+  tagManagerSearchTimer = setTimeout(searchTagManagerVideos, 250);
+}
+async function loadRandomTagManagerVideos() {
+  try {
+    const data = await api.get('/api/catalog/videos/random?scope=all&limit=32');
+    tagManagerVideoResults = data.items || [];
+    selectedTagManagerVideoPaths.clear();
+    renderStorageTagManager();
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось загрузить случайные видео');
+  }
+}
+function toggleTagManagerVideoSelection(workspacePath, checked) {
+  if (checked) selectedTagManagerVideoPaths.add(workspacePath);
+  else selectedTagManagerVideoPaths.delete(workspacePath);
+  renderStorageTagManager();
+}
+async function updateVideoCatalogTags(workspacePath, tagIds) {
+  const data = await api.post('/api/catalog/videos/tags', {
+    workspace_path: workspacePath,
+    tag_ids: Array.from(new Set(tagIds.map(Number).filter(Boolean))),
+    mode: 'replace',
+  });
+  updateWorkspaceItemCatalogTags(data.workspace_path, data.tags || [], data.item || null);
+  return data;
+}
+async function assignTagToSelectedVideos() {
+  const tagId = Number(document.getElementById('tag-manager-assign-tag')?.value || 0);
+  if (!tagId) {
+    showToast('Выберите тег', 'err');
+    return;
+  }
+  const paths = Array.from(selectedTagManagerVideoPaths);
+  if (!paths.length) return;
+  try {
+    let updated = 0;
+    for (const path of paths) {
+      const item = tagManagerVideoResults.find(row => row.workspace_path === path) || {};
+      const ids = catalogTagIds(item.tags || [], {includeStatus: true});
+      if (!ids.includes(tagId)) ids.push(tagId);
+      await updateVideoCatalogTags(path, ids);
+      updated += 1;
+    }
+    renderStorageTagManager();
+    renderWorkspaceListAndDetail();
+    showToast(`Тег добавлен к видео: ${updated}`);
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось добавить тег к видео');
+  }
+}
+async function removeTagFromSelectedVideos() {
+  const tagId = Number(document.getElementById('tag-manager-assign-tag')?.value || 0);
+  if (!tagId) {
+    showToast('Выберите тег', 'err');
+    return;
+  }
+  const paths = Array.from(selectedTagManagerVideoPaths);
+  if (!paths.length) return;
+  try {
+    let updated = 0;
+    for (const path of paths) {
+      const item = tagManagerVideoResults.find(row => row.workspace_path === path) || {};
+      const ids = catalogTagIds(item.tags || [], {includeStatus: true}).filter(id => id !== tagId);
+      await updateVideoCatalogTags(path, ids);
+      updated += 1;
+    }
+    renderStorageTagManager();
+    renderWorkspaceListAndDetail();
+    showToast(`Тег снят с видео: ${updated}`);
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось снять тег с видео');
   }
 }
 async function runStorageProfileTagSync() {
@@ -2490,6 +2843,124 @@ function renderWorkspaceBulkState() {
 function renderWorkspaceListAndDetail() {
   renderClipsTable(getVisibleWorkspaceItems());
   renderWorkspaceDetail();
+  renderWorkspaceFilterControls();
+}
+function workspaceFilterTagChip(tag, mode) {
+  if (!tag) return '';
+  const remove = `<button class="tag-remove" title="Убрать фильтр" onclick="removeWorkspaceFilterTag(${Number(tag.id)}, '${esc(mode)}')">×</button>`;
+  const prefix = mode === 'exclude' ? 'исключить: ' : '';
+  return `<span class="tag-filter-chip ${mode === 'exclude' ? 'exclude' : 'include'}">${tagPill({...tag, name: `${prefix}${tag.name}`})}${remove}</span>`;
+}
+function renderWorkspaceFilterControls() {
+  const search = document.getElementById('workspace-search-input');
+  if (search && search.value !== workspaceSearchQuery) search.value = workspaceSearchQuery;
+  const select = document.getElementById('workspace-filter-tag-select');
+  if (select) {
+    const previous = select.value;
+    select.innerHTML = tagOptionsHtml([], {assignableOnly: true, emptyLabel: 'Выберите тег'});
+    if (previous && Array.from(select.options).some(option => option.value === previous)) select.value = previous;
+  }
+  const chips = document.getElementById('workspace-filter-active-tags');
+  if (chips) {
+    const include = Array.from(workspaceFilterIncludeTagIds)
+      .map(id => workspaceFilterTagChip(catalogTagById(id), 'include'))
+      .join('');
+    const exclude = Array.from(workspaceFilterExcludeTagIds)
+      .map(id => workspaceFilterTagChip(catalogTagById(id), 'exclude'))
+      .join('');
+    const query = workspaceSearchQuery ? `<span class="filter-query-chip">поиск: ${esc(workspaceSearchQuery)} <button class="tag-remove" onclick="onWorkspaceSearchInput('')">×</button></span>` : '';
+    chips.innerHTML = include || exclude || query
+      ? `<div class="tag-pill-list">${query}${include}${exclude}</div>`
+      : 'Фильтры тегов не выбраны';
+  }
+  const visibleLine = document.querySelector('[data-workspace-filter-summary]');
+  if (visibleLine) {
+    visibleLine.textContent = `Показано: ${getVisibleWorkspaceItems().length} из ${lastClips.length}`;
+  }
+}
+function onWorkspaceSearchInput(value) {
+  workspaceSearchQuery = String(value || '');
+  renderClipsTable(getVisibleWorkspaceItems());
+  renderWorkspaceDetail();
+  renderWorkspaceFilterControls();
+}
+function addWorkspaceFilterTag(mode = 'include') {
+  const tagId = Number(document.getElementById('workspace-filter-tag-select')?.value || 0);
+  if (!tagId) {
+    showToast('Выберите тег для фильтра', 'err');
+    return;
+  }
+  if (mode === 'exclude') {
+    workspaceFilterIncludeTagIds.delete(tagId);
+    workspaceFilterExcludeTagIds.add(tagId);
+  } else {
+    workspaceFilterExcludeTagIds.delete(tagId);
+    workspaceFilterIncludeTagIds.add(tagId);
+  }
+  renderClipsTable(getVisibleWorkspaceItems());
+  renderWorkspaceDetail();
+  renderWorkspaceFilterControls();
+}
+function removeWorkspaceFilterTag(tagId, mode = 'include') {
+  if (mode === 'exclude') workspaceFilterExcludeTagIds.delete(Number(tagId));
+  else workspaceFilterIncludeTagIds.delete(Number(tagId));
+  renderClipsTable(getVisibleWorkspaceItems());
+  renderWorkspaceDetail();
+  renderWorkspaceFilterControls();
+}
+function clearWorkspaceTagFilters() {
+  workspaceSearchQuery = '';
+  workspaceFilterIncludeTagIds.clear();
+  workspaceFilterExcludeTagIds.clear();
+  renderClipsTable(getVisibleWorkspaceItems());
+  renderWorkspaceDetail();
+  renderWorkspaceFilterControls();
+}
+function renderWorkspaceTagControls() {
+  const select = document.getElementById('workspace-bulk-catalog-tag');
+  if (!select) return;
+  const previous = select.value;
+  select.innerHTML = tagOptionsHtml([], {assignableOnly: true, emptyLabel: 'Выберите тег'});
+  if (previous && Array.from(select.options).some(option => option.value === previous)) {
+    select.value = previous;
+  }
+}
+async function setCatalogTagForWorkspaceItems(itemKeys, tagId, action = 'add') {
+  const selected = (itemKeys || [])
+    .map(key => workspaceItemByKey(key))
+    .filter(item => item && workspaceCatalogPath(item) && !item.missing);
+  if (!selected.length) {
+    showToast('Выберите видео внутри workspace', 'err');
+    return;
+  }
+  if (!tagId) {
+    showToast('Выберите тег', 'err');
+    return;
+  }
+  try {
+    let updated = 0;
+    for (const item of selected) {
+      const currentIds = catalogTagIds(workspaceCatalogTags(item), {includeStatus: true});
+      const nextIds = action === 'remove'
+        ? currentIds.filter(id => id !== Number(tagId))
+        : Array.from(new Set(currentIds.concat([Number(tagId)])));
+      await updateVideoCatalogTags(workspaceCatalogPath(item), nextIds);
+      updated += 1;
+    }
+    renderWorkspaceListAndDetail();
+    renderStorageTagManager();
+    showToast(action === 'remove' ? `Тег снят с видео: ${updated}` : `Тег добавлен к видео: ${updated}`);
+  } catch (err) {
+    showToast(err.message || 'Не удалось обновить теги видео', 'err');
+  }
+}
+async function bulkAddCatalogTagToWorkspaceItems() {
+  const tagId = Number(document.getElementById('workspace-bulk-catalog-tag')?.value || 0);
+  await setCatalogTagForWorkspaceItems(Array.from(selectedWorkspaceKeys), tagId, 'add');
+}
+async function bulkRemoveCatalogTagFromWorkspaceItems() {
+  const tagId = Number(document.getElementById('workspace-bulk-catalog-tag')?.value || 0);
+  await setCatalogTagForWorkspaceItems(Array.from(selectedWorkspaceKeys), tagId, 'remove');
 }
 function renderClipsTable(rows) {
   const el = document.getElementById('clips-table');
@@ -2497,7 +2968,7 @@ function renderClipsTable(rows) {
     el.innerHTML = '<div class="empty">Нарезанных сегментов и клипов пока нет. После нарезки видео файлы появятся здесь.</div>';
     return;
   }
-  el.innerHTML = `<div class="workspace-selected-line mono dim" data-workspace-selected-count></div><table class="tbl workspace-table"><thead><tr><th></th><th>Файл</th><th>Источник</th><th>Длит.</th><th>Тип</th><th>Статус</th><th>Путь</th><th>Действие</th></tr></thead><tbody>${rows.map(item => {
+  el.innerHTML = `<div class="workspace-selected-line mono dim"><span data-workspace-selected-count></span><span data-workspace-filter-summary></span></div><table class="tbl workspace-table"><thead><tr><th></th><th>Файл</th><th>Источник</th><th>Длит.</th><th>Тип</th><th>Статус</th><th>Путь</th><th>Действие</th></tr></thead><tbody>${rows.map(item => {
     const selected = selectedWorkspaceKeys.has(item.id);
     const activeClasses = ['workspace-row'];
     if (currentWorkspaceItemKey === item.id) activeClasses.push('active');
@@ -2508,13 +2979,15 @@ function renderClipsTable(rows) {
     const renderInfo = item.render_status ? `<div class="mono dim">render: ${esc(ruStatus(item.render_status))}</div>` : '';
     const publishInfo = item.publish_job_status ? `<div class="mono dim">publish #${esc(item.publish_job_id || '')}: ${esc(ruStatus(item.publish_job_status))}</div>` : '';
     const prepareInfo = `<div class="mono dim">format: ${esc(targetAspectLabel(item.target_aspect))}${item.prepare_status && item.prepare_status !== 'none' ? ` · ${esc(ruStatus(item.prepare_status))}` : ''}</div>`;
+    const tagInfo = workspaceCatalogTags(item).length ? tagListPills(workspaceCatalogTags(item)) : '';
     const thumb = item.missing ? videoThumb(playablePath, title) : videoWatchThumb(playablePath, title);
     const titleCell = item.missing
       ? `<div class="mono txt ov" title="${esc(title)}">${esc(title)}</div>`
       : `<button class="link-video mono txt ov" data-path="${esc(playablePath)}" title="${esc(title)}" onclick="event.stopPropagation();openWebPlayer(this.dataset.path,{title:this.textContent||''})">${esc(title)}</button>`;
-    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${thumb}<div style="min-width:0;flex:1">${titleCell}<div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}${prepareInfo}${publishInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${missingBadge(item)}${prepareBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${storageProfileWorkspaceButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
+    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${thumb}<div style="min-width:0;flex:1">${titleCell}<div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}${prepareInfo}${publishInfo}${tagInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${missingBadge(item)}${prepareBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${storageProfileWorkspaceButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
   }).join('')}</tbody></table>`;
   renderWorkspaceBulkState();
+  renderWorkspaceFilterControls();
 }
 function selectAllWorkspaceItems() {
   const rows = getVisibleWorkspaceItems();
@@ -2535,6 +3008,7 @@ async function refreshWorkspaceList() {
     currentWorkspaceItemKey = null;
   }
   renderClipCounts(data.counts || workspaceCountsFromItems(lastClips));
+  renderWorkspaceTagControls();
   return lastClips;
 }
 function workspaceYoutubeRequestBody(items) {
@@ -2791,6 +3265,42 @@ function futureFeature(name) {
   // Future hook: connect YouTube queue, subtitle generation, and uniqueness filters here.
   showToast(`${name || 'Функция'} будет добавлена позже`);
 }
+function workspaceCatalogTagsPanel(item) {
+  const tags = workspaceCatalogTags(item);
+  const assignableIds = catalogAssignableTags().map(tag => Number(tag.id));
+  const selectedIds = catalogTagIds(tags, {includeStatus: false}).filter(id => assignableIds.includes(id));
+  const currentOptions = tagOptionsHtml(selectedIds, {assignableOnly: true, onlySelected: true});
+  const addOptions = tagOptionsHtml(selectedIds, {assignableOnly: true, emptyLabel: 'Выберите тег'});
+  const disabled = !workspaceCatalogPath(item) || item.missing;
+  return `<div class="workspace-catalog-tags-panel">
+    <div class="storage-tag-panel-head">
+      <div>
+        <div class="field-lbl">Каталоговые теги</div>
+        <div class="mono dim">Эти теги используются профилями, поиском и будущей автоматикой. Статусные теги появляются автоматически.</div>
+      </div>
+      <button class="btn-mini" onclick="createStorageCatalogTag()">Создать тег</button>
+    </div>
+    ${tagListPills(tags)}
+    <div class="workspace-tag-editor">
+      <select id="workspace-catalog-tag-add" ${disabled ? 'disabled' : ''}>${addOptions}</select>
+      <button class="btn-secondary" ${disabled ? 'disabled' : ''} onclick="addCatalogTagToCurrentWorkspaceItem()">Добавить</button>
+      <select id="workspace-catalog-tag-remove" ${disabled || !selectedIds.length ? 'disabled' : ''}>${currentOptions}</select>
+      <button class="btn-mini" ${disabled || !selectedIds.length ? 'disabled' : ''} onclick="removeCatalogTagFromCurrentWorkspaceItem()">Снять</button>
+    </div>
+  </div>`;
+}
+async function addCatalogTagToCurrentWorkspaceItem() {
+  const item = workspaceItemByKey(currentWorkspaceItemKey);
+  const tagId = Number(document.getElementById('workspace-catalog-tag-add')?.value || 0);
+  if (!item || !tagId) return;
+  await setCatalogTagForWorkspaceItems([item.id], tagId, 'add');
+}
+async function removeCatalogTagFromCurrentWorkspaceItem() {
+  const item = workspaceItemByKey(currentWorkspaceItemKey);
+  const tagId = Number(document.getElementById('workspace-catalog-tag-remove')?.value || 0);
+  if (!item || !tagId) return;
+  await setCatalogTagForWorkspaceItems([item.id], tagId, 'remove');
+}
 function renderWorkspaceDetail() {
   const el = document.getElementById('workspace-detail');
   if (!el) return;
@@ -2836,10 +3346,11 @@ function renderWorkspaceDetail() {
       <div><span>Папка</span><b title="${esc(item.folder_path || '')}">${esc(shortPath(item.folder_path || '—'))}</b></div>
     </div>
     <div class="field"><label class="field-lbl">Статус</label><select id="workspace-status" onchange="markWorkspaceDetailDirty();updateWorkspaceDetailActionState()"><option value="draft">Черновик</option><option value="ready">Готово</option><option value="queued">В очереди</option><option value="uploaded">Загружено</option><option value="failed">Ошибка</option></select></div>
+    ${workspaceCatalogTagsPanel(item)}
     <div class="field"><label class="field-lbl">Формат видео</label><select id="workspace-target-aspect" onchange="markWorkspaceDetailDirty()"><option value="original">Original</option><option value="16x9">16:9</option><option value="9x16">9:16</option></select></div>
     <div class="field"><label class="field-lbl">Название</label><input id="workspace-title" type="text" value="${esc(item.title || '')}" placeholder="${esc(item.file_name || title)}" oninput="markWorkspaceDetailDirty()"></div>
     <div class="field"><label class="field-lbl">Описание</label><textarea id="workspace-description" rows="5" placeholder="Локальное описание для будущей публикации" oninput="markWorkspaceDetailDirty()">${esc(item.description || '')}</textarea></div>
-    <div class="field"><label class="field-lbl">Теги</label><input id="workspace-tags" type="text" value="${esc(item.tags || '')}" placeholder="через запятую" oninput="markWorkspaceDetailDirty()"></div>
+    <div class="field"><label class="field-lbl">Теги публикации (текст)</label><input id="workspace-tags" type="text" value="${esc(item.tags || '')}" placeholder="через запятую" oninput="markWorkspaceDetailDirty()"></div>
     <div class="workspace-detail-actions">
       <button class="btn-primary" onclick="saveWorkspaceDetail()">Сохранить</button>
       ${workspaceOpenFileButton(item, 'Смотреть')}

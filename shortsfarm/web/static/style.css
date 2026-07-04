@@ -862,6 +862,83 @@ body.video-lightbox-open { overflow: hidden; }
   gap: 7px;
   margin-top: 10px;
 }
+.storage-tags-manager {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid rgba(59,130,246,.32);
+  border-radius: 12px;
+  background: rgba(15,23,42,.28);
+}
+.storage-tag-manager-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, .72fr) minmax(360px, 1fr);
+  gap: 12px;
+  margin-top: 12px;
+}
+.storage-tag-list-box,
+.storage-tag-video-box {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(15,23,42,.34);
+}
+.storage-tag-assign-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+}
+.tag-manager-create-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.tag-color-input {
+  width: 38px;
+  min-width: 38px;
+  height: 30px;
+  padding: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(15,23,42,.55);
+  cursor: pointer;
+}
+.tag-video-results {
+  display: grid;
+  gap: 8px;
+  max-height: 420px;
+  overflow: auto;
+}
+.tag-video-row {
+  display: grid;
+  grid-template-columns: auto 70px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(148,163,184,.06);
+}
+.tag-video-thumb .video-thumb {
+  width: 70px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 7px;
+}
+.tag-video-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.tag-video-main b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .storage-profile-edit {
   padding: 16px 18px 4px;
   border-bottom: 1px solid var(--border);
@@ -1042,6 +1119,53 @@ body.video-lightbox-open { overflow: hidden; }
   border-radius: 8px;
   background: rgba(148,163,184,.08);
 }
+.workspace-tags-panel {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto auto minmax(220px, 1fr);
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid rgba(245,158,11,.35);
+  border-radius: 8px;
+  background: rgba(245,158,11,.08);
+}
+.workspace-filter-panel {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) minmax(220px, .85fr) auto auto auto minmax(260px, 1fr);
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid rgba(34,197,94,.28);
+  border-radius: 8px;
+  background: rgba(34,197,94,.07);
+}
+.workspace-filter-active {
+  align-self: center;
+  min-width: 0;
+}
+.tag-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.tag-filter-chip.exclude .tag-pill {
+  border-color: rgba(239,68,68,.58);
+  background: rgba(239,68,68,.12);
+}
+.filter-query-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 23px;
+  padding: 2px 8px;
+  border: 1px solid rgba(34,197,94,.45);
+  border-radius: 999px;
+  background: rgba(34,197,94,.10);
+  color: var(--mid);
+  font: 700 10px var(--mono);
+}
 .workspace-editing-panel {
   width: 100%;
   display: grid;
@@ -1196,6 +1320,22 @@ body.video-lightbox-open { overflow: hidden; }
 .workspace-detail-actions {
   display: flex; flex-wrap: wrap; gap: 7px; align-items: center;
 }
+.workspace-catalog-tags-panel {
+  padding: 10px;
+  border: 1px solid rgba(59,130,246,.28);
+  border-radius: 10px;
+  background: rgba(59,130,246,.07);
+}
+.workspace-catalog-tags-panel {
+  margin-bottom: 12px;
+}
+.workspace-tag-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  gap: 7px;
+  align-items: center;
+  margin-top: 10px;
+}
 .status-stack {
   display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
 }
@@ -1225,11 +1365,17 @@ body.video-lightbox-open { overflow: hidden; }
   .storage-profiles-layout,
   .storage-profiles-hub,
   .storage-tag-rule-grid,
+  .storage-tag-manager-grid,
   .storage-search-panel,
+  .storage-tag-assign-row,
+  .tag-manager-create-row,
+  .workspace-tag-editor,
   .editing-layout,
   .field-grid,
   .workspace-layout,
+  .workspace-filter-panel,
   .workspace-prepare-panel,
+  .workspace-tags-panel,
   .workspace-editing-panel,
   .workspace-youtube-panel {
     grid-template-columns: 1fr;

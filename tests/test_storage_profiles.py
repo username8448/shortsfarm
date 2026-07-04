@@ -700,16 +700,27 @@ def test_catalog_tags_search_random_and_status_compat(tmp_path):
 
     tags = api.catalog_video_tags("ready/anime/clip-one.mp4")["tags"]
     assert {tag["slug"] for tag in tags} >= {"аниме", "status-ready"}
+    raw_tags = api.catalog_video_tags_update(
+        CatalogVideoTagsRequest(
+            workspace_path="sources/raw.mp4",
+            tag_ids=[anime["id"]],
+        )
+    )["tags"]
+    assert {tag["slug"] for tag in raw_tags} == {"аниме"}
 
     search = api.catalog_videos_search(q="аниме")["items"]
     assert [item["workspace_path"] for item in search] == ["ready/anime/clip-one.mp4"]
     assert search[0]["is_publish_ready"] is True
+    all_scope_search = api.catalog_videos_search(q="raw", scope="all")["items"]
+    assert [item["workspace_path"] for item in all_scope_search] == ["sources/raw.mp4"]
 
     random_items = api.catalog_videos_random(limit=20)["items"]
     paths = {item["workspace_path"] for item in random_items}
     assert "ready/anime/clip-one.mp4" in paths
     assert "edits/cinema/clip-two.mp4" in paths
     assert "sources/raw.mp4" not in paths
+    all_random_paths = {item["workspace_path"] for item in api.catalog_videos_random(scope="all", limit=20)["items"]}
+    assert "sources/raw.mp4" in all_random_paths
 
 
 def test_profile_tag_sync_any_all_and_exclude(tmp_path):
@@ -835,6 +846,22 @@ def test_storage_profiles_ui_is_registered():
     assert "Публикация YouTube" in js
     assert "Теги профиля" in js
     assert "Случайные видео" in js
+    assert "Менеджер тегов" in js
+    assert "Добавить теги в видео" in js
+    assert "Поиск тегов" in js
+    assert "storage-tag-create-color" in js
+    assert "updateCatalogTagColor" in js
+    assert "scope=all" in js
+    assert "workspace-catalog-tags-panel" in js
+    assert "workspace-filter-tag-select" in html
+    assert "workspace-search-input" in html
+    assert "workspace-filter-active-tags" in html
+    assert "addWorkspaceFilterTag" in js
+    assert "workspaceFilterIncludeTagIds" in js
+    assert "workspaceFilterExcludeTagIds" in js
+    assert "bulkAddCatalogTagToWorkspaceItems" in js
+    assert "bulkRemoveCatalogTagFromWorkspaceItems" in js
+    assert "assignTagToSelectedVideos" in js
     assert "Автоимпорт готовых видео" not in js
     assert "Синхронизировать YouTube" in js
     assert "Видео на YouTube" in js
@@ -845,6 +872,13 @@ def test_storage_profiles_ui_is_registered():
     assert "storage-profiles-hub" in css
     assert "storage-profile-route-head" in css
     assert "storage-tag-panel" in css
+    assert "storage-tags-manager" in css
+    assert "storage-tag-manager-grid" in css
+    assert "tag-color-input" in css
+    assert "workspace-filter-panel" in css
+    assert "filter-query-chip" in css
+    assert "workspace-catalog-tags-panel" in css
+    assert "workspace-tags-panel" in css
     assert "storage-search-panel" in css
     assert "storage-profile-publish-panel" in css
     assert "storage-auto-panel" not in css

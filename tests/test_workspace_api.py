@@ -104,6 +104,38 @@ def test_workspace_api_patch_updates_local_metadata(video_in_db, tmp_path):
     assert persisted["tags"] == "shorts, test"
 
 
+def test_workspace_api_includes_catalog_tags_for_workspace_video(video_in_db, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import CatalogVideoTagsRequest, TagCreateRequest, WorkspaceItemUpdateRequest
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "workspace")
+    path = root / "cuts/raw/segment.mp4"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"segment")
+    job_id = db.create_job(video_in_db, "fast", 60)
+    db.mark_job_done(job_id)
+    segment_id = db.insert_segment(video_in_db, job_id, 1, 0.0, 15.0, path)
+    tag = api.tag_create(TagCreateRequest(name="аниме"))["tag"]
+    api.catalog_video_tags_update(
+        CatalogVideoTagsRequest(
+            workspace_path="cuts/raw/segment.mp4",
+            tag_ids=[tag["id"]],
+        )
+    )
+
+    item = next(row for row in api.workspace_clips()["items"] if row["id"] == f"segment:{segment_id}")
+    assert item["workspace_path"] == "cuts/raw/segment.mp4"
+    assert {tag["slug"] for tag in item["catalog_tags"]} >= {"аниме", "status-draft"}
+
+    updated = api.workspace_clip_update(
+        f"segment:{segment_id}",
+        WorkspaceItemUpdateRequest(workspace_status="ready"),
+    )["item"]
+    assert {tag["slug"] for tag in updated["catalog_tags"]} >= {"аниме", "status-ready"}
+
+
 def test_workspace_api_patch_saves_target_aspect(video_in_db, tmp_path):
     from shortsfarm.web import api
     from shortsfarm.web.schemas import WorkspaceItemUpdateRequest
