@@ -266,6 +266,64 @@ def test_workspace_bulk_delete_summary(video_in_db, tmp_path):
     assert data["summary"]["errors"] == 0
 
 
+def test_videos_bulk_delete_keeps_source_file_by_default(video_in_db, dummy_video):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import VideoBulkDeleteRequest
+
+    data = api.videos_bulk_delete(
+        VideoBulkDeleteRequest(video_ids=[video_in_db])
+    )
+
+    assert data["summary"]["deleted"] == 1
+    assert data["summary"]["source_files"]["deleted"] == 0
+    assert db.get_video(video_in_db) is None
+    assert dummy_video.exists()
+
+
+def test_videos_bulk_delete_can_delete_source_file(video_in_db, dummy_video):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import VideoBulkDeleteRequest
+
+    data = api.videos_bulk_delete(
+        VideoBulkDeleteRequest(video_ids=[video_in_db], delete_source_files=True)
+    )
+
+    assert data["summary"]["deleted"] == 1
+    assert data["summary"]["source_files"]["deleted"] == 1
+    assert db.get_video(video_in_db) is None
+    assert not dummy_video.exists()
+
+
+def test_settings_database_reset_requires_exact_confirmation(video_in_db):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import DatabaseResetRequest
+
+    with pytest.raises(HTTPException) as exc:
+        api.settings_database_reset(DatabaseResetRequest(confirmation="delete"))
+
+    assert exc.value.status_code == 400
+
+
+def test_settings_database_reset_recreates_empty_database(video_in_db, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import DatabaseResetRequest
+
+    data = api.settings_database_reset(
+        DatabaseResetRequest(confirmation="УДАЛИТЬ БАЗУ", create_backup=True)
+    )
+
+    assert data["reset"] is True
+    assert data["backup_path"]
+    assert Path(data["backup_path"]).is_file()
+    assert db.count_videos() == 0
+    after = tmp_path / "after-reset.mp4"
+    after.write_bytes(b"video")
+    assert db.add_video(after, "after", 1.0) > 0
+
+
 def test_workspace_delete_file_outside_output_is_forbidden(video_in_db, tmp_path):
     from shortsfarm.web import api
     segment_id = _make_segment(video_in_db, tmp_path, exists=True, under_output=False)

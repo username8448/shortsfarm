@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import sqlite3
 import subprocess
 from collections import Counter, OrderedDict
@@ -82,6 +83,7 @@ from .schemas import (
     ChannelProfileCreateRequest,
     ChannelProfileUpdateRequest,
     CatalogVideoTagsRequest,
+    DatabaseResetRequest,
     EditJobRenderRequest,
     EditJobReviewRequest,
     EditJobsBulkRenderRequest,
@@ -119,6 +121,7 @@ from .schemas import (
     SplitRequest,
     TagCreateRequest,
     TagUpdateRequest,
+    VideoBulkDeleteRequest,
     WorkspaceBulkDeleteRequest,
     WorkspaceBulkPrepareRequest,
     WorkspaceBulkStatusRequest,
@@ -137,6 +140,7 @@ from .schemas import (
 )
 
 router = APIRouter()
+DATABASE_RESET_CONFIRMATION = "УДАЛИТЬ БАЗУ"
 
 
 def _init() -> None:
@@ -1449,6 +1453,52 @@ def _workspace_settings_payload() -> dict[str, Any]:
     }
 
 
+def _sqlite_sidecar_paths(path: Path) -> list[Path]:
+    return [
+        path,
+        path.with_name(path.name + "-wal"),
+        path.with_name(path.name + "-shm"),
+    ]
+
+
+def _checkpoint_database(path: Path) -> None:
+    if not path.exists():
+        return
+    con: sqlite3.Connection | None = None
+    try:
+        con = sqlite3.connect(str(path))
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        if con is not None:
+            con.close()
+
+
+def _reset_database_file(*, create_backup: bool = True) -> dict[str, Any]:
+    ensure_dirs()
+    path = db_path()
+    backup_path: Path | None = None
+    if path.exists():
+        _checkpoint_database(path)
+        if create_backup:
+            backup_dir = data_dir() / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            backup_path = backup_dir / f"db-reset-{stamp}.sqlite"
+            shutil.copy2(path, backup_path)
+    removed_files: list[str] = []
+    for candidate in _sqlite_sidecar_paths(path):
+        if candidate.exists():
+            candidate.unlink()
+            removed_files.append(str(candidate))
+    db.init_db()
+    return {
+        "status": "ok",
+        "reset": True,
+        "backup_path": str(backup_path) if backup_path else None,
+        "removed_files": removed_files,
+    }
+
+
 @router.get("/settings/workspace")
 def workspace_settings_get() -> dict[str, Any]:
     try:
@@ -1489,6 +1539,18 @@ def workspace_settings_pick_directory() -> dict[str, Any]:
         raise _fail(exc, status_code=409)
     except PermissionError as exc:
         raise _fail(exc, status_code=403)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/settings/database/reset")
+def settings_database_reset(req: DatabaseResetRequest) -> dict[str, Any]:
+    try:
+        if (req.confirmation or "").strip() != DATABASE_RESET_CONFIRMATION:
+            raise ValueError(f"Для сброса базы введите: {DATABASE_RESET_CONFIRMATION}")
+        return _reset_database_file(create_backup=bool(req.create_backup))
+    except ValueError as exc:
+        raise _fail(exc, status_code=400)
     except Exception as exc:
         raise _fail(exc)
 
@@ -3335,6 +3397,80 @@ def videos() -> dict[str, Any]:
         _init()
         rows = [_video_dict(row) for row in db.list_videos_with_counts()]
         return {"videos": rows, "counts": dict(Counter(row["review_status"] for row in rows))}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+def _delete_source_files(source_paths: list[str]) -> dict[str, Any]:
+    summary = {
+        "deleted": 0,
+        "missing": 0,
+        "skipped": 0,
+        "errors": 0,
+    }
+    results: list[dict[str, Any]] = []
+    for raw_path in sorted({str(path) for path in source_paths if path}):
+        result = {
+            "path": raw_path,
+            "deleted": False,
+            "missing": False,
+            "skipped": False,
+            "error": None,
+        }
+        try:
+            path = Path(raw_path).expanduser()
+            if not path.exists() and not path.is_symlink():
+                result["missing"] = True
+                summary["missing"] += 1
+            elif path.is_dir():
+                result["skipped"] = True
+                result["error"] = "Это папка, а не файл."
+                summary["skipped"] += 1
+            elif not path.is_file() and not path.is_symlink():
+                result["skipped"] = True
+                result["error"] = "Удалять можно только обычные файлы или symlink-файлы."
+                summary["skipped"] += 1
+            else:
+                path.unlink()
+                result["deleted"] = True
+                summary["deleted"] += 1
+        except Exception as exc:
+            result["error"] = str(exc) or exc.__class__.__name__
+            summary["errors"] += 1
+        results.append(result)
+    return {"summary": summary, "results": results}
+
+
+@router.post("/videos/bulk-delete")
+def videos_bulk_delete(req: VideoBulkDeleteRequest) -> dict[str, Any]:
+    try:
+        _init()
+        video_ids = [int(value) for value in req.video_ids]
+        if not video_ids:
+            raise ValueError("Выберите хотя бы одно видео для удаления.")
+        result = db.delete_videos(video_ids)
+        source_files = (
+            _delete_source_files(result.get("source_paths") or [])
+            if req.delete_source_files
+            else {"summary": {"deleted": 0, "missing": 0, "skipped": 0, "errors": 0}, "results": []}
+        )
+        rows = [_video_dict(row) for row in db.list_videos_with_counts()]
+        return {
+            "status": "ok",
+            "summary": {
+                "requested": result["requested"],
+                "deleted": result["deleted"],
+                "missing": len(result["missing_ids"]),
+                "delete_source_files": bool(req.delete_source_files),
+                "source_files": source_files["summary"],
+            },
+            "result": result,
+            "source_file_results": source_files["results"],
+            "videos": rows,
+            "counts": dict(Counter(row["review_status"] for row in rows)),
+        }
+    except ValueError as exc:
+        raise _fail(exc, status_code=400)
     except Exception as exc:
         raise _fail(exc)
 

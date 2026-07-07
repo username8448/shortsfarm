@@ -41,6 +41,8 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "035_add_storage_profile_auto_import" in versions
     assert "036_create_storage_profile_youtube_sync" in versions
     assert "037_create_tag_catalog" in versions
+    assert "038_create_shorts_pipeline" in versions
+    assert "039_remotion_auto_retry" in versions
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -366,6 +368,24 @@ def test_studio_render_progress_schema_exists(tmp_data_dir):
     } <= job_columns
 
 
+def test_remotion_auto_retry_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    db.init_db()
+    with db.connect() as con:
+        job_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(remotion_render_jobs)")
+        }
+        indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(remotion_render_jobs)")
+        }
+
+    assert {"auto_retry_count", "max_auto_retries"} <= job_columns
+    assert "idx_remotion_render_jobs_auto_retry" in indexes
+
+
 def test_video_segments_schema_exists(tmp_data_dir):
     from shortsfarm import db
 
@@ -511,6 +531,37 @@ def test_local_storage_profiles_schema_exists(tmp_data_dir):
     assert "idx_workspace_tag_links_item_tag" in workspace_tag_indexes
     assert "idx_local_storage_profile_tag_rules_profile" in profile_tag_rule_indexes
     assert {"status-draft", "status-ready", "status-queued", "status-uploaded", "status-failed"} <= status_tags
+
+
+def test_shorts_pipeline_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    db.init_db()
+    with db.connect() as con:
+        con.execute("SELECT * FROM shorts_pipeline_runs LIMIT 0")
+        con.execute("SELECT * FROM shorts_pipeline_run_items LIMIT 0")
+        run_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(shorts_pipeline_runs)")
+        }
+        item_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(shorts_pipeline_run_items)")
+        }
+        indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(shorts_pipeline_runs)")
+        }
+
+    assert {
+        "status", "source_mode", "split_seconds", "studio_template_id",
+        "tag_ids_json", "channel_tag_id", "remotion_batch_id",
+    } <= run_columns
+    assert {
+        "run_id", "source_workspace_path", "segment_workspace_path",
+        "render_job_id", "output_workspace_path", "status",
+    } <= item_columns
+    assert "idx_shorts_pipeline_runs_one_active" in indexes
 
 
 def test_idempotent(tmp_data_dir):

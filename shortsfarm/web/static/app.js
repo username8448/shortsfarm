@@ -234,7 +234,8 @@ function videoLightboxUrl(path, mode = 'viewer') {
 }
 function ensureVideoLightbox() {
   let box = document.getElementById('video-lightbox');
-  if (box) return box;
+  if (box && document.getElementById('video-lightbox-frame')) return box;
+  if (box) box.remove();
   box = document.createElement('div');
   box.id = 'video-lightbox';
   box.className = 'video-lightbox';
@@ -306,6 +307,10 @@ function stopVideoLightboxPlayback(frame) {
     frame.src = 'about:blank';
     frame.removeAttribute('src');
     const replacement = frame.cloneNode(false);
+    replacement.id = 'video-lightbox-frame';
+    replacement.title = 'ShortsFarm video player';
+    replacement.loading = 'lazy';
+    replacement.setAttribute('allow', 'fullscreen; picture-in-picture');
     replacement.src = 'about:blank';
     frame.replaceWith(replacement);
   } catch (_) {
@@ -454,6 +459,8 @@ let splitMode = 'file';
 const skipList = [];
 let lastJobs = [];
 let lastVideos = [];
+let selectedVideoIds = new Set();
+let videoFilter = 'all';
 let lastClips = [];
 let workspaceFilter = 'all';
 let workspaceSearchQuery = '';
@@ -514,6 +521,15 @@ let tagManagerTagQuery = '';
 let storageYoutubeAccounts = [];
 let storageCandidatePickerOpen = false;
 let integrationsSearchQuery = '';
+let pipelineSources = [];
+let pipelineTemplates = [];
+let pipelineReactions = [];
+let pipelineReactionPools = [];
+let pipelineRenderProfiles = [];
+let pipelineRuns = [];
+let pipelineHealth = null;
+let pipelineActiveRunId = null;
+let pipelinePollTimer = null;
 const workspaceYoutubeState = {
   selectedAccountId: null,
   busy: false,
@@ -565,6 +581,7 @@ function nav(id, btn) {
   activateView(id, btn);
   if (id === 'dashboard') loadDashboard();
   if (id === 'files') loadManagedFiles();
+  if (id === 'pipeline') loadPipelineView();
   if (id === 'split' && !fsState.currentPath) initFsBrowser();
   if (id === 'queue') loadJobs();
   if (id === 'videos') loadVideos();
@@ -577,6 +594,444 @@ function nav(id, btn) {
   if (id === 'integrations') loadIntegrationsView();
   if (id === 'editing') loadEditingView();
   if (id === 'settings') loadSettingsView();
+}
+
+function pipelineWorkspaceSourceItems() {
+  const sections = pipelineSources?.sections || [];
+  const sourceSection = sections.find(section => section.key === 'sources') || {};
+  return sourceSection.items || [];
+}
+function pipelineSourceOptions() {
+  const items = pipelineWorkspaceSourceItems();
+  if (!items.length) return '<option value="">Нет видео в sources/</option>';
+  return items.map(item => {
+    const title = item.name || item.workspace_path;
+    return `<option value="${esc(item.workspace_path)}">${esc(workspaceDisplayPath(item.workspace_path))} · ${esc(title)}</option>`;
+  }).join('');
+}
+function pipelineTemplateOptions() {
+  const active = (pipelineTemplates || []).filter(item => (item.status || 'active') === 'active');
+  const items = active.length ? active : pipelineTemplates;
+  if (!items.length) return '<option value="">Нет Studio templates</option>';
+  return items.map(item => `<option value="${Number(item.id)}">${esc(item.name || item.key)} · ${esc(item.key || '')}</option>`).join('');
+}
+function pipelineReactionOptions() {
+  if (!pipelineReactions.length) return '<option value="">Нет reaction assets</option>';
+  return pipelineReactions.map(item => `<option value="${Number(item.id)}">${esc(item.name || `Reaction #${item.id}`)}${item.available === false ? ' · недоступно' : ''}</option>`).join('');
+}
+function pipelinePoolOptions() {
+  if (!pipelineReactionPools.length) return '<option value="">Нет пулов реакций</option>';
+  return pipelineReactionPools.map(item => `<option value="${Number(item.id)}">${esc(item.name || `Pool #${item.id}`)} · ${Number((item.items || []).length)} файлов</option>`).join('');
+}
+function pipelineRenderProfileOptions() {
+  return (pipelineRenderProfiles || []).map(item => `<option value="${esc(item.key)}">${esc(item.label || item.key)}</option>`).join('');
+}
+function pipelineTagOptions(kind) {
+  const tags = (catalogTags || []).filter(tag => tag.enabled !== false && tag.kind === kind);
+  return tags.map(tag => `<option value="${Number(tag.id)}">${esc(tag.name)} · ${esc(tag.slug || '')}</option>`).join('');
+}
+function renderPipelineForm() {
+  const el = document.getElementById('pipeline-form');
+  if (!el) return;
+  el.innerHTML = `<div class="pipeline-form">
+    <section class="pipeline-step">
+      <div class="pipeline-step-num">1</div>
+      <div class="pipeline-step-body">
+        <h3>Источник</h3>
+        <div class="g2 compact-grid">
+          <div class="field">
+            <label class="field-lbl">Режим источника</label>
+            <select id="pipeline-source-mode" onchange="renderPipelineSourceMode()">
+              <option value="workspace">Выбрать из workspace sources/</option>
+              <option value="external_file">Импортировать внешний файл</option>
+            </select>
+          </div>
+          <div class="field" id="pipeline-external-source-field" style="display:none">
+            <label class="field-lbl">Внешний video-файл</label>
+            <div class="path-pick-row">
+              <input id="pipeline-source-path" type="text" placeholder="/home/user/video.mp4">
+              <button class="btn-secondary" id="pipeline-source-pick-btn" onclick="pickPipelineExternalFile()">Выбрать…</button>
+            </div>
+          </div>
+        </div>
+        <div class="field" id="pipeline-workspace-source-field">
+          <label class="field-lbl">Видео из sources/</label>
+          <select id="pipeline-source-paths" multiple size="7">${pipelineSourceOptions()}</select>
+          <div class="mono dim">Можно выбрать несколько исходников. Если файла нет — импортируйте его через внешний файл или вкладку «Файлы».</div>
+        </div>
+      </div>
+    </section>
+    <section class="pipeline-step">
+      <div class="pipeline-step-num">2</div>
+      <div class="pipeline-step-body">
+        <h3>Нарезка</h3>
+        <div class="g2 compact-grid">
+          <div class="field"><label class="field-lbl">Длина сегмента, сек</label><input id="pipeline-split-seconds" type="number" min="1" value="60"></div>
+          <div class="field"><label class="field-lbl">Диапазоны пропуска</label><input id="pipeline-skip" type="text" placeholder="00:01:30-00:05:00, start-00:00:10"></div>
+        </div>
+        <label class="toggle-label"><input id="pipeline-overwrite" type="checkbox"> Перезаписать существующую нарезку этого запуска</label>
+      </div>
+    </section>
+    <section class="pipeline-step">
+      <div class="pipeline-step-num">3</div>
+      <div class="pipeline-step-body">
+        <h3>Studio/Remotion шаблон</h3>
+        <div class="g2 compact-grid">
+          <div class="field"><label class="field-lbl">Шаблон</label><select id="pipeline-template">${pipelineTemplateOptions()}</select></div>
+          <div class="field"><label class="field-lbl">Render profile</label><select id="pipeline-render-profile">${pipelineRenderProfileOptions()}</select></div>
+          <div class="field"><label class="field-lbl">Reaction strategy</label><select id="pipeline-reaction-strategy" onchange="renderPipelineReactionMode()"><option value="fixed_asset">Конкретная реакция</option><option value="pool_first">Первый файл из пула</option><option value="pool_weighted">Случайно по весам из пула</option></select></div>
+          <div class="field pipeline-reaction-asset-field"><label class="field-lbl">Reaction asset</label><select id="pipeline-reaction-asset">${pipelineReactionOptions()}</select></div>
+          <div class="field pipeline-reaction-pool-field" style="display:none"><label class="field-lbl">Reaction pool</label><select id="pipeline-reaction-pool">${pipelinePoolOptions()}</select></div>
+          <div class="field"><label class="field-lbl">Ограничение render, сек</label><input id="pipeline-duration-limit" type="number" min="1" placeholder="из render profile"></div>
+        </div>
+        <label class="toggle-label"><input id="pipeline-full-length" type="checkbox"> Рендерить полную длину сегмента</label>
+      </div>
+    </section>
+    <section class="pipeline-step">
+      <div class="pipeline-step-num">4</div>
+      <div class="pipeline-step-body">
+        <h3>Теги и профиль</h3>
+        <div class="g2 compact-grid">
+          <div class="field"><label class="field-lbl">Глобальные теги</label><select id="pipeline-tags" multiple size="6">${pipelineTagOptions('user')}</select></div>
+          <div class="field"><label class="field-lbl">Channel-тег</label><select id="pipeline-channel-tag"><option value="">Без автодобавления в профиль</option>${pipelineTagOptions('channel')}</select><div class="mono dim">Если выбран channel-тег, готовые видео попадут в профили через правила тегов.</div></div>
+        </div>
+      </div>
+    </section>
+    <div class="action-row pipeline-actions">
+      <button class="btn-secondary" onclick="planShortsPipeline()">План</button>
+      <button class="btn-primary" onclick="runShortsPipeline()">Запустить цикл</button>
+    </div>
+  </div>`;
+  renderPipelineSourceMode();
+  renderPipelineReactionMode();
+}
+function renderPipelineSourceMode() {
+  const mode = document.getElementById('pipeline-source-mode')?.value || 'workspace';
+  const external = document.getElementById('pipeline-external-source-field');
+  const workspace = document.getElementById('pipeline-workspace-source-field');
+  if (external) external.style.display = mode === 'external_file' ? '' : 'none';
+  if (workspace) workspace.style.display = mode === 'workspace' ? '' : 'none';
+}
+function renderPipelineReactionMode() {
+  const strategy = document.getElementById('pipeline-reaction-strategy')?.value || 'fixed_asset';
+  document.querySelectorAll('.pipeline-reaction-asset-field').forEach(el => el.style.display = strategy === 'fixed_asset' ? '' : 'none');
+  document.querySelectorAll('.pipeline-reaction-pool-field').forEach(el => el.style.display = strategy === 'fixed_asset' ? 'none' : '');
+}
+async function loadPipelineView(options = {}) {
+  const {silent = false} = options;
+  if (!silent) hideInlineError('pipeline-error');
+  try {
+    const [sourcesData, templatesData, reactionsData, poolsData, profilesData, _tagsData, runsData, healthData] = await Promise.all([
+      api.get('/api/studio/apply/sources'),
+      api.get('/api/studio/templates'),
+      api.get('/api/studio/reactions'),
+      api.get('/api/studio/reaction-pools'),
+      api.get('/api/studio/render-profiles'),
+      loadCatalogTags({force: true}).then(() => ({items: catalogTags})),
+      api.get('/api/shorts-pipeline/runs'),
+      api.get('/api/shorts-pipeline/health'),
+    ]);
+    pipelineSources = sourcesData || {sections: []};
+    pipelineTemplates = templatesData.items || [];
+    pipelineReactions = reactionsData.items || [];
+    pipelineReactionPools = poolsData.items || [];
+    pipelineRenderProfiles = profilesData.profiles || [];
+    pipelineRuns = runsData.items || [];
+    pipelineHealth = healthData || null;
+    renderPipelineForm();
+    renderPipelineHealth('pipeline-health');
+    renderPipelineRuns();
+    startPipelinePollingIfNeeded();
+  } catch (err) {
+    if (!silent) showInlineError('pipeline-error', err.message || 'Не удалось загрузить конвейер');
+  }
+}
+async function pickPipelineExternalFile() {
+  const path = await pickLocalPath({
+    kind: 'file',
+    title: 'Выберите исходное видео для конвейера',
+    buttonId: 'pipeline-source-pick-btn',
+    errorId: 'pipeline-error',
+  });
+  if (path) document.getElementById('pipeline-source-path').value = path;
+}
+function selectedOptionsValues(id) {
+  return Array.from(document.getElementById(id)?.selectedOptions || []).map(option => option.value).filter(Boolean);
+}
+function pipelineSkipValues() {
+  const raw = document.getElementById('pipeline-skip')?.value || '';
+  return raw.split(',').map(item => item.trim()).filter(Boolean);
+}
+function pipelineRequestBody() {
+  const sourceMode = document.getElementById('pipeline-source-mode')?.value || 'workspace';
+  const strategy = document.getElementById('pipeline-reaction-strategy')?.value || 'fixed_asset';
+  const durationText = document.getElementById('pipeline-duration-limit')?.value || '';
+  return {
+    source_mode: sourceMode,
+    source_path: sourceMode === 'external_file' ? (document.getElementById('pipeline-source-path')?.value || '') : null,
+    source_paths: sourceMode === 'workspace' ? selectedOptionsValues('pipeline-source-paths') : [],
+    split_seconds: Number(document.getElementById('pipeline-split-seconds')?.value || 60),
+    skip: pipelineSkipValues(),
+    overwrite: Boolean(document.getElementById('pipeline-overwrite')?.checked),
+    studio_template_id: Number(document.getElementById('pipeline-template')?.value || 0),
+    reaction_strategy: strategy,
+    reaction_asset_id: strategy === 'fixed_asset' ? Number(document.getElementById('pipeline-reaction-asset')?.value || 0) || null : null,
+    reaction_pool_id: strategy === 'fixed_asset' ? null : Number(document.getElementById('pipeline-reaction-pool')?.value || 0) || null,
+    parameter_values: {},
+    renderer_engine: 'ffmpeg_fast',
+    render_profile: document.getElementById('pipeline-render-profile')?.value || 'low_540p',
+    duration_limit_sec: durationText ? Number(durationText) : null,
+    full_length: Boolean(document.getElementById('pipeline-full-length')?.checked),
+    tag_ids: selectedOptionsValues('pipeline-tags').map(Number),
+    channel_tag_id: Number(document.getElementById('pipeline-channel-tag')?.value || 0) || null,
+  };
+}
+function renderPipelinePlan(data) {
+  const el = document.getElementById('pipeline-plan');
+  if (!el) return;
+  const plan = data?.plan || {};
+  const sources = plan.sources || [];
+  el.innerHTML = `<div class="pipeline-plan-card">
+    <div class="result-ok" style="display:flex"><i class="ti ti-circle-check"></i><div><div class="t">План готов</div><div class="s">${Number(plan.source_count || 0)} исходников · ${Number(plan.segments_count || 0)} сегментов · ${esc(plan.template?.name || 'template')}</div></div></div>
+    <div class="pipeline-plan-list">${sources.map(source => `<div class="pipeline-plan-row"><b>${esc(source.workspace_path || shortPath(source.source_path || ''))}</b><span>${Number(source.segments_count || 0)} сегментов · ${esc(formatDurationSec(source.duration_sec))}</span></div>`).join('')}</div>
+    <div class="mono dim">${plan.will_sync_profiles ? 'После render будет запущено добавление в профили по channel-тегу.' : 'Channel-тег не выбран: автодобавления в профиль не будет.'}</div>
+  </div>`;
+}
+async function planShortsPipeline() {
+  hideInlineError('pipeline-error');
+  try {
+    const data = await api.post('/api/shorts-pipeline/plan', pipelineRequestBody());
+    renderPipelinePlan(data);
+  } catch (err) {
+    showInlineError('pipeline-error', err.message || 'Не удалось построить план');
+  }
+}
+async function runShortsPipeline() {
+  hideInlineError('pipeline-error');
+  try {
+    const data = await api.post('/api/shorts-pipeline/runs', pipelineRequestBody());
+    const run = data.run;
+    pipelineActiveRunId = run?.id || null;
+    pipelineRuns = [run, ...pipelineRuns.filter(item => Number(item.id) !== Number(run.id))];
+    await refreshPipelineHealth({silent: true});
+    renderPipelineRuns();
+    startPipelinePollingIfNeeded(true);
+    showToast(`Конвейер запущен #${run.id}`);
+  } catch (err) {
+    showInlineError('pipeline-error', err.message || 'Не удалось запустить конвейер');
+  }
+}
+function pipelineHealthClass(level) {
+  if (level === 'error') return 'is-error';
+  if (level === 'warn') return 'is-warn';
+  if (level === 'ok') return 'is-ok';
+  return 'is-info';
+}
+function pipelineHealthCheckIcon(ok) {
+  return ok ? '<i class="ti ti-circle-check"></i>' : '<i class="ti ti-alert-triangle"></i>';
+}
+function pipelineHealthActionButtons(run) {
+  if (!run || !['queued', 'splitting', 'rendering', 'syncing_profile'].includes(run.status)) return '';
+  const batchProgress = run.batch?.progress || {};
+  const failed = Number(batchProgress.failed || 0);
+  return `<div class="pipeline-health-actions">
+    <button class="btn-mini" onclick="continueShortsPipelineRun(${Number(run.id)})">Продолжить очередь</button>
+    <button class="btn-mini" onclick="repairShortsPipelineRun(${Number(run.id)})">Починить зависший запуск</button>
+    ${failed ? `<button class="btn-mini" onclick="retryFailedShortsPipelineRun(${Number(run.id)})">Повторить failed (${failed})</button>` : ''}
+    <button class="btn-mini" onclick="finishShortsPipelineWithErrors(${Number(run.id)})">Завершить с ошибками</button>
+  </div>`;
+}
+function renderPipelineHealth(targetId = 'pipeline-health') {
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  const health = pipelineHealth || {};
+  const queue = health.queue || {};
+  const preflight = health.preflight || {checks: []};
+  const notes = health.notes || [];
+  const run = health.run || null;
+  const checks = preflight.checks || [];
+  if (!health.queue && !run && !checks.length) {
+    el.innerHTML = '<div class="empty compact">Диагностика конвейера пока не загружена.</div>';
+    return;
+  }
+  const batchProgress = run?.batch?.progress || {};
+  const queueStatus = queue.status || 'idle';
+  el.innerHTML = `<div class="pipeline-health-card ${health.ok ? 'is-ok' : 'is-warn'}">
+    <div class="pipeline-health-head">
+      <div>
+        <div class="field-lbl">Здоровье конвейера</div>
+        <div class="mono txt">${run ? `Запуск #${Number(run.id)} · ${esc(pipelineRunStageText(run))}` : 'Активного запуска нет'}</div>
+      </div>
+      <span class="pill ${health.ok ? 'ok' : 'warn'}">${health.ok ? 'OK' : 'Проверить'}</span>
+    </div>
+    <div class="pipeline-health-metrics">
+      <div><b>${esc(queueStatus)}</b><span>render queue</span></div>
+      <div><b>${Number(queue.queued_count || 0)}</b><span>queued</span></div>
+      <div><b>${Number(queue.rendering_count || 0)}</b><span>rendering</span></div>
+      <div><b>${Number(queue.failed_count || 0)}</b><span>failed всего</span></div>
+      <div><b>${Number(batchProgress.done || 0)}/${Number(batchProgress.total || 0)}</b><span>batch done</span></div>
+    </div>
+    ${notes.length ? `<div class="pipeline-health-notes">${notes.map(note => `<div class="pipeline-health-note ${pipelineHealthClass(note.level)}">${esc(note.message || '')}</div>`).join('')}</div>` : ''}
+    <details class="pipeline-preflight">
+      <summary>Preflight проверки</summary>
+      <div class="pipeline-check-grid">${checks.map(item => `<div class="pipeline-check ${item.ok ? 'is-ok' : 'is-error'}">${pipelineHealthCheckIcon(item.ok)}<div><b>${esc(item.label || item.key)}</b><span>${esc(item.message || '')}</span>${item.value ? `<small class="mono dim">${esc(item.value)}</small>` : ''}</div></div>`).join('')}</div>
+    </details>
+    ${pipelineHealthActionButtons(run)}
+  </div>`;
+}
+async function refreshPipelineHealth(options = {}) {
+  const {silent = false} = options;
+  try {
+    pipelineHealth = await api.get('/api/shorts-pipeline/health');
+    renderPipelineHealth('pipeline-health');
+    renderPipelineHealth('queue-pipeline-health');
+    if (pipelineHealth?.run) {
+      const run = pipelineHealth.run;
+      pipelineRuns = [run, ...pipelineRuns.filter(item => Number(item.id) !== Number(run.id))];
+    }
+    return pipelineHealth;
+  } catch (err) {
+    if (!silent) showToast(err.message || 'Не удалось обновить диагностику конвейера', 'err');
+    return null;
+  }
+}
+function pipelineRunProgress(run) {
+  const batchProgress = run?.batch?.progress;
+  if (run.status === 'done' || run.status === 'failed' || run.status === 'cancelled') return 100;
+  if (run.status === 'queued') return 5;
+  if (run.status === 'splitting') return 20;
+  if (run.status === 'rendering') {
+    const renderPercent = batchProgress ? Number(batchProgress.percent || 0) : 0;
+    return Math.min(94, Math.round(25 + renderPercent * 0.65));
+  }
+  if (run.status === 'syncing_profile') return 95;
+  return 5;
+}
+function pipelineRunStageText(run) {
+  const progress = run?.batch?.progress;
+  const summary = run?.summary || {};
+  if (run.status === 'queued') return 'Ожидает запуска';
+  if (run.status === 'splitting') return 'Нарезка исходников';
+  if (run.status === 'rendering') return progress?.message || 'Монтаж / Remotion render';
+  if (run.status === 'syncing_profile') return 'Синхронизация с профилями по тегам';
+  if (run.status === 'done' && (Number(summary.failed || 0) > 0 || run.error)) return 'Готово с ошибками';
+  if (run.status === 'done') return 'Готово';
+  if (run.status === 'failed') return 'Ошибка';
+  if (run.status === 'cancelled') return 'Отменено';
+  return ruStatus(run.status);
+}
+function pipelineRunCard(run) {
+  const progress = pipelineRunProgress(run);
+  const active = ['queued', 'splitting', 'rendering', 'syncing_profile'].includes(run.status);
+  const summary = run.summary || {};
+  const outputs = (run.items || []).filter(item => item.output_workspace_path);
+  return `<article class="pipeline-run-card">
+    <div class="pipeline-run-head">
+      <div><b>Конвейер #${Number(run.id)}</b><div class="mono dim">${esc(run.template_key || '')} · ${esc(run.render_profile || '')}</div></div>
+      ${badge(run.status)}
+    </div>
+    <progress value="${progress}" max="100"></progress>
+    <div class="pbar-row"><span class="mono dim">${esc(pipelineRunStageText(run))}</span><span class="mono dim">${progress}%</span></div>
+    <div class="mono dim">${Number(summary.sources || 0)} исходников · ${Number(summary.segments || 0)} сегментов · ${Number(summary.render_jobs || 0)} render jobs${summary.profile_sync ? ` · профили: ${Number(summary.profile_sync.added || 0)} видео` : ''}</div>
+    ${run.error ? `<div class="err-line">${esc(shortErrorText(run.error))}</div>` : ''}
+    ${outputs.length ? `<div class="pipeline-output-list">${outputs.slice(0, 6).map(item => `<button class="link-video mono" data-path="${esc(item.output_workspace_path)}" onclick="openWebPlayer(this.dataset.path)">${esc(workspaceDisplayPath(item.output_workspace_path))}</button>`).join('')}</div>` : ''}
+    <div class="row-actions">
+      ${run.remotion_batch_id ? `<button class="btn-mini" onclick="openPipelineBatch(${Number(run.remotion_batch_id)})">Открыть batch</button>` : ''}
+      ${active ? `<button class="btn-danger" onclick="cancelShortsPipelineRun(${Number(run.id)})">Отменить</button>` : ''}
+    </div>
+  </article>`;
+}
+function renderPipelineRuns() {
+  const el = document.getElementById('pipeline-runs');
+  if (!el) return;
+  if (!pipelineRuns.length) {
+    el.innerHTML = '<div class="empty compact">Запусков конвейера пока нет.</div>';
+    return;
+  }
+  el.innerHTML = `<div class="pipeline-runs-list">${pipelineRuns.map(pipelineRunCard).join('')}</div>`;
+}
+async function refreshPipelineRuns() {
+  if (currentView !== 'pipeline') return;
+  try {
+    const [data, healthData] = await Promise.all([
+      api.get('/api/shorts-pipeline/runs'),
+      api.get('/api/shorts-pipeline/health'),
+    ]);
+    pipelineRuns = data.items || [];
+    pipelineHealth = healthData || null;
+    const active = pipelineRuns.find(run => ['queued', 'splitting', 'rendering', 'syncing_profile'].includes(run.status));
+    pipelineActiveRunId = active?.id || null;
+    renderPipelineHealth('pipeline-health');
+    renderPipelineRuns();
+    startPipelinePollingIfNeeded();
+  } catch (err) {
+    showInlineError('pipeline-error', err.message || 'Не удалось обновить конвейер');
+  }
+}
+function startPipelinePollingIfNeeded(force = false) {
+  const hasActive = pipelineRuns.some(run => ['queued', 'splitting', 'rendering', 'syncing_profile'].includes(run.status));
+  if (!hasActive && !force) {
+    if (pipelinePollTimer) window.clearInterval(pipelinePollTimer);
+    pipelinePollTimer = null;
+    return;
+  }
+  if (pipelinePollTimer) return;
+  pipelinePollTimer = window.setInterval(() => {
+    if (currentView !== 'pipeline') return;
+    refreshPipelineRuns();
+  }, 2000);
+}
+async function cancelShortsPipelineRun(runId) {
+  if (!confirm(`Отменить запуск конвейера #${runId}?`)) return;
+  try {
+    const data = await api.post(`/api/shorts-pipeline/runs/${Number(runId)}/cancel`, {});
+    pipelineRuns = [data.run, ...pipelineRuns.filter(item => Number(item.id) !== Number(runId))];
+    await refreshPipelineHealth({silent: true});
+    renderPipelineRuns();
+    renderQueuePipelineRuns(pipelineRuns);
+  } catch (err) {
+    const message = err.message || 'Не удалось отменить конвейер';
+    if (document.getElementById('pipeline-error')) showInlineError('pipeline-error', message);
+    else showToast(message, 'err');
+  }
+}
+async function pipelineRunOperatorAction(runId, action, label, options = {}) {
+  if (options.confirmText && !confirm(options.confirmText)) return;
+  try {
+    const data = await api.post(`/api/shorts-pipeline/runs/${Number(runId)}/${action}`, {});
+    if (data.run) {
+      pipelineRuns = [data.run, ...pipelineRuns.filter(item => Number(item.id) !== Number(runId))];
+    }
+    if (data.health) pipelineHealth = data.health;
+    await refreshPipelineHealth({silent: true});
+    renderPipelineRuns();
+    renderQueuePipelineRuns(pipelineRuns);
+    showToast(label);
+  } catch (err) {
+    const message = err.message || `Не удалось выполнить действие: ${label}`;
+    if (document.getElementById('pipeline-error')) showInlineError('pipeline-error', message);
+    showToast(message, 'err');
+  }
+}
+function continueShortsPipelineRun(runId) {
+  pipelineRunOperatorAction(runId, 'continue', 'Очередь конвейера продолжена');
+}
+function repairShortsPipelineRun(runId) {
+  pipelineRunOperatorAction(runId, 'repair', 'Проверка и repair конвейера выполнены');
+}
+function retryFailedShortsPipelineRun(runId) {
+  pipelineRunOperatorAction(runId, 'retry-failed', 'Failed render jobs возвращены в очередь');
+}
+function finishShortsPipelineWithErrors(runId) {
+  pipelineRunOperatorAction(runId, 'finish-with-errors', 'Конвейер завершён с ошибками', {
+    confirmText: `Завершить конвейер #${runId} с ошибками? Оставшиеся queued jobs будут отменены.`,
+  });
+}
+function openPipelineBatch(batchId) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('batch', String(batchId));
+  window.history.replaceState({}, '', url);
+  nav('studio', document.querySelector('[data-v="studio"]'));
 }
 
 function openWorkspaceSettings() {
@@ -829,26 +1284,30 @@ async function openManagedFileInStudio(path) {
 
 async function loadDashboard() {
   try {
-    const data = await api.get('/api/status');
+    const [data, pipelineData] = await Promise.all([
+      api.get('/api/status'),
+      api.get('/api/shorts-pipeline/runs'),
+    ]);
     const jobs = data.jobs || {};
     const clips = data.clips || {};
     const videos = data.videos_by_status || {};
     const runningJobs = jobs.running || 0;
     const queuedJobs = jobs.queued || 0;
+    const activePipelineRuns = (pipelineData.items || []).filter(run => ['queued', 'splitting', 'rendering', 'syncing_profile'].includes(run.status)).length;
     const queuedClips = clips.queued || 0;
     const failedClips = clips.failed || 0;
 
     document.getElementById('st-videos').textContent = fmtNum(data.videos_total);
     document.getElementById('st-segments').textContent = fmtNum(data.segments_total);
-    document.getElementById('st-jobs').textContent = fmtNum(runningJobs + queuedJobs);
+    document.getElementById('st-jobs').textContent = fmtNum(runningJobs + queuedJobs + activePipelineRuns);
     document.getElementById('st-clips').textContent = fmtNum(queuedClips);
     document.getElementById('st-videos-sub').textContent = `${videos.inbox||0} входящие · ${videos.reviewed||0} просмотрено`;
-    document.getElementById('st-jobs-sub').textContent = `${runningJobs} в работе · ${queuedJobs} в очереди`;
+    document.getElementById('st-jobs-sub').textContent = `${runningJobs} split в работе · ${queuedJobs} split в очереди · ${activePipelineRuns} конвейер`;
     document.getElementById('st-clips-sub').textContent = `${clips.done||0} готово · ${failedClips} ошибок`;
-    document.getElementById('nav-jobs').textContent = runningJobs + queuedJobs || '';
+    document.getElementById('nav-jobs').textContent = runningJobs + queuedJobs + activePipelineRuns || '';
     document.getElementById('nav-videos').textContent = data.videos_total || '';
     document.getElementById('nav-clips').textContent = queuedClips || '';
-    document.getElementById('job-pulse').classList.toggle('pulse', runningJobs > 0);
+    document.getElementById('job-pulse').classList.toggle('pulse', runningJobs > 0 || activePipelineRuns > 0);
 
     renderRunningBanner(data.latest_jobs || []);
     renderJobsTable('dash-jobs', data.latest_jobs || [], false);
@@ -1268,13 +1727,31 @@ function renderSplitResult(data) {
 
 async function loadJobs() {
   try {
-    const data = await api.get('/api/jobs');
+    const [data, pipelineData, healthData] = await Promise.all([
+      api.get('/api/jobs'),
+      api.get('/api/shorts-pipeline/runs'),
+      api.get('/api/shorts-pipeline/health'),
+    ]);
     lastJobs = data.jobs || [];
+    pipelineRuns = pipelineData.items || [];
+    pipelineHealth = healthData || null;
+    renderPipelineHealth('queue-pipeline-health');
+    renderQueuePipelineRuns(pipelineRuns);
     renderJobCounts(data.counts || {});
     renderJobsTable('jobs-table', lastJobs, true);
   } catch (err) {
     showError('jobs-table', err);
   }
+}
+function renderQueuePipelineRuns(runs) {
+  const el = document.getElementById('queue-pipeline-runs');
+  if (!el) return;
+  const items = runs || [];
+  if (!items.length) {
+    el.innerHTML = '<div class="empty compact">Запусков конвейера пока нет. Запустите цикл в разделе «Конвейер».</div>';
+    return;
+  }
+  el.innerHTML = `<div class="pipeline-runs-list">${items.slice(0, 8).map(pipelineRunCard).join('')}</div>`;
 }
 function renderJobCounts(counts) {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
@@ -1308,8 +1785,9 @@ async function loadVideos() {
   try {
     const data = await api.get('/api/videos');
     lastVideos = data.videos || [];
+    selectedVideoIds = new Set(Array.from(selectedVideoIds).filter(id => lastVideos.some(video => Number(video.id) === Number(id))));
     renderVideoCounts(data.counts || {});
-    renderVideosTable(lastVideos);
+    renderVideosTable(getVisibleVideos());
   } catch (err) {
     showError('videos-table', err);
   }
@@ -1324,16 +1802,108 @@ function renderVideoCounts(counts) {
 function filterVideos(tab, status) {
   tab.closest('.tabs').querySelectorAll('.tab').forEach(item => item.classList.remove('on'));
   tab.classList.add('on');
-  renderVideosTable(status === 'all' ? lastVideos : lastVideos.filter(video => video.review_status === status));
+  videoFilter = status || 'all';
+  renderVideosTable(getVisibleVideos());
+}
+function getVisibleVideos() {
+  return videoFilter === 'all'
+    ? lastVideos
+    : lastVideos.filter(video => video.review_status === videoFilter);
+}
+function selectedVideos() {
+  return lastVideos.filter(video => selectedVideoIds.has(Number(video.id)));
+}
+function renderVideosBulkToolbar() {
+  const el = document.getElementById('videos-bulk-toolbar');
+  if (!el) return;
+  const visibleRows = getVisibleVideos();
+  const selectedCount = selectedVideos().length;
+  el.innerHTML = `
+    <div class="row-actions">
+      <button class="btn-mini" ${visibleRows.length ? '' : 'disabled'} onclick="setVisibleVideosSelected(true)">Выбрать в фильтре</button>
+      <button class="btn-mini" ${selectedCount ? '' : 'disabled'} onclick="clearVideoSelection()">Снять выделение</button>
+      <label class="check-row compact-check">
+        <input id="videos-delete-source-files" type="checkbox">
+        <span>Удалить исходные файлы с диска</span>
+      </label>
+    </div>
+    <div class="row-actions">
+      <span class="mono dim">${selectedCount ? `Выбрано видео: ${selectedCount}` : 'Выберите одно или несколько видео'}</span>
+      <button class="btn-danger" ${selectedCount ? '' : 'disabled'} onclick="deleteSelectedVideos()">Удалить выбранные</button>
+    </div>`;
+  syncVideosSelectAllCheckbox();
+}
+function syncVideosSelectAllCheckbox() {
+  const selectAll = document.getElementById('videos-select-all');
+  if (!selectAll) return;
+  const visibleRows = getVisibleVideos();
+  selectAll.checked = Boolean(visibleRows.length && visibleRows.every(video => selectedVideoIds.has(Number(video.id))));
+}
+function toggleVideoSelection(videoId, checked) {
+  const id = Number(videoId);
+  if (!id) return;
+  if (checked) selectedVideoIds.add(id);
+  else selectedVideoIds.delete(id);
+  renderVideosBulkToolbar();
+  syncVideosSelectAllCheckbox();
+}
+function toggleVisibleVideosSelection(checked) {
+  setVisibleVideosSelected(Boolean(checked));
+}
+function setVisibleVideosSelected(checked) {
+  getVisibleVideos().forEach(video => {
+    const id = Number(video.id);
+    if (checked) selectedVideoIds.add(id);
+    else selectedVideoIds.delete(id);
+  });
+  renderVideosTable(getVisibleVideos());
+}
+function clearVideoSelection() {
+  selectedVideoIds.clear();
+  renderVideosTable(getVisibleVideos());
+}
+async function deleteSelectedVideos() {
+  const ids = Array.from(selectedVideoIds);
+  if (!ids.length) {
+    showToast('Выберите видео для удаления', 'err');
+    return;
+  }
+  const deleteSourceFiles = Boolean(document.getElementById('videos-delete-source-files')?.checked);
+  const baseText = `Удалить выбранные видео из базы: ${ids.length}?`;
+  const fileText = deleteSourceFiles
+    ? '\n\nТакже будут удалены исходные файлы с диска. Это нельзя отменить.'
+    : '\n\nИсходные файлы на диске останутся.';
+  if (!window.confirm(baseText + fileText)) return;
+  if (deleteSourceFiles && !window.confirm('Точно удалить исходные файлы выбранных видео?')) return;
+  try {
+    const data = await api.post('/api/videos/bulk-delete', {
+      video_ids: ids,
+      delete_source_files: deleteSourceFiles,
+    });
+    lastVideos = data.videos || [];
+    selectedVideoIds.clear();
+    renderVideoCounts(data.counts || {});
+    renderVideosTable(getVisibleVideos());
+    const summary = data.summary || {};
+    const source = summary.source_files || {};
+    const filePart = deleteSourceFiles ? ` · файлов удалено: ${source.deleted || 0}` : '';
+    showToast(`Удалено из базы: ${summary.deleted || 0}${filePart}`);
+    await Promise.allSettled([loadDashboard(), loadJobs(), loadClips()]);
+  } catch (err) {
+    showToast(err.message || 'Не удалось удалить видео', 'err');
+  }
 }
 function renderVideosTable(rows) {
   const el = document.getElementById('videos-table');
+  renderVideosBulkToolbar();
   if (!rows.length) { el.innerHTML = '<div class="empty">Нет видео</div>'; return; }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Название</th><th>Длительность</th><th>Статус</th><th class="r">Метки</th><th class="r">Клипы</th><th>Источник</th><th>Действие</th></tr></thead><tbody>${rows.map(video => {
+  const allSelected = rows.length && rows.every(video => selectedVideoIds.has(Number(video.id)));
+  el.innerHTML = `<table class="tbl"><thead><tr><th><input id="videos-select-all" type="checkbox" ${allSelected ? 'checked' : ''} onchange="toggleVisibleVideosSelection(this.checked)"></th><th>#</th><th>Название</th><th>Длительность</th><th>Статус</th><th class="r">Метки</th><th class="r">Клипы</th><th>Источник</th><th>Действие</th></tr></thead><tbody>${rows.map(video => {
+    const selected = selectedVideoIds.has(Number(video.id));
     const title = video.output_dir
       ? `<button class="link-video mono txt ov" data-path="${esc(video.output_dir)}" title="Открыть папку сегментов: ${esc(video.output_dir)}" onclick="goToOutputFolder(this.dataset.path)">${esc(video.title)}</button>`
       : `<span class="mono txt ov" title="${esc(video.source_path)}">${esc(video.title)}</span>`;
-    return `<tr data-s="${esc(video.review_status)}"><td class="mono dim">#${video.id}</td><td><div class="video-name-cell">${videoThumb(video.source_path, video.title)}<div style="min-width:0;flex:1">${title}${video.output_dir ? `<div class="mono dim ov" title="${esc(video.output_dir)}">Сегменты: ${esc(shortPath(video.output_dir))}</div>` : ''}</div></div></td><td class="mono mid">${esc(video.duration_text)}</td><td>${badge(video.review_status)}</td><td class="mono txt r">${video.mark_count}</td><td class="mono warn r">${video.clip_count}</td><td><span class="mono dim ov">${esc(shortPath(video.source_path))}</span></td><td><div class="row-actions">${mpvButton(video.source_path)}${outputFolderButton(video.output_dir)}</div></td></tr>`;
+    return `<tr data-s="${esc(video.review_status)}"><td><input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleVideoSelection(${Number(video.id)}, this.checked)"></td><td class="mono dim">#${video.id}</td><td><div class="video-name-cell">${videoThumb(video.source_path, video.title)}<div style="min-width:0;flex:1">${title}${video.output_dir ? `<div class="mono dim ov" title="${esc(video.output_dir)}">Сегменты: ${esc(shortPath(video.output_dir))}</div>` : ''}</div></div></td><td class="mono mid">${esc(video.duration_text)}</td><td>${badge(video.review_status)}</td><td class="mono txt r">${video.mark_count}</td><td class="mono warn r">${video.clip_count}</td><td><span class="mono dim ov">${esc(shortPath(video.source_path))}</span></td><td><div class="row-actions">${mpvButton(video.source_path)}${outputFolderButton(video.output_dir)}</div></td></tr>`;
   }).join('')}</tbody></table>`;
 }
 
@@ -3423,11 +3993,6 @@ function renderWorkspaceDetail() {
     : `<button class="btn-danger" onclick="deleteWorkspaceItem('${esc(item.id)}')">Удалить файл</button>`;
   const readyDisabled = item.workspace_status === 'ready' ? ' disabled' : '';
   const draftDisabled = item.workspace_status === 'draft' ? ' disabled' : '';
-  const canRefreshPublishJob = ['queued', 'failed', 'cancelled'].includes(item.publish_job_status);
-  const youtubeDisabled = (!getWorkspaceYoutubeAccount() || item.missing || (item.workspace_status !== 'ready' && !canRefreshPublishJob)) ? ' disabled' : '';
-  const canUpdateYoutube = item.publish_job_status === 'done'
-    && Boolean(item.publish_job_id)
-    && Boolean(item.publish_youtube_video_id || item.publish_youtube_url);
   const publishPanel = item.publish_job_id
     ? `<div class="missing-panel publish-panel">${badge(item.publish_job_status || 'queued')}<div><b>Задача публикации #${esc(item.publish_job_id)}</b><p>${item.publish_youtube_url ? `<a class="link-video mono txt" href="${esc(item.publish_youtube_url)}" target="_blank" rel="noopener noreferrer">Открыть YouTube</a>` : 'YouTube URL пока нет.'}${item.publish_error ? `<br><span class="err">${esc(shortErrorText(item.publish_error))}</span>` : ''}</p></div></div>`
     : '';
@@ -3464,9 +4029,6 @@ function renderWorkspaceDetail() {
       <button class="btn-secondary" onclick="setCurrentWorkspaceStatus('ready')"${readyDisabled}>Сделать готовым</button>
       <button class="btn-secondary" onclick="setCurrentWorkspaceStatus('draft')"${draftDisabled}>Вернуть в черновики</button>
       ${fileAction}
-      <button class="btn-secondary" id="workspace-detail-enqueue-youtube" onclick="enqueueCurrentWorkspaceToYouTube(false)"${youtubeDisabled}>Добавить в очередь YouTube</button>
-      <button class="btn-primary" id="workspace-detail-upload-youtube" onclick="enqueueCurrentWorkspaceToYouTube(true)"${youtubeDisabled}>Загрузить сейчас</button>
-      ${canUpdateYoutube ? '<button class="btn-primary" onclick="updateCurrentWorkspaceYoutubeMetadata()">Обновить данные на YouTube</button>' : ''}
       <button class="btn-secondary stub-action" onclick="futureFeature('Субтитры')">Добавить субтитры</button>
       <button class="btn-secondary stub-action" onclick="futureFeature('Уникализация')">Уникализировать</button>
     </div>
@@ -4582,6 +5144,35 @@ async function pickWorkspaceDirectory() {
     );
   } finally {
     if (button) button.disabled = false;
+  }
+}
+
+async function resetDatabaseFromSettings() {
+  showSettingsError('');
+  showSettingsOk('');
+  const confirmation = document.getElementById('settings-database-confirm')?.value.trim() || '';
+  const createBackup = Boolean(document.getElementById('settings-database-backup')?.checked);
+  if (confirmation !== 'УДАЛИТЬ БАЗУ') {
+    showSettingsError('Для удаления базы введите точную фразу: УДАЛИТЬ БАЗУ');
+    return;
+  }
+  if (!window.confirm('Удалить всю базу ShortsFarm? Workspace-файлы останутся на диске, но записи, теги, профили и очереди будут сброшены.')) {
+    return;
+  }
+  if (!createBackup && !window.confirm('Резервная копия выключена. Продолжить без backup?')) {
+    return;
+  }
+  try {
+    const data = await api.post('/api/settings/database/reset', {
+      confirmation,
+      create_backup: createBackup,
+    });
+    const backup = data.backup_path ? ` Backup: ${data.backup_path}` : '';
+    showSettingsOk(`База удалена и создана заново.${backup} Страница перезагрузится…`);
+    showToast('База сброшена');
+    setTimeout(() => window.location.reload(), 900);
+  } catch (err) {
+    showSettingsError(err.message || 'Не удалось удалить базу');
   }
 }
 

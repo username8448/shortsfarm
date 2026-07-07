@@ -76,6 +76,16 @@ class WorkspaceBulkDeleteRequest(BaseModel):
     items: list[str] = Field(default_factory=list)
 
 
+class VideoBulkDeleteRequest(BaseModel):
+    video_ids: list[int] = Field(default_factory=list)
+    delete_source_files: bool = False
+
+
+class DatabaseResetRequest(BaseModel):
+    confirmation: str = ""
+    create_backup: bool = True
+
+
 class WorkspacePrepareRequest(BaseModel):
     target_aspect: str = "original"
 

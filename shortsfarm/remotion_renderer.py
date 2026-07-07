@@ -960,6 +960,32 @@ def start_remotion_render_queue(base_url: str) -> dict[str, Any]:
         }
 
 
+def ensure_remotion_render_queue_running(base_url: str) -> dict[str, Any]:
+    """Recover a stale queue if needed and start queued render jobs.
+
+    This is intentionally idempotent and safe to call from polling endpoints:
+    it starts a worker only when jobs are queued and no worker is alive.
+    """
+    recovered: dict[str, Any] | None = None
+    queue = remotion_render_queue_status()
+    if queue["status"] == "stale":
+        recovered = recover_remotion_render_queue()
+        queue = recovered["queue"]
+    started: dict[str, Any] | None = None
+    if (
+        int(queue.get("queued_count") or 0) > 0
+        and queue.get("status") == "idle"
+        and int(queue.get("rendering_count") or 0) == 0
+    ):
+        started = start_remotion_render_queue(base_url)
+        queue = remotion_render_queue_status()
+    return {
+        "queue": queue,
+        "recovered": recovered,
+        "started": started,
+    }
+
+
 def start_remotion_render_job(job_id: int, base_url: str) -> None:
     with _threads_lock:
         existing = _threads.get(int(job_id))

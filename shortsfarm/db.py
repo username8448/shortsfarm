@@ -145,6 +145,224 @@ def update_video_review_status(video_id: int, review_status: str) -> None:
         )
 
 
+def _delete_where_in(
+    con: sqlite3.Connection,
+    table: str,
+    column: str,
+    values: list[int | str],
+) -> int:
+    if not values:
+        return 0
+    placeholders = ",".join("?" for _ in values)
+    cur = con.execute(
+        f"DELETE FROM {table} WHERE {column} IN ({placeholders})",
+        values,
+    )
+    return int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+
+
+def _update_null_where_in(
+    con: sqlite3.Connection,
+    table: str,
+    column: str,
+    values: list[int | str],
+    *,
+    target_column: str,
+) -> int:
+    if not values:
+        return 0
+    placeholders = ",".join("?" for _ in values)
+    cur = con.execute(
+        f"UPDATE {table} SET {target_column}=NULL WHERE {column} IN ({placeholders})",
+        values,
+    )
+    return int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+
+
+def delete_videos(video_ids: list[int]) -> dict[str, Any]:
+    """Delete source video rows and their DB-only dependants.
+
+    This intentionally does not remove media files from disk.  The web API can
+    optionally unlink the original source files after this transaction commits.
+    Generated workspace files are not removed here; they are separate user
+    artifacts and should be deleted from the workspace UI.
+    """
+    normalized_ids = sorted({int(value) for value in video_ids if int(value) > 0})
+    if not normalized_ids:
+        return {
+            "requested": 0,
+            "deleted": 0,
+            "missing_ids": [],
+            "deleted_ids": [],
+            "source_paths": [],
+            "removed": {},
+        }
+
+    placeholders = ",".join("?" for _ in normalized_ids)
+    with connect() as con:
+        video_rows = con.execute(
+            f"SELECT id, source_path FROM videos WHERE id IN ({placeholders})",
+            normalized_ids,
+        ).fetchall()
+        found_ids = sorted(int(row["id"]) for row in video_rows)
+        source_paths = [str(row["source_path"]) for row in video_rows if row["source_path"]]
+        missing_ids = [video_id for video_id in normalized_ids if video_id not in found_ids]
+        if not found_ids:
+            return {
+                "requested": len(normalized_ids),
+                "deleted": 0,
+                "missing_ids": missing_ids,
+                "deleted_ids": [],
+                "source_paths": [],
+                "removed": {},
+            }
+
+        found_placeholders = ",".join("?" for _ in found_ids)
+        clip_rows = con.execute(
+            f"SELECT id, output_path, temp_path FROM clips WHERE video_id IN ({found_placeholders})",
+            found_ids,
+        ).fetchall()
+        clip_ids = [int(row["id"]) for row in clip_rows]
+        clip_paths = [
+            str(value)
+            for row in clip_rows
+            for value in (row["output_path"], row["temp_path"])
+            if value
+        ]
+
+        segment_rows = con.execute(
+            f"SELECT id, path FROM segments WHERE video_id IN ({found_placeholders})",
+            found_ids,
+        ).fetchall()
+        segment_ids = [int(row["id"]) for row in segment_rows]
+        segment_paths = [str(row["path"]) for row in segment_rows if row["path"]]
+
+        mark_rows = con.execute(
+            f"SELECT id FROM marks WHERE video_id IN ({found_placeholders})",
+            found_ids,
+        ).fetchall()
+        mark_ids = [int(row["id"]) for row in mark_rows]
+
+        publish_job_rows: list[sqlite3.Row] = []
+        if clip_ids:
+            clip_placeholders = ",".join("?" for _ in clip_ids)
+            publish_job_rows = con.execute(
+                f"SELECT id FROM publish_jobs WHERE clip_id IN ({clip_placeholders})",
+                clip_ids,
+            ).fetchall()
+        publish_job_ids = [int(row["id"]) for row in publish_job_rows]
+
+        workspace_item_keys = [
+            *(f"segment:{item_id}" for item_id in segment_ids),
+            *(f"clip:{item_id}" for item_id in clip_ids),
+        ]
+        workspace_paths = sorted(set(source_paths + segment_paths + clip_paths))
+
+        removed: dict[str, int] = {}
+        removed["local_storage_profile_publish_jobs"] = _delete_where_in(
+            con,
+            "local_storage_profile_publish_jobs",
+            "publish_job_id",
+            publish_job_ids,
+        )
+        removed["external_publish_job_refs"] = _update_null_where_in(
+            con,
+            "local_storage_profile_external_videos",
+            "publish_job_id",
+            publish_job_ids,
+            target_column="publish_job_id",
+        )
+        removed["publish_jobs"] = _delete_where_in(
+            con,
+            "publish_jobs",
+            "id",
+            publish_job_ids,
+        )
+
+        if segment_ids:
+            seg_placeholders = ",".join("?" for _ in segment_ids)
+            cur = con.execute(
+                f"DELETE FROM workspace_tag_links WHERE item_type='segment' AND item_id IN ({seg_placeholders})",
+                segment_ids,
+            )
+            removed["workspace_tag_links_segment"] = int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+            cur = con.execute(
+                f"DELETE FROM clip_workspace_metadata WHERE item_type='segment' AND item_id IN ({seg_placeholders})",
+                segment_ids,
+            )
+            removed["workspace_metadata_segment"] = int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+        else:
+            removed["workspace_tag_links_segment"] = 0
+            removed["workspace_metadata_segment"] = 0
+
+        if clip_ids:
+            clip_placeholders = ",".join("?" for _ in clip_ids)
+            cur = con.execute(
+                f"DELETE FROM workspace_tag_links WHERE item_type='clip' AND item_id IN ({clip_placeholders})",
+                clip_ids,
+            )
+            removed["workspace_tag_links_clip"] = int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+            cur = con.execute(
+                f"DELETE FROM clip_workspace_metadata WHERE item_type='clip' AND item_id IN ({clip_placeholders})",
+                clip_ids,
+            )
+            removed["workspace_metadata_clip"] = int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+        else:
+            removed["workspace_tag_links_clip"] = 0
+            removed["workspace_metadata_clip"] = 0
+
+        removed["workspace_tag_links_path"] = _delete_where_in(
+            con,
+            "workspace_tag_links",
+            "workspace_path",
+            workspace_paths,
+        )
+        removed["edit_jobs"] = _delete_where_in(
+            con,
+            "edit_jobs",
+            "workspace_item_key",
+            workspace_item_keys,
+        )
+        removed["video_segments"] = _delete_where_in(
+            con,
+            "video_segments",
+            "source_path",
+            source_paths,
+        )
+        removed["clips"] = _delete_where_in(con, "clips", "id", clip_ids)
+        removed["marks"] = _delete_where_in(con, "marks", "id", mark_ids)
+
+        cur = con.execute(
+            f"DELETE FROM review_sessions WHERE video_id IN ({found_placeholders})",
+            found_ids,
+        )
+        removed["review_sessions"] = int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+        cur = con.execute(
+            f"DELETE FROM segments WHERE video_id IN ({found_placeholders})",
+            found_ids,
+        )
+        removed["segments"] = int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+        cur = con.execute(
+            f"DELETE FROM jobs WHERE video_id IN ({found_placeholders})",
+            found_ids,
+        )
+        removed["jobs"] = int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+        cur = con.execute(
+            f"DELETE FROM videos WHERE id IN ({found_placeholders})",
+            found_ids,
+        )
+        deleted = int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+
+        return {
+            "requested": len(normalized_ids),
+            "deleted": deleted,
+            "missing_ids": missing_ids,
+            "deleted_ids": found_ids,
+            "source_paths": source_paths,
+            "removed": removed,
+        }
+
+
 def claim_inbox_video() -> sqlite3.Row | None:
     """Atomically pick the first 'inbox' video and set it to 'reviewing'.
 
@@ -5600,6 +5818,7 @@ def create_remotion_render_job(
     duration_limit_sec: float | None = None,
     start_offset_sec: float = 0,
     full_length: bool = False,
+    max_auto_retries: int = 2,
 ) -> int:
     with connect() as con:
         cur = con.execute(
@@ -5607,8 +5826,8 @@ def create_remotion_render_job(
             INSERT INTO remotion_render_jobs
                 (studio_project_id, status, output_path, renderer_engine,
                  render_profile, duration_limit_sec, start_offset_sec,
-                 full_length, created_at)
-            VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?)
+                 full_length, max_auto_retries, created_at)
+            VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(studio_project_id),
@@ -5618,6 +5837,7 @@ def create_remotion_render_job(
                 duration_limit_sec,
                 float(start_offset_sec or 0),
                 1 if full_length else 0,
+                max(0, int(max_auto_retries)),
                 now_utc(),
             ),
         )
@@ -5664,6 +5884,285 @@ def update_remotion_render_job_output(job_id: int, output_path: str) -> bool:
             (output_path, int(job_id)),
         )
         return result.rowcount > 0
+
+
+def create_shorts_pipeline_run(
+    *,
+    source_mode: str,
+    source_path: str | None = None,
+    source_paths_json: list[str] | str | None = None,
+    split_seconds: int = 60,
+    skip_json: list[str] | str | None = None,
+    overwrite: bool = False,
+    studio_template_id: int | None = None,
+    template_key: str | None = None,
+    reaction_strategy: str = "fixed_asset",
+    reaction_asset_id: int | None = None,
+    reaction_pool_id: int | None = None,
+    parameter_values_json: dict[str, Any] | str | None = None,
+    renderer_engine: str = "ffmpeg_fast",
+    render_profile: str = "low_540p",
+    duration_limit_sec: float | None = None,
+    start_offset_sec: float = 0,
+    full_length: bool = False,
+    tag_ids_json: list[int] | str | None = None,
+    channel_tag_id: int | None = None,
+    summary_json: dict[str, Any] | str | None = None,
+) -> int:
+    mode = str(source_mode or "").strip().lower()
+    if mode not in {"external_file", "workspace"}:
+        raise ValueError("source_mode должен быть external_file или workspace.")
+    seconds = int(split_seconds or 0)
+    if seconds <= 0:
+        raise ValueError("split_seconds должен быть больше 0.")
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO shorts_pipeline_runs
+                (status, source_mode, source_path, source_paths_json,
+                 split_seconds, skip_json, overwrite, studio_template_id,
+                 template_key, reaction_strategy, reaction_asset_id,
+                 reaction_pool_id, parameter_values_json, renderer_engine,
+                 render_profile, duration_limit_sec, start_offset_sec,
+                 full_length, tag_ids_json, channel_tag_id, summary_json,
+                 created_at, started_at, updated_at)
+            VALUES ('queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                mode,
+                source_path,
+                _normalize_json_array(source_paths_json),
+                seconds,
+                _normalize_json_array(skip_json),
+                1 if overwrite else 0,
+                studio_template_id,
+                template_key,
+                reaction_strategy,
+                reaction_asset_id,
+                reaction_pool_id,
+                _normalize_json_object(parameter_values_json),
+                renderer_engine,
+                render_profile,
+                duration_limit_sec,
+                float(start_offset_sec or 0),
+                1 if full_length else 0,
+                _normalize_json_array(tag_ids_json),
+                channel_tag_id,
+                _normalize_json_object(summary_json),
+                now,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def update_shorts_pipeline_run(
+    run_id: int,
+    *,
+    status: str | None = None,
+    imported_source_path: str | None = None,
+    remotion_batch_id: int | None = None,
+    summary_json: dict[str, Any] | str | None = None,
+    error: str | None = None,
+    finish: bool = False,
+) -> bool:
+    allowed = {
+        "queued", "splitting", "rendering", "syncing_profile",
+        "done", "failed", "cancelled",
+    }
+    assignments: list[str] = []
+    values: list[Any] = []
+    if status is not None:
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status not in allowed:
+            raise ValueError("Некорректный status shorts pipeline run.")
+        assignments.append("status=?")
+        values.append(normalized_status)
+    if imported_source_path is not None:
+        assignments.append("imported_source_path=?")
+        values.append(imported_source_path)
+    if remotion_batch_id is not None:
+        assignments.append("remotion_batch_id=?")
+        values.append(int(remotion_batch_id))
+    if summary_json is not None:
+        assignments.append("summary_json=?")
+        values.append(_normalize_json_object(summary_json))
+    if error is not None:
+        assignments.append("error=?")
+        values.append(error)
+    if finish:
+        assignments.append("finished_at=COALESCE(finished_at, ?)")
+        values.append(now_utc())
+    if not assignments:
+        return False
+    assignments.append("updated_at=?")
+    values.append(now_utc())
+    with connect() as con:
+        result = con.execute(
+            f"""
+            UPDATE shorts_pipeline_runs
+            SET {", ".join(assignments)}
+            WHERE id=?
+            """,
+            (*values, int(run_id)),
+        )
+        return result.rowcount > 0
+
+
+def get_shorts_pipeline_run(run_id: int) -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            "SELECT * FROM shorts_pipeline_runs WHERE id=?",
+            (int(run_id),),
+        ).fetchone()
+
+
+def list_shorts_pipeline_runs(limit: int = 50) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM shorts_pipeline_runs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (max(1, min(int(limit or 50), 200)),),
+        ).fetchall()
+
+
+def get_active_shorts_pipeline_run() -> sqlite3.Row | None:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM shorts_pipeline_runs
+            WHERE status IN ('queued', 'splitting', 'rendering', 'syncing_profile')
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        ).fetchone()
+
+
+def create_shorts_pipeline_run_item(
+    *,
+    run_id: int,
+    source_workspace_path: str | None = None,
+    segment_workspace_path: str | None = None,
+    render_job_id: int | None = None,
+    output_workspace_path: str | None = None,
+    status: str = "queued",
+    error: str | None = None,
+) -> int:
+    now = now_utc()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO shorts_pipeline_run_items
+                (run_id, source_workspace_path, segment_workspace_path,
+                 render_job_id, output_workspace_path, status, error,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(run_id),
+                source_workspace_path,
+                segment_workspace_path,
+                render_job_id,
+                output_workspace_path,
+                status,
+                error,
+                now,
+                now,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def update_shorts_pipeline_run_item(
+    item_id: int,
+    *,
+    render_job_id: int | None = None,
+    output_workspace_path: str | None = None,
+    status: str | None = None,
+    error: str | None = None,
+) -> bool:
+    assignments: list[str] = []
+    values: list[Any] = []
+    if render_job_id is not None:
+        assignments.append("render_job_id=?")
+        values.append(int(render_job_id))
+    if output_workspace_path is not None:
+        assignments.append("output_workspace_path=?")
+        values.append(output_workspace_path)
+    if status is not None:
+        assignments.append("status=?")
+        values.append(status)
+    if error is not None:
+        assignments.append("error=?")
+        values.append(error)
+    if not assignments:
+        return False
+    assignments.append("updated_at=?")
+    values.append(now_utc())
+    with connect() as con:
+        result = con.execute(
+            f"""
+            UPDATE shorts_pipeline_run_items
+            SET {", ".join(assignments)}
+            WHERE id=?
+            """,
+            (*values, int(item_id)),
+        )
+        return result.rowcount > 0
+
+
+def update_shorts_pipeline_run_item_by_render_job(
+    render_job_id: int,
+    *,
+    output_workspace_path: str | None = None,
+    status: str | None = None,
+    error: str | None = None,
+) -> bool:
+    assignments: list[str] = []
+    values: list[Any] = []
+    if output_workspace_path is not None:
+        assignments.append("output_workspace_path=?")
+        values.append(output_workspace_path)
+    if status is not None:
+        assignments.append("status=?")
+        values.append(status)
+    if error is not None:
+        assignments.append("error=?")
+        values.append(error)
+    if not assignments:
+        return False
+    assignments.append("updated_at=?")
+    values.append(now_utc())
+    with connect() as con:
+        result = con.execute(
+            f"""
+            UPDATE shorts_pipeline_run_items
+            SET {", ".join(assignments)}
+            WHERE render_job_id=?
+            """,
+            (*values, int(render_job_id)),
+        )
+        return result.rowcount > 0
+
+
+def list_shorts_pipeline_run_items(run_id: int) -> list[sqlite3.Row]:
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT *
+            FROM shorts_pipeline_run_items
+            WHERE run_id=?
+            ORDER BY id ASC
+            """,
+            (int(run_id),),
+        ).fetchall()
 
 
 def update_remotion_render_job_process(
@@ -6179,7 +6678,8 @@ def retry_remotion_render_job(job_id: int) -> bool:
                 speed=NULL,
                 eta_sec=NULL,
                 output_size_bytes=NULL,
-                completed_message=NULL
+                completed_message=NULL,
+                auto_retry_count=0
             WHERE id=? AND status IN ('failed', 'cancelled')
             """,
             (int(job_id),),
@@ -6236,7 +6736,8 @@ def retry_failed_remotion_render_batch(batch_id: int) -> int:
                 speed=NULL,
                 eta_sec=NULL,
                 output_size_bytes=NULL,
-                completed_message=NULL
+                completed_message=NULL,
+                auto_retry_count=0
             WHERE id IN ({placeholders}) AND status IN ('failed', 'cancelled')
             """,
             job_ids,
@@ -6247,6 +6748,76 @@ def retry_failed_remotion_render_batch(batch_id: int) -> int:
             SET status='queued', error=NULL, updated_at=?
             WHERE render_job_id IN ({placeholders})
               AND status IN ('failed', 'cancelled')
+            """,
+            [now_utc(), *job_ids],
+        )
+        _sync_remotion_render_batch_in_connection(con, int(batch_id))
+        return len(job_ids)
+
+
+def auto_retry_failed_remotion_render_batch(
+    batch_id: int,
+    *,
+    default_max_retries: int = 2,
+) -> int:
+    max_retries = max(0, int(default_max_retries))
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT rrj.id AS render_job_id
+            FROM remotion_render_batch_items rbi
+            JOIN remotion_render_jobs rrj ON rrj.id = rbi.render_job_id
+            WHERE rbi.batch_id=?
+              AND rbi.status='failed'
+              AND rrj.status='failed'
+              AND COALESCE(rrj.auto_retry_count, 0) < COALESCE(rrj.max_auto_retries, ?)
+            ORDER BY rrj.id
+            """,
+            (int(batch_id), max_retries),
+        ).fetchall()
+        job_ids = [int(row["render_job_id"]) for row in rows]
+        if not job_ids:
+            _sync_remotion_render_batch_in_connection(con, int(batch_id))
+            return 0
+        placeholders = ",".join("?" for _ in job_ids)
+        con.execute(
+            f"""
+            UPDATE remotion_render_jobs
+            SET status='queued',
+                error=NULL,
+                started_at=NULL,
+                finished_at=NULL,
+                worker_pid=NULL,
+                worker_started_at=NULL,
+                last_heartbeat_at=NULL,
+                stdout_tail=NULL,
+                stderr_tail=NULL,
+                returncode=NULL,
+                elapsed_sec=NULL,
+                progress_percent=0,
+                progress_stage=NULL,
+                progress_message=NULL,
+                current_frame=NULL,
+                total_frames=NULL,
+                out_time_sec=NULL,
+                speed=NULL,
+                eta_sec=NULL,
+                output_size_bytes=NULL,
+                completed_message=NULL,
+                auto_retry_count=COALESCE(auto_retry_count, 0) + 1,
+                max_auto_retries=COALESCE(max_auto_retries, ?)
+            WHERE id IN ({placeholders})
+              AND status='failed'
+              AND COALESCE(auto_retry_count, 0) < COALESCE(max_auto_retries, ?)
+            """,
+            [max_retries, *job_ids, max_retries],
+        )
+        con.execute(
+            f"""
+            UPDATE remotion_render_batch_items
+            SET status='queued', error=NULL, updated_at=?
+            WHERE render_job_id IN ({placeholders})
+              AND status='failed'
             """,
             [now_utc(), *job_ids],
         )

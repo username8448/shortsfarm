@@ -54,6 +54,21 @@ def test_claim_inbox_video_no_double_claim(video_in_db):
     assert second is None          # already claimed
 
 
+def test_delete_videos_removes_database_dependants(mark_in_db):
+    from shortsfarm import db
+
+    result = db.delete_videos([mark_in_db["video_id"]])
+
+    assert result["deleted"] == 1
+    assert result["removed"]["clips"] == 1
+    assert result["removed"]["marks"] == 1
+    assert db.get_video(mark_in_db["video_id"]) is None
+    with db.connect() as con:
+        assert con.execute("SELECT COUNT(*) FROM clips").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM marks").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM review_sessions").fetchone()[0] == 0
+
+
 # ---------------------------------------------------------------------------
 # review_sessions
 # ---------------------------------------------------------------------------

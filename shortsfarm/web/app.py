@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from .. import db
 from .api import router as api_router
 from .media_api import router as media_api_router
+from .pipeline_api import router as pipeline_api_router
 from .studio_api import router as studio_api_router
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -19,6 +20,7 @@ FAVICON_PATH = WEB_DIR / "static" / "favicon.svg"
 ASSET_VERSION = max(
     (WEB_DIR / "static" / "app.js").stat().st_mtime_ns,
     (WEB_DIR / "static" / "style.css").stat().st_mtime_ns,
+    (WEB_DIR / "static" / "vendor" / "tabler-icons" / "tabler-icons.min.css").stat().st_mtime_ns,
 )
 
 
@@ -66,6 +68,7 @@ def create_app() -> FastAPI:
 
     app.include_router(api_router, prefix="/api")
     app.include_router(media_api_router, prefix="/api/media")
+    app.include_router(pipeline_api_router, prefix="/api/shorts-pipeline")
     app.include_router(studio_api_router, prefix="/api/studio")
 
     def spa_response(title: str = "ShortsFarm Studio") -> FileResponse | HTMLResponse:

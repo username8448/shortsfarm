@@ -633,7 +633,10 @@ def test_apply_template_selected_creates_batch_projects_and_jobs(tmp_path, monke
         assert job["duration_limit_sec"] == 45
         assert "/edits/" in job["output_path"]
         assert f"/{template['key']}/" in job["output_path"]
-        assert json.loads(project["recipe_json"])["layout"]["reaction_height"] == 600
+        recipe = json.loads(project["recipe_json"])
+        assert project["reaction_asset_id"] == asset_id
+        assert recipe["media"]["reaction"]["asset_id"] == asset_id
+        assert recipe["layout"]["reaction_height"] == 600
 
 
 def test_apply_template_uses_selected_non_default_template(tmp_path, monkeypatch):
@@ -907,11 +910,13 @@ def test_studio_frontend_uses_preview_registry_and_embedded_batch_open():
     assert "function openWebPlayer" in legacy_js
     assert "window.shortsFarmOpenVideoLightbox" in legacy_js
     assert "video-lightbox" in legacy_js
+    assert "box && document.getElementById('video-lightbox-frame')" in legacy_js
     assert "videoWatchThumb" in legacy_js
     assert "embed=1" in legacy_js
     assert "stopVideoLightboxPlayback" in legacy_js
     assert "shortsfarm:pause-video" in legacy_js
     assert "frame.replaceWith(replacement)" in legacy_js
+    assert "replacement.id = 'video-lightbox-frame'" in legacy_js
     assert "shortsFarmOpenVideoLightbox(relative, options)" in legacy_js
     assert "data-web-player" in legacy_js
     assert "Открыть в mpv" not in legacy_js

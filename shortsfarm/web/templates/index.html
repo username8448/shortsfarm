@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ShortsFarm Web</title>
 <link rel="icon" href="/favicon.ico" type="image/svg+xml">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<link rel="stylesheet" href="/static/vendor/tabler-icons/tabler-icons.min.css?v={{ asset_version }}">
 <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
 </head>
 <body>
@@ -21,6 +21,7 @@
 
     <nav>
       <button class="nb on" data-v="dashboard" onclick="nav('dashboard', this)"><i class="ti ti-layout-dashboard"></i><span>Панель</span></button>
+      <button class="nb" data-v="pipeline" onclick="nav('pipeline', this)"><i class="ti ti-route"></i><span>Конвейер</span></button>
       <button class="nb" data-v="files" onclick="nav('files', this)"><i class="ti ti-folders"></i><span>Файлы</span></button>
       <button class="nb" data-v="split" onclick="nav('split', this)"><i class="ti ti-scissors"></i><span>Нарезка</span></button>
       <button class="nb" data-v="queue" onclick="nav('queue', this)"><i class="ti ti-list"></i><span>Очередь</span><span id="nav-jobs" class="badge-pill" style="background:var(--acc-bg);color:var(--acc);"></span></button>
@@ -56,6 +57,29 @@
       <div class="g2">
         <div class="box" style="margin-bottom:0"><div class="box-head">Статусы видео</div><div id="video-status-bars" style="padding:12px 15px"></div></div>
         <div class="box" style="margin-bottom:0"><div class="box-head">Последние ошибки</div><div id="recent-errors"></div></div>
+      </div>
+    </div>
+
+    <div id="v-pipeline" class="v">
+      <div class="ph"><h1>Конвейер</h1><p>единый цикл: исходник → нарезка → Studio/Remotion шаблон → теги → профиль по channel-тегу</p></div>
+      <div id="pipeline-error" class="err-line" style="display:none;margin-bottom:14px"></div>
+      <div class="pipeline-layout">
+        <section class="box pipeline-main">
+          <div class="box-head">
+            <span>Настройка цикла</span>
+            <div class="row-actions">
+              <button class="btn-mini" onclick="loadPipelineView()">Обновить</button>
+              <button class="btn-mini" onclick="openGlobalTagsView()">Открыть Теги</button>
+            </div>
+          </div>
+          <div id="pipeline-form"></div>
+        </section>
+        <aside class="box pipeline-side">
+          <div class="box-head">План и прогресс</div>
+          <div id="pipeline-health" class="pipeline-health"></div>
+          <div id="pipeline-plan" class="empty compact">Настройте цикл и нажмите «План».</div>
+          <div id="pipeline-runs" style="margin-top:14px"></div>
+        </aside>
       </div>
     </div>
 
@@ -134,15 +158,29 @@
     </div>
 
     <div id="v-queue" class="v" data-v="queue">
-      <div class="ph"><h1>Очередь</h1><p>история split-задач из SQLite</p></div>
-      <div class="tabs"><button class="tab on" onclick="filterJobs(this,'all')">Все<span class="cnt" id="jobs-cnt-all"></span></button><button class="tab" onclick="filterJobs(this,'queued')">В очереди<span class="cnt" id="jobs-cnt-queued"></span></button><button class="tab" onclick="filterJobs(this,'running')">В работе<span class="cnt" id="jobs-cnt-running"></span></button><button class="tab" onclick="filterJobs(this,'done')">Готово<span class="cnt" id="jobs-cnt-done"></span></button><button class="tab" onclick="filterJobs(this,'failed')">Ошибки<span class="cnt" id="jobs-cnt-failed"></span></button></div>
-      <div class="box"><div id="jobs-table"></div></div>
+      <div class="ph"><h1>Очередь</h1><p>полный прогресс конвейера и техническая история нарезки</p></div>
+      <div class="box">
+        <div class="box-head">
+          <span>Конвейер · полный цикл</span>
+          <button class="btn-mini" onclick="loadJobs()">Обновить</button>
+        </div>
+        <div id="queue-pipeline-health" class="pipeline-health"></div>
+        <div id="queue-pipeline-runs" class="empty compact">Запусков конвейера пока нет.</div>
+      </div>
+      <div class="box">
+        <div class="box-head">Нарезка · split-задачи</div>
+        <div class="tabs"><button class="tab on" onclick="filterJobs(this,'all')">Все<span class="cnt" id="jobs-cnt-all"></span></button><button class="tab" onclick="filterJobs(this,'queued')">В очереди<span class="cnt" id="jobs-cnt-queued"></span></button><button class="tab" onclick="filterJobs(this,'running')">В работе<span class="cnt" id="jobs-cnt-running"></span></button><button class="tab" onclick="filterJobs(this,'done')">Готово<span class="cnt" id="jobs-cnt-done"></span></button><button class="tab" onclick="filterJobs(this,'failed')">Ошибки<span class="cnt" id="jobs-cnt-failed"></span></button></div>
+        <div id="jobs-table"></div>
+      </div>
     </div>
 
     <div id="v-videos" class="v">
       <div class="ph"><h1>Видео</h1><p>источники и статусы review: inbox → reviewing → reviewed / skipped</p></div>
       <div class="tabs"><button class="tab on" onclick="filterVideos(this,'all')">Все<span class="cnt" id="vid-cnt-all"></span></button><button class="tab" onclick="filterVideos(this,'inbox')">Входящие<span class="cnt" id="vid-cnt-inbox"></span></button><button class="tab" onclick="filterVideos(this,'reviewing')">На просмотре<span class="cnt" id="vid-cnt-reviewing"></span></button><button class="tab" onclick="filterVideos(this,'reviewed')">Просмотрено<span class="cnt" id="vid-cnt-reviewed"></span></button><button class="tab" onclick="filterVideos(this,'skipped')">Пропущено<span class="cnt" id="vid-cnt-skipped"></span></button></div>
-      <div class="box"><div id="videos-table"></div></div>
+      <div class="box">
+        <div id="videos-bulk-toolbar" class="workspace-toolbar compact"></div>
+        <div id="videos-table"></div>
+      </div>
     </div>
 
     <div id="v-clips" class="v">
@@ -541,6 +579,7 @@
       <div class="ph"><h1>Настройки</h1><p>рабочая папка ShortsFarm и локальные параметры приложения</p></div>
       <div class="tabs">
         <button class="tab on" data-settings-tab="workspace" onclick="setSettingsTab('workspace', this)">Workspace</button>
+        <button class="tab" data-settings-tab="database" onclick="setSettingsTab('database', this)">База данных</button>
       </div>
 
       <div id="settings-error" class="err-line" style="display:none;margin-bottom:14px"></div>
@@ -566,6 +605,30 @@
               <button class="btn-secondary" onclick="loadWorkspaceSettings()">Обновить</button>
             </div>
             <div id="settings-workspace-status" class="settings-meta"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="settings-database" class="settings-tab">
+        <div class="box danger-zone">
+          <div class="box-head"><span>Опасная зона · база данных</span></div>
+          <div class="form-body settings-form">
+            <div class="hint-box warn">
+              Сброс базы удалит все записи ShortsFarm: видео, задачи, профили, теги, очереди и настройки.
+              Файлы в workspace не удаляются. По умолчанию перед сбросом создаётся резервная копия SQLite.
+            </div>
+            <div class="field">
+              <label class="field-lbl">Для подтверждения введите: УДАЛИТЬ БАЗУ</label>
+              <input id="settings-database-confirm" type="text" placeholder="УДАЛИТЬ БАЗУ">
+            </div>
+            <label class="check-row">
+              <input id="settings-database-backup" type="checkbox" checked>
+              <span>Создать резервную копию перед удалением</span>
+            </label>
+            <div class="action-row">
+              <button class="btn-danger" onclick="resetDatabaseFromSettings()">Удалить всю базу</button>
+            </div>
+            <div class="settings-meta">Это действие нельзя отменить без резервной копии.</div>
           </div>
         </div>
       </div>
