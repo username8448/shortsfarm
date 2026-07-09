@@ -79,6 +79,7 @@ class WorkspaceBulkDeleteRequest(BaseModel):
 class VideoBulkDeleteRequest(BaseModel):
     video_ids: list[int] = Field(default_factory=list)
     delete_source_files: bool = False
+    delete_child_clips: bool = False
 
 
 class DatabaseResetRequest(BaseModel):
@@ -98,7 +99,7 @@ class WorkspaceBulkPrepareRequest(BaseModel):
 class WorkspaceYouTubeEnqueueRequest(BaseModel):
     item_keys: list[str] = Field(default_factory=list)
     account_id: int
-    publish_mode: str = "private"
+    publish_mode: str = "public"
     category_id: str = "22"
     made_for_kids: bool = False
 
@@ -240,7 +241,7 @@ class YouTubeUploadRequest(BaseModel):
     description: str = ""
     tags: list[str] = Field(default_factory=list)
     category_id: str = "22"
-    publish_mode: str = "private"
+    publish_mode: str = "public"
     publish_at: str | None = None
     made_for_kids: bool = False
 

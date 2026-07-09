@@ -278,6 +278,8 @@ def test_storage_profile_youtube_enqueue_creates_publish_job(tmp_path):
     assert data["summary"]["errors"] == 0
     assert data["jobs"][0]["title"] == "Ready Short"
     assert data["jobs"][0]["account_id"] == account_id
+    assert data["jobs"][0]["privacy_status"] == "public"
+    assert data["jobs"][0]["publish_mode"] == "public"
     assert data["jobs"][0]["clip_output_path"] == str(video)
     assert data["profile_items"][0]["publish_job"]["id"] == data["jobs"][0]["id"]
     assert api.local_storage_profile_publish_jobs(profile_id)["jobs"][0]["id"] == data["jobs"][0]["id"]

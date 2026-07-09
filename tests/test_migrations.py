@@ -564,6 +564,24 @@ def test_shorts_pipeline_schema_exists(tmp_data_dir):
     assert "idx_shorts_pipeline_runs_one_active" in indexes
 
 
+def test_video_soft_delete_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+
+    db.init_db()
+    with db.connect() as con:
+        video_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(videos)")
+        }
+        indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(videos)")
+        }
+
+    assert {"deleted_at", "source_file_deleted_at"} <= video_columns
+    assert "idx_videos_deleted_at" in indexes
+
+
 def test_idempotent(tmp_data_dir):
     """Running migrations many times must not raise."""
     from shortsfarm.migrations import run_migrations

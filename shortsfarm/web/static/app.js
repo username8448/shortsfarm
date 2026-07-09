@@ -358,7 +358,7 @@ function mpvButton(path, label='Смотреть') {
 }
 function outputFolderButton(path, label='Папка') {
   if (!path) return '<button class="btn-mini" disabled>Папка</button>';
-  return `<button class="btn-mini" data-path="${esc(path)}" onclick="goToOutputFolder(this.dataset.path)">${esc(label)}</button>`;
+  return `<button class="btn-mini" data-path="${esc(path)}" onclick="event.stopPropagation();goToOutputFolder(this.dataset.path)">${esc(label)}</button>`;
 }
 function percent(done, total, status) {
   if (status === 'done' || status === 'failed') return 100;
@@ -453,6 +453,28 @@ function showToast(message, kind='ok') {
 }
 
 let currentView = 'dashboard';
+const VIEW_TITLES = {
+  dashboard: 'Панель',
+  pipeline: 'Конвейер',
+  files: 'Файлы',
+  split: 'Нарезка',
+  queue: 'Очередь',
+  videos: 'Видео',
+  clips: 'Клипы',
+  tags: 'Теги',
+  'storage-profiles': 'Профили',
+  'storage-profile': 'Профиль',
+  integrations: 'Интеграции',
+  editing: 'Монтаж',
+  studio: 'Template Studio',
+  settings: 'Настройки',
+};
+const uiState = {
+  density: 'compact',
+  sidebarCollapsed: false,
+  videoViewMode: 'table',
+  clipViewMode: 'table',
+};
 let currentPublishTab = 'youtube';
 let secsVal = 60;
 let splitMode = 'file';
@@ -460,12 +482,15 @@ const skipList = [];
 let lastJobs = [];
 let lastVideos = [];
 let selectedVideoIds = new Set();
+let pendingVideoDeleteIds = [];
 let videoFilter = 'all';
 let lastClips = [];
+let queueSubView = 'overview';
 let workspaceFilter = 'all';
 let workspaceSearchQuery = '';
 let workspaceFilterIncludeTagIds = new Set();
 let workspaceFilterExcludeTagIds = new Set();
+let workspaceParentVideoFilter = null;
 let selectedWorkspaceKeys = new Set();
 let currentWorkspaceItemKey = null;
 let workspaceDetailDirty = false;
@@ -568,24 +593,118 @@ const managedFilesState = {
   loading: false,
 };
 
+function readUiPreference(key, fallback) {
+  try {
+    const value = localStorage.getItem(`shortsfarm.ui.${key}`);
+    return value === null ? fallback : value;
+  } catch {
+    return fallback;
+  }
+}
+function writeUiPreference(key, value) {
+  try {
+    localStorage.setItem(`shortsfarm.ui.${key}`, String(value));
+  } catch {}
+}
+function applyDensity() {
+  const density = uiState.density === 'comfortable' ? 'comfortable' : 'compact';
+  document.body.classList.toggle('density-compact', density === 'compact');
+  document.body.classList.toggle('density-comfortable', density === 'comfortable');
+  const btn = document.getElementById('density-toggle');
+  if (btn) btn.textContent = density === 'compact' ? 'Компактно' : 'Комфортно';
+}
+function setDensity(value) {
+  uiState.density = value === 'comfortable' ? 'comfortable' : 'compact';
+  writeUiPreference('density', uiState.density);
+  applyDensity();
+}
+function toggleDensity() {
+  setDensity(uiState.density === 'compact' ? 'comfortable' : 'compact');
+}
+function applySidebarState() {
+  document.body.classList.toggle('sidebar-collapsed', Boolean(uiState.sidebarCollapsed));
+}
+function toggleSidebarCollapsed() {
+  uiState.sidebarCollapsed = !uiState.sidebarCollapsed;
+  writeUiPreference('sidebarCollapsed', uiState.sidebarCollapsed ? '1' : '0');
+  applySidebarState();
+}
+function setTopbarTitle(id) {
+  const el = document.getElementById('topbar-view-title');
+  if (el) el.textContent = VIEW_TITLES[id] || id || 'ShortsFarm';
+}
+function setSegmentedState(selector, activeValue, attr) {
+  document.querySelectorAll(selector).forEach(btn => {
+    btn.classList.toggle('on', btn.getAttribute(attr) === activeValue);
+  });
+}
+function initResponsiveShell() {
+  uiState.density = readUiPreference('density', 'compact');
+  uiState.sidebarCollapsed = readUiPreference('sidebarCollapsed', '0') === '1';
+  uiState.videoViewMode = readUiPreference('videoViewMode', 'table') === 'grid' ? 'grid' : 'table';
+  uiState.clipViewMode = readUiPreference('clipViewMode', 'table') === 'grid' ? 'grid' : 'table';
+  applyDensity();
+  applySidebarState();
+  setTopbarTitle(currentView);
+  setSegmentedState('[data-video-view]', uiState.videoViewMode, 'data-video-view');
+  setSegmentedState('[data-clip-view]', uiState.clipViewMode, 'data-clip-view');
+  try {
+    const observer = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect?.width || window.innerWidth;
+      document.body.classList.toggle('narrow-workspace', width < 1120);
+    });
+    observer.observe(document.getElementById('main') || document.body);
+  } catch {}
+}
+function openInspector({title = 'Детали', kicker = 'Inspector', body = ''} = {}) {
+  const titleEl = document.getElementById('inspector-title');
+  const kickerEl = document.getElementById('inspector-kicker');
+  const bodyEl = document.getElementById('inspector-body');
+  if (titleEl) titleEl.textContent = title;
+  if (kickerEl) kickerEl.textContent = kicker;
+  if (bodyEl) bodyEl.innerHTML = body || '<div class="empty compact">Нет данных</div>';
+  document.body.classList.add('inspector-open');
+  document.getElementById('global-inspector')?.setAttribute('aria-hidden', 'false');
+}
+function closeInspector() {
+  document.body.classList.remove('inspector-open');
+  document.getElementById('global-inspector')?.setAttribute('aria-hidden', 'true');
+}
+function renderActionBar(title = '', actions = '') {
+  const el = document.getElementById('global-action-bar');
+  if (!el) return;
+  if (!title || !actions) {
+    el.classList.remove('on');
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = `<span class="bar-title">${esc(title)}</span><div class="bar-actions">${actions}</div>`;
+  el.classList.add('on');
+}
+
 function activateView(id, btn) {
   currentView = id;
+  setTopbarTitle(id);
   document.querySelectorAll('.v').forEach(el => el.classList.remove('on'));
   const view = document.getElementById('v-' + id);
   if (view) view.classList.add('on');
   document.querySelectorAll('.nb').forEach(b => b.classList.remove('on'));
   if (btn) btn.classList.add('on');
+  renderActionBar();
 }
 
 function nav(id, btn) {
+  if (id === 'clips') id = 'queue';
   activateView(id, btn);
   if (id === 'dashboard') loadDashboard();
   if (id === 'files') loadManagedFiles();
   if (id === 'pipeline') loadPipelineView();
   if (id === 'split' && !fsState.currentPath) initFsBrowser();
-  if (id === 'queue') loadJobs();
+  if (id === 'queue') {
+    setQueueSubView('overview');
+    loadJobs();
+  }
   if (id === 'videos') loadVideos();
-  if (id === 'clips') loadClips();
   if (id === 'tags') loadTagsView();
   if (id === 'storage-profiles') {
     window.history.replaceState({}, '', storageProfileUrl(null));
@@ -1140,7 +1259,7 @@ function renderManagedFiles() {
       ? `<button class="btn-mini" data-path="${esc(item.path)}" onclick="loadManagedFiles(this.dataset.path)">Открыть</button>`
       : '';
     const videoActions = !folder && item.media_type === 'video'
-      ? `${webPlayerButton(item.path)}<button class="btn-mini" data-path="${esc(item.path)}" onclick="openManagedFileInStudio(this.dataset.path)">Открыть в Нарезке</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="registerManagedSource(this.dataset.path)">Добавить как исходник</button>`
+      ? `${webPlayerButton(item.path)}<button class="btn-mini" data-path="${esc(item.path)}" onclick="openManagedFileInQueue(this.dataset.path)">Показать клипы</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="registerManagedSource(this.dataset.path)">Добавить как исходник</button>`
       : '';
     const mutations = system ? '' : `<button class="btn-mini" data-path="${esc(item.path)}" data-name="${esc(item.name)}" onclick="renameManagedItem(this.dataset.path,this.dataset.name)">Переименовать</button><button class="btn-mini" data-path="${esc(item.path)}" onclick="moveManagedItem(this.dataset.path)">Переместить</button><button class="btn-danger" data-path="${esc(item.path)}" data-folder="${folder ? '1' : '0'}" onclick="deleteManagedItem(this.dataset.path,this.dataset.folder==='1')">Удалить</button>`;
     return `<tr><td><span class="workspace-type ${folder ? 'segment' : 'clip'}"><i class="ti ${icon}"></i>&nbsp;${esc(type || 'файл')}</span></td><td>${nameCell}<div class="mono dim" title="${esc(item.path)}">${esc(displayPath)}</div>${folder ? `<div class="mono dim">${Number(item.children_count || 0)} объектов</div>` : ''}</td><td class="mono mid">${folder ? '—' : esc(formatFileSize(item.size))}</td><td class="mono dim">${esc(formatMtime(item.modified_at))}</td><td><div class="row-actions">${open}${videoActions}${mutations}</div></td></tr>`;
@@ -1274,12 +1393,17 @@ async function registerManagedSource(path) {
   }
 }
 
-async function openManagedFileInStudio(path) {
+async function openManagedFileInQueue(path) {
   const absolute = managedAbsolutePath(path);
-  if (!fsState.currentPath) await initFsBrowser();
-  nav('split', document.querySelector('[data-v="split"]'));
-  setMode('file');
-  await selectVideo(absolute);
+  setWorkspaceParentVideoFilter({
+    sourcePath: absolute,
+    title: path.split('/').pop() || path,
+  });
+  activateView('queue', document.querySelector('[data-v="queue"]'));
+  setQueueSubView('clips');
+  loadJobs();
+  await loadClips();
+  scrollQueueClipsIntoView();
 }
 
 async function loadDashboard() {
@@ -1306,7 +1430,6 @@ async function loadDashboard() {
     document.getElementById('st-clips-sub').textContent = `${clips.done||0} готово · ${failedClips} ошибок`;
     document.getElementById('nav-jobs').textContent = runningJobs + queuedJobs + activePipelineRuns || '';
     document.getElementById('nav-videos').textContent = data.videos_total || '';
-    document.getElementById('nav-clips').textContent = queuedClips || '';
     document.getElementById('job-pulse').classList.toggle('pulse', runningJobs > 0 || activePipelineRuns > 0);
 
     renderRunningBanner(data.latest_jobs || []);
@@ -1501,12 +1624,139 @@ async function goToOutputFolder(path) {
     showToast('Папка сегментов пока неизвестна', 'err');
     return;
   }
-  nav('split', document.querySelector('[data-v=split]'));
-  setMode('folder');
-  const ok = await openFolder(path);
-  if (ok) {
-    showToast(`Открыта папка сегментов: ${shortPath(path)}`);
-    showInlineOk('fs-error', `Открыта папка сегментов:\n${path}`);
+  const normalized = String(path || '').replace(/\/+$/, '');
+  const job = lastJobs.find(item => String(item.output_dir || '').replace(/\/+$/, '') === normalized);
+  if (job) {
+    await openQueueClipsForJob(job.id);
+    return;
+  }
+  const item = lastClips.find(row => (
+    String(row.folder_path || '').replace(/\/+$/, '') === normalized
+    || String(row.path || '').startsWith(normalized + '/')
+  ));
+  if (item) setWorkspaceParentVideoFilter(workspaceParentFilterFromItem(item));
+  else clearWorkspaceParentVideoFilter({silent: true});
+  activateView('queue', document.querySelector('[data-v="queue"]'));
+  setQueueSubView('clips');
+  loadJobs();
+  await loadClips();
+  scrollQueueClipsIntoView();
+  showToast(`Показаны нарезки/клипы: ${shortPath(path)}`);
+}
+
+function setQueueSubView(mode) {
+  queueSubView = mode === 'clips' ? 'clips' : 'overview';
+  const overview = document.getElementById('queue-overview');
+  const clips = document.getElementById('queue-clips-section');
+  if (overview) overview.hidden = queueSubView !== 'overview';
+  if (clips) clips.hidden = queueSubView !== 'clips';
+}
+
+function showQueueOverview() {
+  setQueueSubView('overview');
+  loadJobs();
+  document.getElementById('v-queue')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function scrollQueueClipsIntoView() {
+  setQueueSubView('clips');
+  document.getElementById('v-queue')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+function normalizeWorkspaceFilterPath(path) {
+  return String(path || '').replace(/\/+$/, '');
+}
+
+function workspaceParentFilterFromJob(job) {
+  return {
+    videoId: Number(job?.video_id || 0) || null,
+    sourcePath: normalizeWorkspaceFilterPath(job?.source_path || ''),
+    title: job?.current_file || (job?.source_path ? shortPath(job.source_path) : `Задача #${job?.id || ''}`),
+  };
+}
+
+function workspaceParentFilterFromItem(item) {
+  return {
+    videoId: Number(item?.video_id || 0) || null,
+    sourcePath: normalizeWorkspaceFilterPath(item?.source_path || ''),
+    title: item?.video_title || item?.title || item?.file_name || shortPath(item?.source_path || item?.path || ''),
+  };
+}
+
+function setWorkspaceParentVideoFilter(filter) {
+  workspaceParentVideoFilter = filter && (filter.videoId || filter.sourcePath)
+    ? {
+        videoId: Number(filter.videoId || 0) || null,
+        sourcePath: normalizeWorkspaceFilterPath(filter.sourcePath || ''),
+        title: filter.title || 'исходник',
+      }
+    : null;
+  renderWorkspaceParentFilterLine();
+}
+
+function clearWorkspaceParentVideoFilter(options = {}) {
+  workspaceParentVideoFilter = null;
+  renderWorkspaceParentFilterLine();
+  if (!options.silent) {
+    renderClipCounts(workspaceCountsFromItems(workspaceItemsForParentFilter()));
+    renderClipsTable(getVisibleWorkspaceItems());
+    renderWorkspaceDetail();
+  }
+}
+
+async function showAllQueueClips() {
+  clearWorkspaceParentVideoFilter({silent: true});
+  if (currentView !== 'queue') activateView('queue', document.querySelector('[data-v="queue"]'));
+  setQueueSubView('clips');
+  loadJobs();
+  await loadClips();
+  scrollQueueClipsIntoView();
+}
+
+async function openQueueClipsForJob(jobId) {
+  const job = lastJobs.find(item => Number(item.id) === Number(jobId));
+  if (!job) {
+    showToast('Задача не найдена', 'err');
+    return;
+  }
+  setWorkspaceParentVideoFilter(workspaceParentFilterFromJob(job));
+  if (currentView !== 'queue') activateView('queue', document.querySelector('[data-v="queue"]'));
+  setQueueSubView('clips');
+  loadJobs();
+  await loadClips();
+  scrollQueueClipsIntoView();
+}
+
+async function openQueueClipsForVideo(videoId, title = '', sourcePath = '') {
+  const video = lastVideos.find(item => Number(item.id) === Number(videoId));
+  setWorkspaceParentVideoFilter({
+    videoId: Number(videoId) || null,
+    sourcePath: sourcePath || video?.source_path || '',
+    title: title || video?.title || `Видео #${videoId}`,
+  });
+  if (currentView !== 'queue') activateView('queue', document.querySelector('[data-v="queue"]'));
+  setQueueSubView('clips');
+  loadJobs();
+  await loadClips();
+  scrollQueueClipsIntoView();
+}
+
+async function deleteAllClipsForVideo(videoId, title = '') {
+  const id = Number(videoId || 0);
+  if (!id) {
+    showToast('Исходник не найден', 'err');
+    return;
+  }
+  const label = title || lastVideos.find(item => Number(item.id) === id)?.title || `Видео #${id}`;
+  if (!window.confirm(`Удалить все нарезки и клипы исходника «${label}»? Файлы будут удалены с диска, это нельзя отменить.`)) return;
+  try {
+    const data = await api.post(`/api/videos/${id}/clips/delete`, {});
+    await refreshWorkspaceFromDeleteResponse(data);
+    const summary = data.summary || {};
+    showToast(`Клипы исходника удалены: ${summary.hidden || 0} · файлов: ${summary.deleted_files || 0} · ошибок: ${summary.errors || 0}`);
+    await Promise.allSettled([loadVideos(), loadDashboard(), loadJobs()]);
+  } catch (err) {
+    showToast(err.message || 'Не удалось удалить клипы исходника', 'err');
   }
 }
 
@@ -1769,19 +2019,24 @@ function filterJobs(tab, status) {
 function renderJobsTable(targetId, rows, full) {
   const el = document.getElementById(targetId);
   if (!rows.length) {
-    el.innerHTML = full ? '<div class="empty">Задач пока нет. Запустите нарезку в разделе «Нарезка».</div>' : '<div class="empty">Нет задач</div>';
+    el.innerHTML = full ? '<div class="empty">Задач пока нет. Запустите цикл в разделе «Конвейер» или импортируйте исходники.</div>' : '<div class="empty">Нет задач</div>';
     return;
   }
   el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Тип</th><th>Статус</th><th>Прогресс</th><th>Файл</th>${full ? '<th>Ошибка</th><th>Старт</th>' : '<th>Создано</th>'}</tr></thead><tbody>${rows.map(job => {
     const p = percent(job.done_items, job.total_items, job.status);
     const fileCell = job.source_path
-      ? `<div class="video-name-cell">${videoThumb(job.source_path, job.current_file || 'video')}<div style="min-width:0;flex:1">${job.output_dir ? `<button class="link-video mono mid ov" data-path="${esc(job.output_dir)}" title="Открыть папку сегментов: ${esc(job.output_dir)}" onclick="goToOutputFolder(this.dataset.path)">${esc(job.current_file || shortPath(job.source_path))}</button>` : `<span class="mono mid ov" title="${esc(job.source_path)}">${esc(job.current_file || shortPath(job.source_path))}</span>`}<div class="mono dim ov" title="${esc(job.output_dir || job.source_path)}">${job.output_dir ? `Сегменты: ${esc(shortPath(job.output_dir))}` : esc(shortPath(job.source_path))}</div></div><div class="row-actions">${mpvButton(job.source_path)}${outputFolderButton(job.output_dir)}</div></div>`
+      ? `<div class="video-name-cell">${videoThumb(job.source_path, job.current_file || 'video')}<div style="min-width:0;flex:1"><button class="link-video mono mid ov" title="Показать нарезки/клипы: ${esc(job.current_file || job.source_path)}" onclick="event.stopPropagation();openQueueClipsForJob(${Number(job.id)})">${esc(job.current_file || shortPath(job.source_path))}</button><div class="mono dim ov" title="${esc(job.output_dir || job.source_path)}">${job.output_dir ? `Сегменты: ${esc(shortPath(job.output_dir))}` : esc(shortPath(job.source_path))}</div></div><div class="row-actions">${mpvButton(job.source_path)}${outputFolderButton(job.output_dir)}</div></div>`
       : `<span class="mono mid ov">${esc(job.current_file || '—')}</span>`;
-    return `<tr data-s="${esc(job.status)}"><td class="mono dim">#${job.id}</td><td class="mono mid">${esc(job.type)}</td><td>${badge(job.status, job.status === 'running')}</td><td style="min-width:100px"><div class="pbar-row"><span class="mono dim">${job.done_items||0}/${job.total_items||'?'}</span><span class="mono dim">${p}%</span></div><div class="pbar"><div class="pf ${job.status==='failed'?'pf-err':job.status==='done'?'pf-ok':'pf-info'}" style="width:${p}%"></div></div></td><td>${fileCell}</td>${full ? `<td class="err ov" style="max-width:180px">${esc(job.error || '')}</td><td class="mono dim">${esc(job.started_at || job.created_at || '')}</td>` : `<td class="mono dim">${esc(job.created_at || '')}</td>`}</tr>`;
+    const rowClick = full ? ` onclick="openQueueClipsForJob(${Number(job.id)})"` : '';
+    return `<tr data-s="${esc(job.status)}"${rowClick}><td class="mono dim">#${job.id}</td><td class="mono mid">${esc(job.type)}</td><td>${badge(job.status, job.status === 'running')}</td><td style="min-width:100px"><div class="pbar-row"><span class="mono dim">${job.done_items||0}/${job.total_items||'?'}</span><span class="mono dim">${p}%</span></div><div class="pbar"><div class="pf ${job.status==='failed'?'pf-err':job.status==='done'?'pf-ok':'pf-info'}" style="width:${p}%"></div></div></td><td>${fileCell}</td>${full ? `<td class="err ov" style="max-width:180px">${esc(job.error || '')}</td><td class="mono dim">${esc(job.started_at || job.created_at || '')}</td>` : `<td class="mono dim">${esc(job.created_at || '')}</td>`}</tr>`;
   }).join('')}</tbody></table>`;
 }
 
 async function loadVideos() {
+  const target = document.getElementById('videos-table');
+  if (target && !lastVideos.length) {
+    target.innerHTML = '<div class="empty">Загружаю список видео…</div>';
+  }
   try {
     const data = await api.get('/api/videos');
     lastVideos = data.videos || [];
@@ -1813,6 +2068,50 @@ function getVisibleVideos() {
 function selectedVideos() {
   return lastVideos.filter(video => selectedVideoIds.has(Number(video.id)));
 }
+function setVideoViewMode(mode) {
+  uiState.videoViewMode = mode === 'grid' ? 'grid' : 'table';
+  writeUiPreference('videoViewMode', uiState.videoViewMode);
+  setSegmentedState('[data-video-view]', uiState.videoViewMode, 'data-video-view');
+  renderVideosTable(getVisibleVideos());
+}
+function setClipViewMode(mode) {
+  uiState.clipViewMode = mode === 'grid' ? 'grid' : 'table';
+  writeUiPreference('clipViewMode', uiState.clipViewMode);
+  setSegmentedState('[data-clip-view]', uiState.clipViewMode, 'data-clip-view');
+  renderClipsTable(getVisibleWorkspaceItems());
+}
+function videoInspectorBody(video) {
+  const output = video.output_dir ? `<button class="btn-secondary" data-path="${esc(video.output_dir)}" onclick="goToOutputFolder(this.dataset.path)">Открыть папку сегментов</button>` : '<span class="mono dim">Папка сегментов ещё не создана</span>';
+  const childCount = Number(video.segment_count || 0) + Number(video.clip_count || 0);
+  return `<div class="inspector-section">
+    <h3>Источник</h3>
+    <div class="inspector-kv">
+      <div><b>ID</b><span class="mono">#${Number(video.id)}</span></div>
+      <div><b>Статус</b><span>${badge(video.review_status)}</span></div>
+      <div><b>Длит.</b><span class="mono">${esc(video.duration_text || '—')}</span></div>
+      <div><b>Метки</b><span>${Number(video.mark_count || 0)}</span></div>
+      <div><b>Нарезки/клипы</b><span>${childCount}</span></div>
+    </div>
+  </div>
+  <div class="inspector-section">
+    <h3>Пути</h3>
+    <div class="mono dim" style="overflow-wrap:anywhere">${esc(video.source_path || '')}</div>
+    ${video.output_dir ? `<div class="mono dim" style="margin-top:8px;overflow-wrap:anywhere">${esc(video.output_dir)}</div>` : ''}
+  </div>
+  <div class="inspector-section">
+    <h3>Действия</h3>
+    <div class="row-actions">${mpvButton(video.source_path)}${output}<button class="btn-mini" onclick="openQueueClipsForVideo(${Number(video.id)})">Показать клипы</button><button class="btn-danger" onclick="deleteAllClipsForVideo(${Number(video.id)}, this.dataset.title)" data-title="${esc(video.title || `Видео #${video.id}`)}">Удалить все клипы этого видео</button><button class="btn-danger" onclick="openVideoDeleteDialog([${Number(video.id)}])">Удалить родительское видео</button></div>
+  </div>`;
+}
+function openVideoInspector(videoId) {
+  const video = lastVideos.find(item => Number(item.id) === Number(videoId));
+  if (!video) return;
+  openInspector({
+    title: video.title || `Видео #${video.id}`,
+    kicker: 'Source video',
+    body: videoInspectorBody(video),
+  });
+}
 function renderVideosBulkToolbar() {
   const el = document.getElementById('videos-bulk-toolbar');
   if (!el) return;
@@ -1822,16 +2121,24 @@ function renderVideosBulkToolbar() {
     <div class="row-actions">
       <button class="btn-mini" ${visibleRows.length ? '' : 'disabled'} onclick="setVisibleVideosSelected(true)">Выбрать в фильтре</button>
       <button class="btn-mini" ${selectedCount ? '' : 'disabled'} onclick="clearVideoSelection()">Снять выделение</button>
-      <label class="check-row compact-check">
-        <input id="videos-delete-source-files" type="checkbox">
-        <span>Удалить исходные файлы с диска</span>
-      </label>
     </div>
     <div class="row-actions">
       <span class="mono dim">${selectedCount ? `Выбрано видео: ${selectedCount}` : 'Выберите одно или несколько видео'}</span>
       <button class="btn-danger" ${selectedCount ? '' : 'disabled'} onclick="deleteSelectedVideos()">Удалить выбранные</button>
     </div>`;
   syncVideosSelectAllCheckbox();
+  renderVideosActionBar();
+}
+function renderVideosActionBar() {
+  const count = selectedVideos().length;
+  if (currentView !== 'videos' || !count) {
+    if (currentView === 'videos') renderActionBar();
+    return;
+  }
+  renderActionBar(`Видео выбрано: ${count}`, `
+    <button class="btn-mini" onclick="clearVideoSelection()">Снять</button>
+    <button class="btn-danger" onclick="deleteSelectedVideos()">Удалить</button>
+  `);
 }
 function syncVideosSelectAllCheckbox() {
   const selectAll = document.getElementById('videos-select-all');
@@ -1863,51 +2170,151 @@ function clearVideoSelection() {
   renderVideosTable(getVisibleVideos());
 }
 async function deleteSelectedVideos() {
-  const ids = Array.from(selectedVideoIds);
+  openVideoDeleteDialog(Array.from(selectedVideoIds));
+}
+function videoDeleteDialogElement() {
+  let el = document.getElementById('video-delete-modal');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'video-delete-modal';
+    el.className = 'modal-backdrop video-delete-backdrop';
+    el.style.display = 'none';
+    el.addEventListener('click', event => {
+      if (event.target === el) closeVideoDeleteDialog();
+    });
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function openVideoDeleteDialog(videoIds = null) {
+  const ids = (videoIds || Array.from(selectedVideoIds))
+    .map(value => Number(value))
+    .filter(value => Number.isFinite(value) && value > 0);
   if (!ids.length) {
     showToast('Выберите видео для удаления', 'err');
     return;
   }
-  const deleteSourceFiles = Boolean(document.getElementById('videos-delete-source-files')?.checked);
-  const baseText = `Удалить выбранные видео из базы: ${ids.length}?`;
-  const fileText = deleteSourceFiles
-    ? '\n\nТакже будут удалены исходные файлы с диска. Это нельзя отменить.'
-    : '\n\nИсходные файлы на диске останутся.';
-  if (!window.confirm(baseText + fileText)) return;
-  if (deleteSourceFiles && !window.confirm('Точно удалить исходные файлы выбранных видео?')) return;
+  pendingVideoDeleteIds = Array.from(new Set(ids));
+  const videos = pendingVideoDeleteIds.map(id => lastVideos.find(video => Number(video.id) === id)).filter(Boolean);
+  const childCount = videos.reduce((sum, video) => sum + Number(video.segment_count || 0) + Number(video.clip_count || 0), 0);
+  const titleList = videos.slice(0, 4).map(video => `<li title="${esc(video.source_path || '')}">${esc(video.title || `Видео #${video.id}`)}</li>`).join('');
+  const extra = videos.length > 4 ? `<li class="dim">…и ещё ${videos.length - 4}</li>` : '';
+  const el = videoDeleteDialogElement();
+  el.innerHTML = `<section class="schedule-modal video-delete-panel" onclick="event.stopPropagation()">
+    <div class="schedule-modal-head">
+      <span>Удаление родительского видео</span>
+      <button class="btn-mini" onclick="closeVideoDeleteDialog()">×</button>
+    </div>
+    <div class="schedule-modal-body">
+      <div class="delete-summary">
+        <b>Будет скрыто из списка исходников: ${pendingVideoDeleteIds.length}</b>
+        <p>Клипы останутся видимыми и будут привязаны к удалённому исходнику.</p>
+        ${titleList ? `<ul>${titleList}${extra}</ul>` : ''}
+      </div>
+      <label class="android-switch-row">
+        <span>
+          <b>Удалить исходные файлы с диска</b>
+          <small>Если выключено, файл-источник останется на месте.</small>
+        </span>
+        <input id="video-delete-source-files" type="checkbox">
+        <i aria-hidden="true"></i>
+      </label>
+      <label class="android-switch-row danger">
+        <span>
+          <b>Удалить нарезки и клипы вместе с видео</b>
+          <small>${childCount ? `Затронет примерно ${childCount} элементов. ` : ''}Если выключено, клипы останутся видимыми.</small>
+        </span>
+        <input id="video-delete-child-clips" type="checkbox">
+        <i aria-hidden="true"></i>
+      </label>
+      <div class="row-actions end">
+        <button class="btn-secondary" onclick="closeVideoDeleteDialog()">Отмена</button>
+        <button class="btn-danger" onclick="confirmVideoDeleteDialog()">Удалить</button>
+      </div>
+    </div>
+  </section>`;
+  el.style.display = 'grid';
+}
+function closeVideoDeleteDialog() {
+  pendingVideoDeleteIds = [];
+  const el = document.getElementById('video-delete-modal');
+  if (el) el.style.display = 'none';
+}
+async function confirmVideoDeleteDialog() {
+  const ids = pendingVideoDeleteIds.slice();
+  const deleteSourceFiles = Boolean(document.getElementById('video-delete-source-files')?.checked);
+  const deleteChildClips = Boolean(document.getElementById('video-delete-child-clips')?.checked);
+  closeVideoDeleteDialog();
+  await performVideoDelete(ids, {deleteSourceFiles, deleteChildClips});
+}
+async function performVideoDelete(ids, options = {}) {
+  const normalized = (ids || []).map(value => Number(value)).filter(value => Number.isFinite(value) && value > 0);
+  if (!normalized.length) {
+    showToast('Выберите видео для удаления', 'err');
+    return;
+  }
+  const deleteSourceFiles = Boolean(options.deleteSourceFiles);
+  const deleteChildClips = Boolean(options.deleteChildClips);
   try {
     const data = await api.post('/api/videos/bulk-delete', {
-      video_ids: ids,
+      video_ids: normalized,
       delete_source_files: deleteSourceFiles,
+      delete_child_clips: deleteChildClips,
     });
     lastVideos = data.videos || [];
-    selectedVideoIds.clear();
+    normalized.forEach(id => selectedVideoIds.delete(id));
     renderVideoCounts(data.counts || {});
     renderVideosTable(getVisibleVideos());
     const summary = data.summary || {};
     const source = summary.source_files || {};
-    const filePart = deleteSourceFiles ? ` · файлов удалено: ${source.deleted || 0}` : '';
-    showToast(`Удалено из базы: ${summary.deleted || 0}${filePart}`);
+    const child = summary.child_clips || {};
+    const filePart = deleteSourceFiles ? ` · исходников удалено: ${source.deleted || 0}` : '';
+    const childPart = deleteChildClips ? ` · клипов удалено: ${child.hidden || 0}` : ' · клипы сохранены';
+    showToast(`Скрыто исходников: ${summary.deleted || 0}${childPart}${filePart}`);
     await Promise.allSettled([loadDashboard(), loadJobs(), loadClips()]);
+    closeInspector();
   } catch (err) {
     showToast(err.message || 'Не удалось удалить видео', 'err');
   }
 }
 function renderVideosTable(rows) {
   const el = document.getElementById('videos-table');
+  if (!el) return;
   renderVideosBulkToolbar();
   if (!rows.length) { el.innerHTML = '<div class="empty">Нет видео</div>'; return; }
+  if (uiState.videoViewMode === 'grid') {
+    el.innerHTML = `<div class="media-grid">${rows.map(video => {
+      const selected = selectedVideoIds.has(Number(video.id));
+      return `<article class="media-card ${selected ? 'selected' : ''}" onclick="openVideoInspector(${Number(video.id)})">
+        <div class="media-card-thumb">
+          <label class="media-card-check" onclick="event.stopPropagation()"><input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleVideoSelection(${Number(video.id)}, this.checked);renderVideosTable(getVisibleVideos())"></label>
+          ${videoThumb(video.source_path, video.title)}
+        </div>
+        <div class="media-card-body">
+          <div class="media-card-title" title="${esc(video.title)}">${esc(video.title)}</div>
+          <div class="media-card-meta">${badge(video.review_status)} · ${esc(video.duration_text || '—')} · метки ${Number(video.mark_count || 0)} · клипы ${Number(video.clip_count || 0)}</div>
+          <div class="media-card-path" title="${esc(video.source_path)}">${esc(shortPath(video.source_path))}</div>
+          <div class="media-card-actions">${mpvButton(video.source_path)}${outputFolderButton(video.output_dir)}</div>
+        </div>
+      </article>`;
+    }).join('')}</div>`;
+    return;
+  }
   const allSelected = rows.length && rows.every(video => selectedVideoIds.has(Number(video.id)));
-  el.innerHTML = `<table class="tbl"><thead><tr><th><input id="videos-select-all" type="checkbox" ${allSelected ? 'checked' : ''} onchange="toggleVisibleVideosSelection(this.checked)"></th><th>#</th><th>Название</th><th>Длительность</th><th>Статус</th><th class="r">Метки</th><th class="r">Клипы</th><th>Источник</th><th>Действие</th></tr></thead><tbody>${rows.map(video => {
+  el.innerHTML = `<div class="table-scroll"><table class="tbl"><thead><tr><th><input id="videos-select-all" type="checkbox" ${allSelected ? 'checked' : ''} onchange="toggleVisibleVideosSelection(this.checked)"></th><th>#</th><th>Название</th><th>Длительность</th><th>Статус</th><th class="r">Метки</th><th class="r">Клипы</th><th>Источник</th><th>Действие</th></tr></thead><tbody>${rows.map(video => {
     const selected = selectedVideoIds.has(Number(video.id));
     const title = video.output_dir
-      ? `<button class="link-video mono txt ov" data-path="${esc(video.output_dir)}" title="Открыть папку сегментов: ${esc(video.output_dir)}" onclick="goToOutputFolder(this.dataset.path)">${esc(video.title)}</button>`
+      ? `<button class="link-video mono txt ov" data-path="${esc(video.output_dir)}" title="Открыть папку сегментов: ${esc(video.output_dir)}" onclick="event.stopPropagation();goToOutputFolder(this.dataset.path)">${esc(video.title)}</button>`
       : `<span class="mono txt ov" title="${esc(video.source_path)}">${esc(video.title)}</span>`;
-    return `<tr data-s="${esc(video.review_status)}"><td><input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleVideoSelection(${Number(video.id)}, this.checked)"></td><td class="mono dim">#${video.id}</td><td><div class="video-name-cell">${videoThumb(video.source_path, video.title)}<div style="min-width:0;flex:1">${title}${video.output_dir ? `<div class="mono dim ov" title="${esc(video.output_dir)}">Сегменты: ${esc(shortPath(video.output_dir))}</div>` : ''}</div></div></td><td class="mono mid">${esc(video.duration_text)}</td><td>${badge(video.review_status)}</td><td class="mono txt r">${video.mark_count}</td><td class="mono warn r">${video.clip_count}</td><td><span class="mono dim ov">${esc(shortPath(video.source_path))}</span></td><td><div class="row-actions">${mpvButton(video.source_path)}${outputFolderButton(video.output_dir)}</div></td></tr>`;
-  }).join('')}</tbody></table>`;
+    return `<tr data-s="${esc(video.review_status)}" onclick="openVideoInspector(${Number(video.id)})"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation()" onchange="toggleVideoSelection(${Number(video.id)}, this.checked)"></td><td class="mono dim">#${video.id}</td><td><div class="video-name-cell">${videoThumb(video.source_path, video.title)}<div style="min-width:0;flex:1">${title}${video.output_dir ? `<div class="mono dim ov" title="${esc(video.output_dir)}">Сегменты: ${esc(shortPath(video.output_dir))}</div>` : ''}</div></div></td><td class="mono mid">${esc(video.duration_text)}</td><td>${badge(video.review_status)}</td><td class="mono txt r">${video.mark_count}</td><td class="mono warn r">${video.clip_count}</td><td><span class="mono dim ov">${esc(shortPath(video.source_path))}</span></td><td><div class="row-actions">${mpvButton(video.source_path)}${outputFolderButton(video.output_dir)}</div></td></tr>`;
+  }).join('')}</tbody></table></div>`;
 }
 
 async function loadClips() {
+  const target = document.getElementById('clips-table');
+  if (target && !lastClips.length) {
+    target.innerHTML = '<div class="empty">Загружаю клипы и теги workspace…</div>';
+  }
   try {
     const [data, profilesData, templatesData, reactionsData] = await Promise.all([
       api.get('/api/workspace/clips'),
@@ -1924,9 +2331,10 @@ async function loadClips() {
     if (currentWorkspaceItemKey && !workspaceItemByKey(currentWorkspaceItemKey)) {
       currentWorkspaceItemKey = null;
     }
-    renderClipCounts(data.counts || {});
+    renderClipCounts(workspaceCountsFromItems(workspaceItemsForParentFilter()));
     renderWorkspaceTagControls();
     renderWorkspaceEditingControls();
+    renderWorkspaceParentFilterLine();
     renderClipsTable(getVisibleWorkspaceItems());
     if (!workspaceDetailDirty) renderWorkspaceDetail();
   } catch (err) {
@@ -1940,6 +2348,18 @@ function renderClipCounts(counts) {
     if (el) el.textContent = key === 'all' ? total : (counts[key] || '');
   }
 }
+function renderWorkspaceParentFilterLine() {
+  const el = document.getElementById('workspace-parent-filter-line');
+  if (!el) return;
+  if (!workspaceParentVideoFilter) {
+    el.innerHTML = 'Показаны все нарезки и клипы.';
+    return;
+  }
+  const deleteButton = workspaceParentVideoFilter.videoId
+    ? `<button class="btn-danger btn-mini" data-title="${esc(workspaceParentVideoFilter.title || 'исходник')}" onclick="deleteAllClipsForVideo(${Number(workspaceParentVideoFilter.videoId)}, this.dataset.title)">Удалить все клипы этого исходника</button>`
+    : '';
+  el.innerHTML = `<span>Показаны клипы исходника: <b>${esc(workspaceParentVideoFilter.title || 'исходник')}</b></span>${deleteButton}`;
+}
 function workspaceCountsFromItems(items) {
   const counts = {all: items.length, draft: 0, ready: 0, queued: 0, uploaded: 0, failed: 0, missing: 0};
   for (const item of items) {
@@ -1949,10 +2369,22 @@ function workspaceCountsFromItems(items) {
   }
   return counts;
 }
+function workspaceItemMatchesParentFilter(item) {
+  if (!workspaceParentVideoFilter) return true;
+  const filterVideoId = Number(workspaceParentVideoFilter.videoId || 0);
+  if (filterVideoId && Number(item?.video_id || 0) === filterVideoId) return true;
+  const filterSourcePath = normalizeWorkspaceFilterPath(workspaceParentVideoFilter.sourcePath || '');
+  if (filterSourcePath && normalizeWorkspaceFilterPath(item?.source_path || '') === filterSourcePath) return true;
+  return false;
+}
+function workspaceItemsForParentFilter() {
+  return lastClips.filter(workspaceItemMatchesParentFilter);
+}
 function filterClips(tab, status) {
   workspaceFilter = status || 'all';
   tab.closest('.tabs').querySelectorAll('.tab').forEach(item => item.classList.remove('on'));
   tab.classList.add('on');
+  renderClipCounts(workspaceCountsFromItems(workspaceItemsForParentFilter()));
   renderWorkspaceFilterControls();
   renderClipsTable(getVisibleWorkspaceItems());
   renderWorkspaceDetail();
@@ -1987,11 +2419,12 @@ function workspaceItemMatchesTagFilters(item) {
   return true;
 }
 function getVisibleWorkspaceItems() {
+  const parentItems = workspaceItemsForParentFilter();
   const byStatus = workspaceFilter === 'missing'
-    ? lastClips.filter(item => item.missing)
+    ? parentItems.filter(item => item.missing)
     : workspaceFilter === 'all'
-      ? lastClips
-      : lastClips.filter(item => item.workspace_status === workspaceFilter);
+      ? parentItems
+      : parentItems.filter(item => item.workspace_status === workspaceFilter);
   return byStatus.filter(item => workspaceItemMatchesText(item) && workspaceItemMatchesTagFilters(item));
 }
 function workspaceTypeLabel(item) {
@@ -2398,7 +2831,7 @@ async function createCatalogTag({name, color = '#64748b'} = {}) {
     renderStorageProfileDetail();
     renderGlobalTagsManager();
     renderWorkspaceTagControls();
-    if (currentView === 'clips') renderWorkspaceListAndDetail();
+    if (currentView === 'queue') renderWorkspaceListAndDetail();
     showToast('Тег создан');
     return data.tag;
   } catch (err) {
@@ -2800,7 +3233,7 @@ function storageProfilePublishSettings() {
   }
   const settings = raw.publish || raw || {};
   return {
-    publish_mode: settings.publish_mode || 'private',
+    publish_mode: settings.publish_mode || 'public',
     category_id: settings.category_id || '22',
     made_for_kids: Boolean(settings.made_for_kids),
     title_template: settings.title_template || '',
@@ -2855,7 +3288,7 @@ function storageProfilePublishSettingsPanel() {
 }
 function readStorageProfilePublishSettingsForm() {
   return {
-    publish_mode: document.getElementById('storage-publish-mode')?.value || 'private',
+    publish_mode: document.getElementById('storage-publish-mode')?.value || 'public',
     category_id: document.getElementById('storage-publish-category')?.value || '22',
     made_for_kids: Boolean(document.getElementById('storage-publish-made-for-kids')?.checked),
     title_template: document.getElementById('storage-publish-title-template')?.value || '',
@@ -3474,6 +3907,9 @@ function renderWorkspaceType(item) {
 function missingBadge(item) {
   return item?.missing ? '<span class="badge b-err">Файл отсутствует</span>' : '';
 }
+function sourceDeletedBadge(item) {
+  return item?.source_deleted ? '<span class="badge b-warn">Исходник удалён</span>' : '';
+}
 function prepareBadge(item) {
   if (!item) return '';
   if (item.prepare_status === 'done' && item.prepared_file_exists) return '<span class="badge b-ok">Подготовлено</span>';
@@ -3492,7 +3928,7 @@ function workspaceOpenFolderButton(item, label='Папка') {
   if (!item?.folder_path || !item?.folder_exists) {
     return `<button class="btn-mini" disabled title="${esc(item?.path_error || 'Папка отсутствует')}">${esc(label)}</button>`;
   }
-  return `<button class="btn-mini" data-path="${esc(item.folder_path)}" onclick="goToOutputFolder(this.dataset.path)">${esc(label)}</button>`;
+  return `<button class="btn-mini" data-path="${esc(item.folder_path)}" onclick="event.stopPropagation();goToOutputFolder(this.dataset.path)">${esc(label)}</button>`;
 }
 function toggleWorkspaceSelection(key, checked) {
   if (checked) selectedWorkspaceKeys.add(key);
@@ -3506,6 +3942,7 @@ function selectWorkspaceItem(key) {
   if (key) selectedWorkspaceKeys.add(key);
   renderClipsTable(getVisibleWorkspaceItems());
   renderWorkspaceDetail();
+  closeInspector();
 }
 function renderWorkspaceBulkState() {
   const total = selectedWorkspaceKeys.size;
@@ -3513,6 +3950,20 @@ function renderWorkspaceBulkState() {
     el.textContent = total ? `Выбрано: ${total}` : '';
   });
   renderWorkspaceEditingControls();
+  renderWorkspaceActionBar();
+}
+function renderWorkspaceActionBar() {
+  const total = selectedWorkspaceKeys.size;
+  if (currentView !== 'queue' || !total) {
+    if (currentView === 'queue') renderActionBar();
+    return;
+  }
+  renderActionBar(`Клипов выбрано: ${total}`, `
+    <button class="btn-mini" onclick="clearWorkspaceSelection()">Снять</button>
+    <button class="btn-mini" onclick="bulkSetWorkspaceStatus('ready')">Готово</button>
+    <button class="btn-mini" onclick="bulkAddCatalogTagToWorkspaceItems()">Добавить тег</button>
+    <button class="btn-danger" onclick="bulkDeleteWorkspaceItems()">Удалить</button>
+  `);
 }
 function renderWorkspaceListAndDetail() {
   renderClipsTable(getVisibleWorkspaceItems());
@@ -3549,7 +4000,8 @@ function renderWorkspaceFilterControls() {
   }
   const visibleLine = document.querySelector('[data-workspace-filter-summary]');
   if (visibleLine) {
-    visibleLine.textContent = `Показано: ${getVisibleWorkspaceItems().length} из ${lastClips.length}`;
+    const parentItems = workspaceItemsForParentFilter();
+    visibleLine.textContent = `Показано: ${getVisibleWorkspaceItems().length} из ${parentItems.length}`;
   }
 }
 function onWorkspaceSearchInput(value) {
@@ -3638,11 +4090,36 @@ async function bulkRemoveCatalogTagFromWorkspaceItems() {
 }
 function renderClipsTable(rows) {
   const el = document.getElementById('clips-table');
+  if (!el) return;
   if (!rows.length) {
     el.innerHTML = '<div class="empty">Нарезанных сегментов и клипов пока нет. После нарезки видео файлы появятся здесь.</div>';
     return;
   }
-  el.innerHTML = `<div class="workspace-selected-line mono dim"><span data-workspace-selected-count></span><span data-workspace-filter-summary></span></div><table class="tbl workspace-table"><thead><tr><th></th><th>Файл</th><th>Источник</th><th>Длит.</th><th>Тип</th><th>Статус</th><th>Путь</th><th>Действие</th></tr></thead><tbody>${rows.map(item => {
+  if (uiState.clipViewMode === 'grid') {
+    el.innerHTML = `<div class="workspace-selected-line mono dim"><span data-workspace-selected-count></span><span data-workspace-filter-summary></span></div><div class="media-grid workspace-media-grid">${rows.map(item => {
+      const selected = selectedWorkspaceKeys.has(item.id);
+      const playablePath = item.path || item.source_path;
+      const title = workspaceTitle(item);
+      const tags = workspaceCatalogTags(item);
+      return `<article class="media-card ${selected ? 'selected' : ''} ${item.missing ? 'missing' : ''}" onclick="selectWorkspaceItem('${esc(item.id)}')">
+        <div class="media-card-thumb">
+          <label class="media-card-check" onclick="event.stopPropagation()"><input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleWorkspaceSelection('${esc(item.id)}', this.checked);renderClipsTable(getVisibleWorkspaceItems())"></label>
+          ${item.missing ? videoThumb(playablePath, title) : videoWatchThumb(playablePath, title)}
+        </div>
+        <div class="media-card-body">
+          <div class="media-card-title" title="${esc(title)}">${esc(title)}</div>
+          <div class="media-card-meta">${badge(item.workspace_status)}${sourceDeletedBadge(item)} · ${esc(formatDurationSec(item.duration_sec))} · ${esc(workspaceTypeLabel(item))}</div>
+          <div class="media-card-path" title="${esc(item.path || '')}">${esc(workspaceDisplayPath(item.workspace_path || item.path || ''))}</div>
+          ${tags.length ? `<div class="media-card-meta">${tagListPills(tags.slice(0, 4))}</div>` : ''}
+          <div class="media-card-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${storageProfileWorkspaceButton(item)}</div>
+        </div>
+      </article>`;
+    }).join('')}</div>`;
+    renderWorkspaceBulkState();
+    renderWorkspaceFilterControls();
+    return;
+  }
+  el.innerHTML = `<div class="workspace-selected-line mono dim"><span data-workspace-selected-count></span><span data-workspace-filter-summary></span></div><div class="table-scroll"><table class="tbl workspace-table"><thead><tr><th></th><th>Файл</th><th>Источник</th><th>Длит.</th><th>Тип</th><th>Статус</th><th>Путь</th><th>Действие</th></tr></thead><tbody>${rows.map(item => {
     const selected = selectedWorkspaceKeys.has(item.id);
     const activeClasses = ['workspace-row'];
     if (currentWorkspaceItemKey === item.id) activeClasses.push('active');
@@ -3658,8 +4135,8 @@ function renderClipsTable(rows) {
     const titleCell = item.missing
       ? `<div class="mono txt ov" title="${esc(title)}">${esc(title)}</div>`
       : `<button class="link-video mono txt ov" data-path="${esc(playablePath)}" title="${esc(title)}" onclick="event.stopPropagation();openWebPlayer(this.dataset.path,{title:this.textContent||''})">${esc(title)}</button>`;
-    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${thumb}<div style="min-width:0;flex:1">${titleCell}<div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}${prepareInfo}${publishInfo}${tagInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${missingBadge(item)}${prepareBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${storageProfileWorkspaceButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
-  }).join('')}</tbody></table>`;
+    return `<tr${active} data-key="${esc(item.id)}" onclick="selectWorkspaceItem('${esc(item.id)}')"><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation();toggleWorkspaceSelection('${esc(item.id)}', this.checked)"></td><td><div class="video-name-cell">${thumb}<div style="min-width:0;flex:1">${titleCell}<div class="mono dim">#${esc(item.item_id)} · ${esc(item.file_name || '—')}</div>${renderInfo}${prepareInfo}${publishInfo}${tagInfo}</div></div></td><td class="mono mid ov">${esc(item.video_title || '—')}</td><td class="mono txt">${esc(formatDurationSec(item.duration_sec))}</td><td>${renderWorkspaceType(item)}</td><td><div class="status-stack">${badge(item.workspace_status)}${sourceDeletedBadge(item)}${missingBadge(item)}${prepareBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.path || '')}">${esc(shortPath(item.path || '—'))}</span></td><td><div class="row-actions">${workspaceOpenFileButton(item)}${workspaceOpenFolderButton(item)}${storageProfileWorkspaceButton(item)}${item.missing ? `<button class="btn-mini" onclick="event.stopPropagation();deleteWorkspaceItem('${esc(item.id)}')">Убрать</button>` : ''}</div></td></tr>`;
+  }).join('')}</tbody></table></div>`;
   renderWorkspaceBulkState();
   renderWorkspaceFilterControls();
 }
@@ -3689,7 +4166,7 @@ function workspaceYoutubeRequestBody(items) {
   return {
     item_keys: items,
     account_id: Number(workspaceYoutubeState.selectedAccountId),
-    publish_mode: document.getElementById('workspace-youtube-mode')?.value || 'private',
+    publish_mode: document.getElementById('workspace-youtube-mode')?.value || 'public',
     category_id: document.getElementById('workspace-youtube-category')?.value || '22',
     made_for_kids: Boolean(document.getElementById('workspace-youtube-made-for-kids')?.checked),
   };
@@ -3708,7 +4185,7 @@ function workspaceYoutubeSkippedText(data) {
   return skipped.slice(0, 12).map(item => `${item.item_key}: ${item.reason}`).join('\n');
 }
 function confirmYoutubeBatch(count, mode, actionText) {
-  const visibility = mode || 'private';
+  const visibility = mode || 'public';
   if (count > 5) {
     const ok = confirm(`Вы собираетесь ${actionText || 'отправить'} ${count} видео в YouTube. Видимость: ${visibility}. Продолжить?`);
     if (!ok) return false;
@@ -3718,7 +4195,7 @@ function confirmYoutubeBatch(count, mode, actionText) {
   }
   return true;
 }
-function publishVisibilitySummary(jobs, fallback = 'private') {
+function publishVisibilitySummary(jobs, fallback = 'public') {
   const values = Array.from(new Set((jobs || []).map(job => job.privacy_status || job.publish_mode || fallback).filter(Boolean)));
   if (!values.length) return fallback;
   return values.length === 1 ? values[0] : values.join('/');
@@ -3726,7 +4203,7 @@ function publishVisibilitySummary(jobs, fallback = 'private') {
 function confirmPublishJobsBatch(jobs, count, actionText) {
   const selectedJobs = jobs || [];
   const effectiveCount = Number(count || selectedJobs.length || 0);
-  const visibility = publishVisibilitySummary(selectedJobs, 'private');
+  const visibility = publishVisibilitySummary(selectedJobs, 'public');
   if (!confirmYoutubeBatch(effectiveCount, visibility, actionText)) return false;
   if (selectedJobs.some(job => (job.privacy_status || job.publish_mode) === 'public') && visibility !== 'public') {
     return confirm('Среди выбранных видео есть публичные публикации. Это действие может быть видно зрителям. Продолжить?');
@@ -3752,7 +4229,7 @@ async function enqueueWorkspaceItemsToYouTube(items, runNow = false) {
     showToast('Сначала подключите YouTube-канал в настройках публикации.', 'err');
     return;
   }
-  const mode = document.getElementById('workspace-youtube-mode')?.value || 'private';
+  const mode = document.getElementById('workspace-youtube-mode')?.value || 'public';
   if (!confirmYoutubeBatch(selected.length, mode, runNow ? 'загрузить' : 'отправить')) return;
   if (runNow && !confirm('Добавить выбранные видео в очередь и сразу запустить загрузку?')) return;
   workspaceYoutubeState.busy = true;
@@ -4002,7 +4479,7 @@ function renderWorkspaceDetail() {
     <div class="workspace-detail-head">
       <div>
         <div class="workspace-detail-title">${esc(title)}</div>
-        <div class="mono dim detail-badges">${renderWorkspaceType(item)} · #${esc(item.item_id)} · ${badge(item.workspace_status)} ${missingBadge(item)}</div>
+        <div class="mono dim detail-badges">${renderWorkspaceType(item)} · #${esc(item.item_id)} · ${badge(item.workspace_status)} ${sourceDeletedBadge(item)} ${missingBadge(item)}</div>
       </div>
     </div>
     ${missingNotice}
@@ -4476,7 +4953,7 @@ function renderPublishJobsTable() {
     if (job.schedule_state === 'overdue' && job.schedule_group_id) actions.push(`<button class="btn-secondary" onclick="approvePublishScheduleGroup(${Number(job.schedule_group_id)})">Разрешить</button>`);
     if (job.can_cancel) actions.push(`<button class="btn-danger" onclick="cancelPublishJob(${Number(job.id)})">Отменить</button>`);
     actions.push(webPlayerButton(clipPath, 'Смотреть'));
-    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="togglePublishJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td>${badge(job.status)}</td><td class="mono mid ov" title="${esc(job.title || '')}">${esc(job.title || '—')}</td><td><div class="mono txt">${esc(job.channel_title || job.account_display_name || '—')}</div>${profile}</td><td>${renderPublishScheduleCell(job)}</td><td class="mono dim">${esc(job.privacy_status || 'private')}<div>${esc(job.publish_mode || 'private')}</div></td><td class="mono dim ov" title="${esc(clipPath)}">${esc(shortPath(clipPath || '—'))}</td><td class="mono dim">${esc(formatMtime(job.created_at))}</td><td class="mono txt">${esc(job.attempt_count || 0)}</td><td><div class="row-actions">${err}</div></td><td>${youtubeLink}</td><td><div class="row-actions">${actions.join('')}</div></td></tr>`;
+    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="togglePublishJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td>${badge(job.status)}</td><td class="mono mid ov" title="${esc(job.title || '')}">${esc(job.title || '—')}</td><td><div class="mono txt">${esc(job.channel_title || job.account_display_name || '—')}</div>${profile}</td><td>${renderPublishScheduleCell(job)}</td><td class="mono dim">${esc(job.privacy_status || 'public')}<div>${esc(job.publish_mode || 'public')}</div></td><td class="mono dim ov" title="${esc(clipPath)}">${esc(shortPath(clipPath || '—'))}</td><td class="mono dim">${esc(formatMtime(job.created_at))}</td><td class="mono txt">${esc(job.attempt_count || 0)}</td><td><div class="row-actions">${err}</div></td><td>${youtubeLink}</td><td><div class="row-actions">${actions.join('')}</div></td></tr>`;
   }).join('')}</tbody></table>`;
   renderPublishJobSelectionState();
 }
@@ -4526,7 +5003,7 @@ async function refreshPublishJobs() {
     lastPublishJobs = data.jobs || [];
     lastPublishScheduleGroups = groupsData.groups || [];
     renderPublishJobsTable();
-    if (currentView === 'clips') {
+    if (currentView === 'queue') {
       await refreshWorkspaceList();
       renderWorkspaceListAndDetail();
     }
@@ -5373,7 +5850,7 @@ function selectPublishClip(clipId) {
 }
 
 function onPublishModeChange() {
-  const mode = document.getElementById('publish-mode')?.value || 'private';
+  const mode = document.getElementById('publish-mode')?.value || 'public';
   const field = document.getElementById('publish-at-field');
   if (field) field.style.display = mode === 'schedule' ? 'block' : 'none';
   updatePublishButtons();
@@ -5390,7 +5867,7 @@ function updatePublishButtons() {
   const hasClip = Boolean(getSelectedPublishClip());
   const title = document.getElementById('publish-title')?.value.trim() || '';
   const category = document.getElementById('publish-category')?.value.trim() || '';
-  const mode = document.getElementById('publish-mode')?.value || 'private';
+  const mode = document.getElementById('publish-mode')?.value || 'public';
   const publishAt = document.getElementById('publish-at')?.value.trim() || '';
   const valid = hasProfile && hasAccount && hasClip && Boolean(title) && Boolean(category) && (mode !== 'schedule' || Boolean(publishAt));
   if (enqueueBtn) enqueueBtn.disabled = publishState.busy || !valid;
@@ -5407,7 +5884,7 @@ function publishRequestBody() {
     description: document.getElementById('publish-description')?.value || '',
     tags: (document.getElementById('publish-tags')?.value || '').split(',').map(item => item.trim()).filter(Boolean),
     category_id: document.getElementById('publish-category')?.value || '22',
-    publish_mode: document.getElementById('publish-mode')?.value || 'private',
+    publish_mode: document.getElementById('publish-mode')?.value || 'public',
     publish_at: document.getElementById('publish-mode')?.value === 'schedule'
       ? (document.getElementById('publish-at')?.value || '')
       : null,
@@ -6243,7 +6720,19 @@ async function loadOutputs() {
   }
 }
 
+Object.assign(window, {
+  nav,
+  toggleSidebarCollapsed,
+  toggleDensity,
+  setVideoViewMode,
+  setClipViewMode,
+  openInspector,
+  closeInspector,
+  renderActionBar,
+});
+
 window.addEventListener('DOMContentLoaded', () => {
+  initResponsiveShell();
   setSecs(60);
   setMode('file');
   loadDashboard();
@@ -6274,7 +6763,9 @@ window.addEventListener('storage', event => {
 });
 setInterval(() => {
   if (currentView === 'dashboard') loadDashboard();
-  if (currentView === 'queue') loadJobs();
-  if (currentView === 'clips') loadClips();
+  if (currentView === 'queue') {
+    loadJobs();
+    if (queueSubView === 'clips') loadClips();
+  }
   if (currentView === 'integrations') loadIntegrationsView({silent: true});
 }, 5000);

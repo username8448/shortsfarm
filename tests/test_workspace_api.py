@@ -43,11 +43,14 @@ def _make_youtube_account() -> int:
     )
 
 
-def _make_clip(video_in_db: int, tmp_path, *, exists: bool = True):
+def _make_clip(video_in_db: int, tmp_path, *, exists: bool = True, under_output: bool = False):
     from shortsfarm import db
+    from shortsfarm.config import output_dir
     mark_id = db.insert_mark(video_in_db, None, 3.0, 23.0)
     clip_id = db.insert_clip(video_in_db, mark_id)
-    path = tmp_path / f"clip-{clip_id}.mp4"
+    folder = output_dir() / "clips" / "test" if under_output else tmp_path
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"clip-{clip_id}.mp4"
     if exists:
         path.write_bytes(b"clip")
     db.set_clip_done(clip_id, str(path))
@@ -266,10 +269,12 @@ def test_workspace_bulk_delete_summary(video_in_db, tmp_path):
     assert data["summary"]["errors"] == 0
 
 
-def test_videos_bulk_delete_keeps_source_file_by_default(video_in_db, dummy_video):
+def test_videos_bulk_delete_soft_hides_parent_and_keeps_clips_by_default(video_in_db, dummy_video, tmp_path):
     from shortsfarm import db
     from shortsfarm.web import api
     from shortsfarm.web.schemas import VideoBulkDeleteRequest
+    segment_id = _make_segment(video_in_db, tmp_path, under_output=True)
+    clip_id = _make_clip(video_in_db, tmp_path, under_output=True)
 
     data = api.videos_bulk_delete(
         VideoBulkDeleteRequest(video_ids=[video_in_db])
@@ -277,14 +282,22 @@ def test_videos_bulk_delete_keeps_source_file_by_default(video_in_db, dummy_vide
 
     assert data["summary"]["deleted"] == 1
     assert data["summary"]["source_files"]["deleted"] == 0
-    assert db.get_video(video_in_db) is None
+    assert data["summary"]["child_clips"]["hidden"] == 0
+    row = db.get_video(video_in_db)
+    assert row is not None
+    assert row["deleted_at"] is not None
+    assert {video["id"] for video in data["videos"]} == set()
+    workspace = api.workspace_clips()
+    assert {item["id"] for item in workspace["items"]} >= {f"segment:{segment_id}", f"clip:{clip_id}"}
+    assert all(item["source_deleted"] for item in workspace["items"] if item["id"] in {f"segment:{segment_id}", f"clip:{clip_id}"})
     assert dummy_video.exists()
 
 
-def test_videos_bulk_delete_can_delete_source_file(video_in_db, dummy_video):
+def test_videos_bulk_delete_can_delete_source_file_without_deleting_clips(video_in_db, dummy_video, tmp_path):
     from shortsfarm import db
     from shortsfarm.web import api
     from shortsfarm.web.schemas import VideoBulkDeleteRequest
+    segment_id = _make_segment(video_in_db, tmp_path, under_output=True)
 
     data = api.videos_bulk_delete(
         VideoBulkDeleteRequest(video_ids=[video_in_db], delete_source_files=True)
@@ -292,8 +305,49 @@ def test_videos_bulk_delete_can_delete_source_file(video_in_db, dummy_video):
 
     assert data["summary"]["deleted"] == 1
     assert data["summary"]["source_files"]["deleted"] == 1
-    assert db.get_video(video_in_db) is None
+    assert data["summary"]["child_clips"]["hidden"] == 0
+    row = db.get_video(video_in_db)
+    assert row is not None
+    assert row["deleted_at"] is not None
+    assert row["source_file_deleted_at"] is not None
     assert not dummy_video.exists()
+    assert f"segment:{segment_id}" in {item["id"] for item in api.workspace_clips()["items"]}
+
+
+def test_videos_bulk_delete_can_delete_child_clips(video_in_db, dummy_video, tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import VideoBulkDeleteRequest
+    segment_id = _make_segment(video_in_db, tmp_path, under_output=True)
+    clip_id = _make_clip(video_in_db, tmp_path, under_output=True)
+
+    data = api.videos_bulk_delete(
+        VideoBulkDeleteRequest(video_ids=[video_in_db], delete_child_clips=True)
+    )
+
+    assert data["summary"]["deleted"] == 1
+    assert data["summary"]["child_clips"]["found"] == 2
+    assert data["summary"]["child_clips"]["hidden"] == 2
+    assert data["summary"]["child_clips"]["deleted_files"] == 2
+    assert dummy_video.exists()
+    visible_ids = {item["id"] for item in api.workspace_clips()["items"]}
+    assert f"segment:{segment_id}" not in visible_ids
+    assert f"clip:{clip_id}" not in visible_ids
+
+
+def test_video_child_clips_delete_keeps_parent(video_in_db, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    segment_id = _make_segment(video_in_db, tmp_path, under_output=True)
+    clip_id = _make_clip(video_in_db, tmp_path, under_output=True)
+
+    data = api.video_child_clips_delete(video_in_db)
+
+    assert data["summary"]["found"] == 2
+    assert data["summary"]["hidden"] == 2
+    assert db.get_video(video_in_db)["deleted_at"] is None
+    visible_ids = {item["id"] for item in api.workspace_clips()["items"]}
+    assert f"segment:{segment_id}" not in visible_ids
+    assert f"clip:{clip_id}" not in visible_ids
 
 
 def test_settings_database_reset_requires_exact_confirmation(video_in_db):
@@ -533,6 +587,8 @@ def test_workspace_youtube_enqueue_segment_creates_publish_clip(video_in_db, tmp
     assert job["status"] == "queued"
     assert job["title"] == "Workspace title"
     assert job["description"] == "Workspace description"
+    assert job["privacy_status"] == "private"
+    assert job["publish_mode"] == "private"
     assert '"one"' in job["tags"]
     assert db.get_workspace_item("segment", segment_id)["workspace_status"] == "queued"
     assert f"clip:{item['clip_id']}" not in {row["id"] for row in db.list_workspace_items()}
@@ -558,11 +614,14 @@ def test_workspace_youtube_enqueue_uses_prepared_segment_path(monkeypatch, video
     assert data["prepared"] == 1
     item = data["items"][0]
     clip = db.get_clip(item["clip_id"])
+    job = db.get_publish_job(item["job_id"])
     workspace_item = db.get_workspace_item("segment", segment_id)
     assert workspace_item["prepare_status"] == "done"
     assert Path(workspace_item["prepared_path"]).exists()
     assert clip["output_path"] == workspace_item["prepared_path"]
     assert "/prepared/9x16/" in clip["output_path"]
+    assert job["privacy_status"] == "public"
+    assert job["publish_mode"] == "public"
     assert clip["source_aspect"] == "9x16"
 
 

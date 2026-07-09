@@ -17,16 +17,24 @@ WEB_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = WEB_DIR.parents[1]
 STUDIO_DIST = PROJECT_ROOT / "frontend" / "dist"
 FAVICON_PATH = WEB_DIR / "static" / "favicon.svg"
-ASSET_VERSION = max(
-    (WEB_DIR / "static" / "app.js").stat().st_mtime_ns,
-    (WEB_DIR / "static" / "style.css").stat().st_mtime_ns,
-    (WEB_DIR / "static" / "vendor" / "tabler-icons" / "tabler-icons.min.css").stat().st_mtime_ns,
-)
+def asset_version() -> int:
+    return max(
+        (WEB_DIR / "static" / "app.js").stat().st_mtime_ns,
+        (WEB_DIR / "static" / "style.css").stat().st_mtime_ns,
+        (WEB_DIR / "static" / "vendor" / "tabler-icons" / "tabler-icons.min.css").stat().st_mtime_ns,
+    )
+
+
+class NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="ShortsFarm Web")
-    app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+    app.mount("/static", NoCacheStaticFiles(directory=str(WEB_DIR / "static")), name="static")
     if (STUDIO_DIST / "assets").is_dir():
         app.mount(
             "/studio/assets",
@@ -44,7 +52,7 @@ def create_app() -> FastAPI:
     def index(request: Request):
         context = {
             "request": request,
-            "asset_version": ASSET_VERSION,
+            "asset_version": asset_version(),
             "studio_built": (STUDIO_DIST / "assets" / "studio.js").is_file(),
         }
         headers = {"Cache-Control": "no-store"}

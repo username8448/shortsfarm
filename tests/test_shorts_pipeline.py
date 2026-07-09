@@ -794,8 +794,30 @@ def test_shorts_pipeline_ui_is_registered():
     assert 'id="pipeline-health"' in html
     assert 'id="queue-pipeline-health"' in html
     assert 'data-v="files"' in html
-    assert 'data-v="split"' in html
-    assert 'data-v="clips"' in html
+    nav_html = html.split("<nav>", 1)[1].split("</nav>", 1)[0]
+    assert 'data-v="queue"' in nav_html
+    assert 'data-v="split"' not in nav_html
+    assert 'data-v="clips"' not in nav_html
+    assert 'id="v-clips"' not in html
+    assert 'id="v-split"' in html
+    assert 'id="queue-overview"' in queue_html
+    assert 'id="queue-clips-section" hidden' in queue_html
+    assert 'id="queue-clips-section"' in queue_html
+    assert 'id="workspace-parent-filter-line"' in queue_html
+    assert 'id="clips-table"' in queue_html
+    assert "Нарезки и клипы" in queue_html
+    assert "Показать все нарезки/клипы" in queue_html
+    assert "← Назад к очереди" in queue_html
+    assert "queueSubView = 'overview'" in js
+    assert "setQueueSubView('overview')" in js
+    assert "setQueueSubView('clips')" in js
+    assert "showQueueOverview" in js
+    assert "workspaceParentVideoFilter" in js
+    assert "openQueueClipsForJob" in js
+    assert "showAllQueueClips" in js
+    assert "workspaceItemsForParentFilter" in js
+    assert "openManagedFileInStudio" not in js
+    assert "Открыть в Нарезке" not in js
     assert 'data-v="tags"' in html
     assert 'data-v="editing"' in html
     assert 'data-v="studio"' in html
@@ -811,10 +833,39 @@ def test_shorts_pipeline_ui_is_registered():
     assert 'id="videos-bulk-toolbar"' in html
     assert "/api/videos/bulk-delete" in js
     assert "deleteSelectedVideos" in js
+    assert "video-delete-child-clips" in js
+    assert "Удалить нарезки и клипы вместе с видео" in js
+    assert "Клипы останутся видимыми и будут привязаны к удалённому исходнику" in js
+    assert "/clips/delete" in js
+    assert "Удалить все клипы этого исходника" in js
+    assert "Исходник удалён" in js
     assert 'data-settings-tab="database"' in html
     assert 'id="settings-database"' in html
     assert "/api/settings/database/reset" in js
     assert "УДАЛИТЬ БАЗУ" in html
+    assert 'id="app-topbar"' in html
+    assert 'id="global-inspector"' in html
+    assert 'id="global-action-bar"' in html
+    assert "toggleSidebarCollapsed" in js
+    assert "toggleDensity" in js
+    assert "openInspector" in js
+    assert "openWorkspaceInspector" not in js
+    assert "workspaceInspectorBody" not in js
+    assert "function selectWorkspaceItem" in js
+    assert "closeInspector();" in js
+    assert "renderActionBar" in js
+    assert "setVideoViewMode" in js
+    assert "setClipViewMode" in js
+    assert "media-grid" in css
+    assert "global-inspector" in css
+    assert "global-action-bar" in css
+    assert "sidebar-collapsed" in css
+    assert "density-compact" in css
+    assert "settings-dashboard" in css
+    assert "#v-queue .box-head" not in css
+    assert "#v-tags .box-head" not in css
+    assert "#v-integrations .box-head" not in css
+    assert "#v-editing .box-head" not in css
     assert "pipeline-layout" in css
     assert "pipeline-step" in css
     assert "pipeline-health-card" in css

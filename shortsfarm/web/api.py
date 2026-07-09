@@ -278,6 +278,9 @@ def _video_dict(row: Any) -> dict[str, Any]:
         "review_status": _status_value(_row(row, "review_status")),
         "mark_count": int(_row(row, "mark_count", db.count_marks(video_id))),
         "clip_count": int(_row(row, "clip_count", db.count_clips(video_id))),
+        "segment_count": int(_row(row, "segment_count", db.count_segments(video_id))),
+        "deleted_at": _row(row, "deleted_at"),
+        "source_file_deleted_at": _row(row, "source_file_deleted_at"),
         "output_dir": _latest_output_dir(video_id),
     }
 
@@ -900,8 +903,15 @@ def _safe_workspace_delete_path(item: dict[str, Any]) -> Path:
         output_dir().resolve(),
         (data_dir() / "output").resolve(),
     ]
+    root = get_workspace_root()
+    if root is not None:
+        allowed_roots.extend(
+            (root / folder_name).resolve()
+            for folder_name in SYSTEM_FOLDERS
+            if folder_name != "sources"
+        )
     if not any(_is_relative_to(resolved, root) for root in allowed_roots):
-        raise PermissionError("Удалять можно только файлы внутри output-директории ShortsFarm.")
+        raise PermissionError("Удалять можно только файлы внутри output или рабочих папок результатов ShortsFarm.")
 
     source_path = _normalize_setting_text(item.get("source_path"))
     if source_path:
@@ -943,6 +953,47 @@ def _delete_workspace_item(item_key: str) -> dict[str, Any]:
         item_id,
         missing_confirmed=bool(result["already_missing"]),
     )
+    return result
+
+
+def _delete_workspace_items(item_keys: list[str]) -> dict[str, Any]:
+    summary = {
+        "requested": len(item_keys),
+        "deleted_files": 0,
+        "already_missing": 0,
+        "hidden": 0,
+        "errors": 0,
+    }
+    results: list[dict[str, Any]] = []
+    for item_key in item_keys:
+        try:
+            result = _delete_workspace_item(item_key)
+            if result["file_deleted"]:
+                summary["deleted_files"] += 1
+            if result["already_missing"]:
+                summary["already_missing"] += 1
+            if result["hidden"]:
+                summary["hidden"] += 1
+            results.append(result)
+        except Exception as exc:
+            summary["errors"] += 1
+            results.append({
+                "id": item_key,
+                "file_deleted": False,
+                "already_missing": False,
+                "hidden": False,
+                "error": str(exc) or exc.__class__.__name__,
+            })
+    return {"summary": summary, "results": results}
+
+
+def _delete_workspace_items_for_video(video_id: int) -> dict[str, Any]:
+    item_keys = db.list_workspace_item_keys_for_video(video_id)
+    result = _delete_workspace_items(item_keys)
+    result["summary"] = dict(result["summary"])
+    result["video_id"] = int(video_id)
+    result["summary"]["video_id"] = int(video_id)
+    result["summary"]["found"] = result["summary"].pop("requested", len(item_keys))
     return result
 
 
@@ -1024,8 +1075,8 @@ def _publish_job_dict(row: Any) -> dict[str, Any]:
         "description": _row(row, "description"),
         "tags": _row(row, "tags"),
         "category_id": _row(row, "category_id", "22"),
-        "privacy_status": _row(row, "privacy_status", "private"),
-        "publish_mode": _row(row, "publish_mode", "private"),
+        "privacy_status": _row(row, "privacy_status", "public"),
+        "publish_mode": _row(row, "publish_mode", "public"),
         "publish_at": _row(row, "publish_at"),
         "upload_at": _row(row, "upload_at"),
         "schedule_group_id": _row(row, "schedule_group_id"),
@@ -3441,6 +3492,26 @@ def _delete_source_files(source_paths: list[str]) -> dict[str, Any]:
     return {"summary": summary, "results": results}
 
 
+def _deleted_or_missing_source_video_ids(
+    source_file_results: list[dict[str, Any]],
+    source_path_by_id: dict[str, str],
+) -> list[int]:
+    completed_paths = {
+        str(item.get("path") or "")
+        for item in source_file_results
+        if item.get("deleted") or item.get("missing")
+    }
+    return [
+        int(video_id)
+        for video_id, path in source_path_by_id.items()
+        if path in completed_paths
+    ]
+
+
+def _delete_video_child_workspace_items(video_id: int) -> dict[str, Any]:
+    return _delete_workspace_items_for_video(video_id)
+
+
 @router.post("/videos/bulk-delete")
 def videos_bulk_delete(req: VideoBulkDeleteRequest) -> dict[str, Any]:
     try:
@@ -3448,12 +3519,34 @@ def videos_bulk_delete(req: VideoBulkDeleteRequest) -> dict[str, Any]:
         video_ids = [int(value) for value in req.video_ids]
         if not video_ids:
             raise ValueError("Выберите хотя бы одно видео для удаления.")
-        result = db.delete_videos(video_ids)
+        child_results: list[dict[str, Any]] = []
+        child_summary = {
+            "found": 0,
+            "deleted_files": 0,
+            "already_missing": 0,
+            "hidden": 0,
+            "errors": 0,
+        }
+        if req.delete_child_clips:
+            for video_id in video_ids:
+                child_result = _delete_video_child_workspace_items(video_id)
+                child_results.append(child_result)
+                summary = child_result["summary"]
+                for key in child_summary:
+                    child_summary[key] += int(summary.get(key) or 0)
+        result = db.soft_delete_videos(video_ids)
         source_files = (
             _delete_source_files(result.get("source_paths") or [])
             if req.delete_source_files
             else {"summary": {"deleted": 0, "missing": 0, "skipped": 0, "errors": 0}, "results": []}
         )
+        if req.delete_source_files:
+            marked_ids = _deleted_or_missing_source_video_ids(
+                source_files["results"],
+                result.get("source_path_by_id") or {},
+            )
+            if marked_ids:
+                db.mark_video_source_files_deleted(marked_ids)
         rows = [_video_dict(row) for row in db.list_videos_with_counts()]
         return {
             "status": "ok",
@@ -3462,15 +3555,33 @@ def videos_bulk_delete(req: VideoBulkDeleteRequest) -> dict[str, Any]:
                 "deleted": result["deleted"],
                 "missing": len(result["missing_ids"]),
                 "delete_source_files": bool(req.delete_source_files),
+                "delete_child_clips": bool(req.delete_child_clips),
                 "source_files": source_files["summary"],
+                "child_clips": child_summary,
             },
             "result": result,
+            "child_clip_results": child_results,
             "source_file_results": source_files["results"],
             "videos": rows,
             "counts": dict(Counter(row["review_status"] for row in rows)),
         }
     except ValueError as exc:
         raise _fail(exc, status_code=400)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/videos/{video_id}/clips/delete")
+def video_child_clips_delete(video_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_video(video_id) is None:
+            raise FileNotFoundError("Родительское видео не найдено.")
+        result = _delete_video_child_workspace_items(video_id)
+        items = db.list_workspace_items(limit=1000)
+        return {"status": "ok", **result, **_workspace_items_response(items)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
     except Exception as exc:
         raise _fail(exc)
 
@@ -3618,34 +3729,14 @@ def workspace_clips_bulk_prepare(req: WorkspaceBulkPrepareRequest) -> dict[str, 
 def workspace_clips_bulk_delete(req: WorkspaceBulkDeleteRequest) -> dict[str, Any]:
     try:
         _init()
-        summary = {
-            "deleted_files": 0,
-            "already_missing": 0,
-            "hidden": 0,
-            "errors": 0,
-        }
-        results: list[dict[str, Any]] = []
-        for item_key in req.items:
-            try:
-                result = _delete_workspace_item(item_key)
-                if result["file_deleted"]:
-                    summary["deleted_files"] += 1
-                if result["already_missing"]:
-                    summary["already_missing"] += 1
-                if result["hidden"]:
-                    summary["hidden"] += 1
-                results.append(result)
-            except Exception as exc:
-                summary["errors"] += 1
-                results.append({
-                    "id": item_key,
-                    "file_deleted": False,
-                    "already_missing": False,
-                    "hidden": False,
-                    "error": str(exc) or exc.__class__.__name__,
-                })
+        delete_result = _delete_workspace_items(list(req.items or []))
         items = db.list_workspace_items(limit=1000)
-        return {"status": "ok", "summary": summary, "results": results, **_workspace_items_response(items)}
+        return {
+            "status": "ok",
+            "summary": delete_result["summary"],
+            "results": delete_result["results"],
+            **_workspace_items_response(items),
+        }
     except Exception as exc:
         raise _fail(exc)
 
@@ -4413,7 +4504,7 @@ def _profile_item_has_status_ready_tag(item: Any) -> bool:
 
 
 PROFILE_PUBLISH_DEFAULTS = {
-    "publish_mode": "private",
+    "publish_mode": "public",
     "category_id": "22",
     "made_for_kids": False,
     "title_template": "",
@@ -4427,7 +4518,7 @@ def _normalize_profile_publish_settings(value: dict[str, Any] | None = None) -> 
     raw = dict(PROFILE_PUBLISH_DEFAULTS)
     if value:
         raw.update(value)
-    publish_mode = str(raw.get("publish_mode") or "private").strip().lower()
+    publish_mode = str(raw.get("publish_mode") or "public").strip().lower()
     if publish_mode not in {"private", "unlisted", "public"}:
         raise ValueError("publish_mode должен быть private, unlisted или public. Таймер задаётся отдельным расписанием профиля.")
     default_action = str(raw.get("default_action") or "queue").strip().lower()

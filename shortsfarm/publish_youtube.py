@@ -62,7 +62,7 @@ def _parse_expiry(value: str | None) -> datetime | None:
 def validate_publish_options(
     *,
     title: str,
-    publish_mode: str = "private",
+    publish_mode: str = "public",
     publish_at: str | None = None,
     category_id: str = "22",
 ) -> dict[str, str | None]:
@@ -215,7 +215,7 @@ def validate_publish_job(job: Any) -> dict[str, Any]:
 
     validate_publish_options(
         title=str(job["title"] or ""),
-        publish_mode=str(job["publish_mode"] or "private"),
+        publish_mode=str(job["publish_mode"] or "public"),
         publish_at=job["publish_at"],
         category_id=str(job["category_id"] or "22"),
     )
@@ -271,7 +271,7 @@ def update_youtube_video_metadata(
     clean_tags = parse_tags(tags if tags is not None else job["tags"])
     clean_category_id = str(category_id if category_id is not None else job["category_id"] or "22").strip()
     clean_privacy = str(
-        privacy_status if privacy_status is not None else job["privacy_status"] or "private"
+        privacy_status if privacy_status is not None else job["privacy_status"] or "public"
     ).strip()
     clean_made_for_kids = (
         bool(made_for_kids)

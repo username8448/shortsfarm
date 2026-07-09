@@ -17,16 +17,15 @@
         <div class="sb-logo-name">ShortsFarm</div>
         <div class="sb-logo-sub">web · local</div>
       </div>
+      <button class="sidebar-toggle" title="Свернуть меню" onclick="toggleSidebarCollapsed()"><i class="ti ti-layout-sidebar-left-collapse"></i></button>
     </div>
 
     <nav>
       <button class="nb on" data-v="dashboard" onclick="nav('dashboard', this)"><i class="ti ti-layout-dashboard"></i><span>Панель</span></button>
       <button class="nb" data-v="pipeline" onclick="nav('pipeline', this)"><i class="ti ti-route"></i><span>Конвейер</span></button>
       <button class="nb" data-v="files" onclick="nav('files', this)"><i class="ti ti-folders"></i><span>Файлы</span></button>
-      <button class="nb" data-v="split" onclick="nav('split', this)"><i class="ti ti-scissors"></i><span>Нарезка</span></button>
       <button class="nb" data-v="queue" onclick="nav('queue', this)"><i class="ti ti-list"></i><span>Очередь</span><span id="nav-jobs" class="badge-pill" style="background:var(--acc-bg);color:var(--acc);"></span></button>
       <button class="nb" data-v="videos" onclick="nav('videos', this)"><i class="ti ti-video"></i><span>Видео</span><span id="nav-videos" class="badge-pill" style="background:var(--s2);color:var(--mid);"></span></button>
-      <button class="nb" data-v="clips" onclick="nav('clips', this)"><i class="ti ti-player-play"></i><span>Клипы</span><span id="nav-clips" class="badge-pill" style="background:var(--warn-bg);color:var(--warn);"></span></button>
       <button class="nb" data-v="tags" onclick="nav('tags', this)"><i class="ti ti-tags"></i><span>Теги</span></button>
       <button class="nb" data-v="storage-profiles" onclick="nav('storage-profiles', this)"><i class="ti ti-user-square-rounded"></i><span>Профили</span></button>
       <button class="nb" data-v="integrations" onclick="nav('integrations', this)"><i class="ti ti-plug-connected"></i><span>Интеграции</span></button>
@@ -44,6 +43,18 @@
   </aside>
 
   <main id="main">
+    <header id="app-topbar" class="app-topbar">
+      <div class="topbar-title">
+        <span class="topbar-kicker">ShortsFarm</span>
+        <strong id="topbar-view-title">Панель</strong>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn-mini pro-only" onclick="toggleSidebarCollapsed()" title="Свернуть/развернуть меню"><i class="ti ti-menu-2"></i></button>
+        <button class="btn-mini" id="density-toggle" onclick="toggleDensity()" title="Компактность интерфейса">Компактно</button>
+        <button class="btn-mini" onclick="closeInspector()" title="Закрыть правую панель"><i class="ti ti-layout-sidebar-right-collapse"></i></button>
+      </div>
+    </header>
+
     <div id="v-dashboard" class="v on">
       <div class="ph"><h1>Панель</h1><p>локальная панель ShortsFarm — нарезка, очередь, видео и клипы</p></div>
       <div class="stats">
@@ -159,6 +170,7 @@
 
     <div id="v-queue" class="v" data-v="queue">
       <div class="ph"><h1>Очередь</h1><p>полный прогресс конвейера и техническая история нарезки</p></div>
+      <div id="queue-overview" class="queue-overview">
       <div class="box">
         <div class="box-head">
           <span>Конвейер · полный цикл</span>
@@ -168,114 +180,140 @@
         <div id="queue-pipeline-runs" class="empty compact">Запусков конвейера пока нет.</div>
       </div>
       <div class="box">
-        <div class="box-head">Нарезка · split-задачи</div>
+        <div class="box-head">
+          <span>Нарезка · split-задачи</span>
+          <button class="btn-secondary" onclick="showAllQueueClips()">Показать все нарезки/клипы</button>
+        </div>
         <div class="tabs"><button class="tab on" onclick="filterJobs(this,'all')">Все<span class="cnt" id="jobs-cnt-all"></span></button><button class="tab" onclick="filterJobs(this,'queued')">В очереди<span class="cnt" id="jobs-cnt-queued"></span></button><button class="tab" onclick="filterJobs(this,'running')">В работе<span class="cnt" id="jobs-cnt-running"></span></button><button class="tab" onclick="filterJobs(this,'done')">Готово<span class="cnt" id="jobs-cnt-done"></span></button><button class="tab" onclick="filterJobs(this,'failed')">Ошибки<span class="cnt" id="jobs-cnt-failed"></span></button></div>
         <div id="jobs-table"></div>
       </div>
+      </div>
+      <section class="box queue-clips-section" id="queue-clips-section" hidden>
+        <div class="box-head">
+          <span>Нарезки и клипы</span>
+          <div class="row-actions">
+            <button class="btn-mini" onclick="showQueueOverview()">← Назад к очереди</button>
+            <button class="btn-secondary" onclick="showAllQueueClips()">Показать все</button>
+            <button class="btn-mini" onclick="clearWorkspaceParentVideoFilter()">Сбросить фильтр</button>
+          </div>
+        </div>
+        <div id="workspace-parent-filter-line" class="queue-filter-line mono dim">Показаны все нарезки и клипы.</div>
+        <div class="workspace-toolbar">
+          <div class="tabs" style="margin:0">
+            <button class="tab on" onclick="filterClips(this,'all')">Все<span class="cnt" id="clip-cnt-all"></span></button>
+            <button class="tab" onclick="filterClips(this,'draft')">Черновики<span class="cnt" id="clip-cnt-draft"></span></button>
+            <button class="tab" onclick="filterClips(this,'ready')">Готово<span class="cnt" id="clip-cnt-ready"></span></button>
+            <button class="tab" onclick="filterClips(this,'queued')">В очереди<span class="cnt" id="clip-cnt-queued"></span></button>
+            <button class="tab" onclick="filterClips(this,'uploaded')">Загружено<span class="cnt" id="clip-cnt-uploaded"></span></button>
+            <button class="tab" onclick="filterClips(this,'failed')">Ошибки<span class="cnt" id="clip-cnt-failed"></span></button>
+            <button class="tab" onclick="filterClips(this,'missing')">Отсутствующие<span class="cnt" id="clip-cnt-missing"></span></button>
+          </div>
+          <div class="segmented-control" aria-label="Режим отображения клипов">
+            <button class="seg on" data-clip-view="table" onclick="setClipViewMode('table')"><i class="ti ti-table"></i> Таблица</button>
+            <button class="seg" data-clip-view="grid" onclick="setClipViewMode('grid')"><i class="ti ti-layout-grid"></i> Карточки</button>
+          </div>
+          <div class="row-actions">
+            <button class="btn-mini" onclick="selectAllWorkspaceItems()">Выбрать в фильтре</button>
+            <button class="btn-mini" onclick="selectMissingWorkspaceItems()">Выбрать отсутствующие</button>
+            <button class="btn-mini" onclick="clearWorkspaceSelection()">Снять выделение</button>
+            <button class="btn-mini" onclick="bulkSetWorkspaceStatus('ready')">Сделать готовыми</button>
+            <button class="btn-mini" onclick="bulkSetWorkspaceStatus('draft')">Сбросить в черновики</button>
+            <button class="btn-mini" onclick="openSelectedWorkspaceFolder()">Открыть папку</button>
+            <button class="btn-danger" onclick="bulkDeleteWorkspaceItems()">Удалить выбранные</button>
+            <button class="btn-mini" onclick="cleanupMissingWorkspaceItems()">Очистить отсутствующие</button>
+            <button class="btn-mini" onclick="cleanupSelectedMissingWorkspaceItems()">Очистить выбранные отсутствующие</button>
+            <button class="btn-secondary stub-action" onclick="futureFeature('Субтитры')">Субтитры</button>
+            <button class="btn-secondary stub-action" onclick="futureFeature('Уникализация')">Уникализация</button>
+          </div>
+          <details class="pro-collapse" open>
+            <summary><i class="ti ti-adjustments-horizontal"></i> Фильтры и массовые действия</summary>
+            <div class="pro-collapse-body">
+              <div class="workspace-filter-panel">
+                <div class="field mini-field">
+                  <label class="field-lbl">Поиск клипов</label>
+                  <input id="workspace-search-input" type="text" placeholder="Название, путь, исходник или тег…" oninput="onWorkspaceSearchInput(this.value)">
+                </div>
+                <div class="field mini-field">
+                  <label class="field-lbl">Фильтр по тегу</label>
+                  <select id="workspace-filter-tag-select"></select>
+                </div>
+                <button class="btn-secondary" onclick="addWorkspaceFilterTag('include')">Показать с тегом</button>
+                <button class="btn-mini" onclick="addWorkspaceFilterTag('exclude')">Исключить тег</button>
+                <button class="btn-mini" onclick="clearWorkspaceTagFilters()">Сбросить фильтры</button>
+                <div id="workspace-filter-active-tags" class="workspace-filter-active mono dim"></div>
+              </div>
+              <div class="workspace-prepare-panel">
+                <div class="field mini-field">
+                  <label class="field-lbl">Формат подготовки</label>
+                  <select id="workspace-bulk-target-aspect">
+                    <option value="original">Original</option>
+                    <option value="16x9">16:9</option>
+                    <option value="9x16">9:16</option>
+                  </select>
+                </div>
+                <button class="btn-secondary" onclick="prepareSelectedWorkspaceItems()">Подготовить выбранные</button>
+                <div class="mono dim workspace-youtube-state">Подготовка создаёт отдельный файл в папке «Подготовленные».</div>
+              </div>
+              <div class="workspace-tags-panel">
+                <div class="field mini-field">
+                  <label class="field-lbl">Тег для выбранных</label>
+                  <select id="workspace-bulk-catalog-tag"></select>
+                </div>
+                <button class="btn-secondary" onclick="bulkAddCatalogTagToWorkspaceItems()">Добавить тег</button>
+                <button class="btn-mini" onclick="bulkRemoveCatalogTagFromWorkspaceItems()">Снять тег</button>
+                <button class="btn-mini" onclick="openGlobalTagsView()">Открыть Теги</button>
+                <div class="mono dim workspace-youtube-state">Каталоговые теги используются профилями и поиском. Статус “Готово” меняется отдельно.</div>
+              </div>
+              <div class="workspace-editing-panel">
+                <div class="field mini-field">
+                  <label class="field-lbl">Профиль канала</label>
+                  <select id="workspace-editing-profile" onchange="onWorkspaceEditingProfileChange(this.value)"></select>
+                </div>
+                <div class="field mini-field">
+                  <label class="field-lbl">Переопределить шаблон</label>
+                  <select id="workspace-editing-template"></select>
+                </div>
+                <div class="field mini-field">
+                  <label class="field-lbl">Переопределить реакцию</label>
+                  <select id="workspace-editing-reaction"></select>
+                </div>
+                <label class="toggle-label workspace-youtube-toggle"><input id="workspace-editing-force-new" type="checkbox"> Создать заново</label>
+                <button class="btn-secondary" id="workspace-editing-plan-btn" onclick="planSelectedWorkspaceEditing()">Добавить в очередь монтажа</button>
+                <div id="workspace-editing-state" class="mono dim workspace-youtube-state"></div>
+              </div>
+              <div class="workspace-profile-publish-note">
+                <i class="ti ti-user-square-rounded"></i>
+                <span>Публикация в YouTube теперь выполняется только из выбранного профиля. Добавьте видео в профиль и настройте канал там.</span>
+              </div>
+              <div class="row-actions">
+                <button class="btn-danger" onclick="retryFailedClips()"><i class="ti ti-refresh" style="font-size:12px;vertical-align:-1px"></i> Повторить ошибки</button>
+                <button class="btn-primary" style="padding:6px 15px;font-size:11px" onclick="renderQueued()"><i class="ti ti-player-play" style="font-size:11px;vertical-align:-1px"></i> Рендер</button>
+              </div>
+            </div>
+          </details>
+        </div>
+        <div class="workspace-layout">
+          <div class="box workspace-list-box"><div id="clips-table"></div></div>
+          <aside class="box workspace-detail">
+            <div class="box-head">Детали</div>
+            <div id="workspace-detail"><div class="empty">Выберите сегмент или клип</div></div>
+          </aside>
+        </div>
+      </section>
     </div>
 
     <div id="v-videos" class="v">
       <div class="ph"><h1>Видео</h1><p>источники и статусы review: inbox → reviewing → reviewed / skipped</p></div>
-      <div class="tabs"><button class="tab on" onclick="filterVideos(this,'all')">Все<span class="cnt" id="vid-cnt-all"></span></button><button class="tab" onclick="filterVideos(this,'inbox')">Входящие<span class="cnt" id="vid-cnt-inbox"></span></button><button class="tab" onclick="filterVideos(this,'reviewing')">На просмотре<span class="cnt" id="vid-cnt-reviewing"></span></button><button class="tab" onclick="filterVideos(this,'reviewed')">Просмотрено<span class="cnt" id="vid-cnt-reviewed"></span></button><button class="tab" onclick="filterVideos(this,'skipped')">Пропущено<span class="cnt" id="vid-cnt-skipped"></span></button></div>
+      <div class="pro-toolbar">
+        <div class="tabs"><button class="tab on" onclick="filterVideos(this,'all')">Все<span class="cnt" id="vid-cnt-all"></span></button><button class="tab" onclick="filterVideos(this,'inbox')">Входящие<span class="cnt" id="vid-cnt-inbox"></span></button><button class="tab" onclick="filterVideos(this,'reviewing')">На просмотре<span class="cnt" id="vid-cnt-reviewing"></span></button><button class="tab" onclick="filterVideos(this,'reviewed')">Просмотрено<span class="cnt" id="vid-cnt-reviewed"></span></button><button class="tab" onclick="filterVideos(this,'skipped')">Пропущено<span class="cnt" id="vid-cnt-skipped"></span></button></div>
+        <div class="segmented-control" aria-label="Режим отображения видео">
+          <button class="seg on" data-video-view="table" onclick="setVideoViewMode('table')"><i class="ti ti-table"></i> Таблица</button>
+          <button class="seg" data-video-view="grid" onclick="setVideoViewMode('grid')"><i class="ti ti-layout-grid"></i> Карточки</button>
+        </div>
+      </div>
       <div class="box">
         <div id="videos-bulk-toolbar" class="workspace-toolbar compact"></div>
         <div id="videos-table"></div>
-      </div>
-    </div>
-
-    <div id="v-clips" class="v">
-      <div class="ph"><h1>Клипы</h1><p>рабочее пространство для сегментов и подготовленных клипов</p></div>
-      <div class="workspace-toolbar">
-        <div class="tabs" style="margin:0">
-          <button class="tab on" onclick="filterClips(this,'all')">Все<span class="cnt" id="clip-cnt-all"></span></button>
-          <button class="tab" onclick="filterClips(this,'draft')">Черновики<span class="cnt" id="clip-cnt-draft"></span></button>
-          <button class="tab" onclick="filterClips(this,'ready')">Готово<span class="cnt" id="clip-cnt-ready"></span></button>
-          <button class="tab" onclick="filterClips(this,'queued')">В очереди<span class="cnt" id="clip-cnt-queued"></span></button>
-          <button class="tab" onclick="filterClips(this,'uploaded')">Загружено<span class="cnt" id="clip-cnt-uploaded"></span></button>
-          <button class="tab" onclick="filterClips(this,'failed')">Ошибки<span class="cnt" id="clip-cnt-failed"></span></button>
-          <button class="tab" onclick="filterClips(this,'missing')">Отсутствующие<span class="cnt" id="clip-cnt-missing"></span></button>
-        </div>
-        <div class="row-actions">
-          <button class="btn-mini" onclick="selectAllWorkspaceItems()">Выбрать в фильтре</button>
-          <button class="btn-mini" onclick="selectMissingWorkspaceItems()">Выбрать отсутствующие</button>
-          <button class="btn-mini" onclick="clearWorkspaceSelection()">Снять выделение</button>
-          <button class="btn-mini" onclick="bulkSetWorkspaceStatus('ready')">Сделать готовыми</button>
-          <button class="btn-mini" onclick="bulkSetWorkspaceStatus('draft')">Сбросить в черновики</button>
-          <button class="btn-mini" onclick="openSelectedWorkspaceFolder()">Открыть папку</button>
-          <button class="btn-danger" onclick="bulkDeleteWorkspaceItems()">Удалить выбранные</button>
-          <button class="btn-mini" onclick="cleanupMissingWorkspaceItems()">Очистить отсутствующие</button>
-          <button class="btn-mini" onclick="cleanupSelectedMissingWorkspaceItems()">Очистить выбранные отсутствующие</button>
-          <button class="btn-secondary stub-action" onclick="futureFeature('Субтитры')">Субтитры</button>
-          <button class="btn-secondary stub-action" onclick="futureFeature('Уникализация')">Уникализация</button>
-        </div>
-        <div class="workspace-filter-panel">
-          <div class="field mini-field">
-            <label class="field-lbl">Поиск клипов</label>
-            <input id="workspace-search-input" type="text" placeholder="Название, путь, исходник или тег…" oninput="onWorkspaceSearchInput(this.value)">
-          </div>
-          <div class="field mini-field">
-            <label class="field-lbl">Фильтр по тегу</label>
-            <select id="workspace-filter-tag-select"></select>
-          </div>
-          <button class="btn-secondary" onclick="addWorkspaceFilterTag('include')">Показать с тегом</button>
-          <button class="btn-mini" onclick="addWorkspaceFilterTag('exclude')">Исключить тег</button>
-          <button class="btn-mini" onclick="clearWorkspaceTagFilters()">Сбросить фильтры</button>
-          <div id="workspace-filter-active-tags" class="workspace-filter-active mono dim"></div>
-        </div>
-        <div class="workspace-prepare-panel">
-          <div class="field mini-field">
-            <label class="field-lbl">Формат подготовки</label>
-            <select id="workspace-bulk-target-aspect">
-              <option value="original">Original</option>
-              <option value="16x9">16:9</option>
-              <option value="9x16">9:16</option>
-            </select>
-          </div>
-          <button class="btn-secondary" onclick="prepareSelectedWorkspaceItems()">Подготовить выбранные</button>
-          <div class="mono dim workspace-youtube-state">Подготовка создаёт отдельный файл в папке «Подготовленные».</div>
-        </div>
-        <div class="workspace-tags-panel">
-          <div class="field mini-field">
-            <label class="field-lbl">Тег для выбранных</label>
-            <select id="workspace-bulk-catalog-tag"></select>
-          </div>
-          <button class="btn-secondary" onclick="bulkAddCatalogTagToWorkspaceItems()">Добавить тег</button>
-          <button class="btn-mini" onclick="bulkRemoveCatalogTagFromWorkspaceItems()">Снять тег</button>
-          <button class="btn-mini" onclick="openGlobalTagsView()">Открыть Теги</button>
-          <div class="mono dim workspace-youtube-state">Каталоговые теги используются профилями и поиском. Статус “Готово” меняется отдельно.</div>
-        </div>
-        <div class="workspace-editing-panel">
-          <div class="field mini-field">
-            <label class="field-lbl">Профиль канала</label>
-            <select id="workspace-editing-profile" onchange="onWorkspaceEditingProfileChange(this.value)"></select>
-          </div>
-          <div class="field mini-field">
-            <label class="field-lbl">Переопределить шаблон</label>
-            <select id="workspace-editing-template"></select>
-          </div>
-          <div class="field mini-field">
-            <label class="field-lbl">Переопределить реакцию</label>
-            <select id="workspace-editing-reaction"></select>
-          </div>
-          <label class="toggle-label workspace-youtube-toggle"><input id="workspace-editing-force-new" type="checkbox"> Создать заново</label>
-          <button class="btn-secondary" id="workspace-editing-plan-btn" onclick="planSelectedWorkspaceEditing()">Добавить в очередь монтажа</button>
-          <div id="workspace-editing-state" class="mono dim workspace-youtube-state"></div>
-        </div>
-        <div class="workspace-profile-publish-note">
-          <i class="ti ti-user-square-rounded"></i>
-          <span>Публикация в YouTube теперь выполняется только из выбранного профиля. Добавьте видео в профиль и настройте канал там.</span>
-        </div>
-        <div class="row-actions">
-          <button class="btn-danger" onclick="retryFailedClips()"><i class="ti ti-refresh" style="font-size:12px;vertical-align:-1px"></i> Повторить ошибки</button>
-          <button class="btn-primary" style="padding:6px 15px;font-size:11px" onclick="renderQueued()"><i class="ti ti-player-play" style="font-size:11px;vertical-align:-1px"></i> Рендер</button>
-        </div>
-      </div>
-      <div class="workspace-layout">
-        <div class="box workspace-list-box"><div id="clips-table"></div></div>
-        <aside class="box workspace-detail">
-          <div class="box-head">Детали</div>
-          <div id="workspace-detail"><div class="empty">Выберите сегмент или клип</div></div>
-        </aside>
       </div>
     </div>
 
@@ -577,14 +615,20 @@
 
     <div id="v-settings" class="v">
       <div class="ph"><h1>Настройки</h1><p>рабочая папка ShortsFarm и локальные параметры приложения</p></div>
-      <div class="tabs">
-        <button class="tab on" data-settings-tab="workspace" onclick="setSettingsTab('workspace', this)">Workspace</button>
-        <button class="tab" data-settings-tab="database" onclick="setSettingsTab('database', this)">База данных</button>
-      </div>
-
       <div id="settings-error" class="err-line" style="display:none;margin-bottom:14px"></div>
       <div id="settings-ok" class="ok-line" style="display:none;margin-bottom:14px"></div>
 
+      <div class="settings-dashboard">
+        <aside class="settings-nav">
+          <button class="settings-nav-item on" data-settings-tab="workspace" onclick="setSettingsTab('workspace', this)">
+            <i class="ti ti-folder-cog"></i><span>Workspace</span><small>рабочая папка и layout</small>
+          </button>
+          <button class="settings-nav-item" data-settings-tab="database" onclick="setSettingsTab('database', this)">
+            <i class="ti ti-database"></i><span>База данных</span><small>backup и сброс SQLite</small>
+          </button>
+        </aside>
+
+        <section class="settings-content">
       <div id="settings-workspace" class="settings-tab on">
         <div class="box">
           <div class="box-head"><span>Рабочая папка ShortsFarm</span></div>
@@ -613,6 +657,9 @@
         <div class="box danger-zone">
           <div class="box-head"><span>Опасная зона · база данных</span></div>
           <div class="form-body settings-form">
+            <details class="pro-danger-details">
+              <summary><i class="ti ti-alert-triangle"></i> Открыть действия удаления базы</summary>
+              <div class="pro-danger-body">
             <div class="hint-box warn">
               Сброс базы удалит все записи ShortsFarm: видео, задачи, профили, теги, очереди и настройки.
               Файлы в workspace не удаляются. По умолчанию перед сбросом создаётся резервная копия SQLite.
@@ -629,8 +676,12 @@
               <button class="btn-danger" onclick="resetDatabaseFromSettings()">Удалить всю базу</button>
             </div>
             <div class="settings-meta">Это действие нельзя отменить без резервной копии.</div>
+              </div>
+            </details>
           </div>
         </div>
+      </div>
+        </section>
       </div>
     </div>
 
@@ -651,6 +702,19 @@ npm --prefix frontend run build</pre>
 
   </main>
 </div>
+
+<aside id="global-inspector" class="global-inspector" aria-hidden="true">
+  <div class="inspector-head">
+    <div>
+      <div class="inspector-kicker" id="inspector-kicker">Inspector</div>
+      <h2 id="inspector-title">Детали</h2>
+    </div>
+    <button class="btn-mini" onclick="closeInspector()">×</button>
+  </div>
+  <div id="inspector-body" class="inspector-body"></div>
+</aside>
+
+<div id="global-action-bar" class="global-action-bar"></div>
 
 <div id="publish-schedule-modal" class="modal-backdrop" style="display:none" onclick="closePublishScheduleEditor(event)">
   <section class="schedule-modal" onclick="event.stopPropagation()">

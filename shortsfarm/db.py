@@ -73,10 +73,20 @@ def add_video(source_path: Path, title: str, duration_sec: float | None) -> int:
             return int(cur.lastrowid)
         except sqlite3.IntegrityError:
             row = con.execute(
-                "SELECT id FROM videos WHERE source_path = ?", (str(source_path),)
+                "SELECT id, deleted_at FROM videos WHERE source_path = ?", (str(source_path),)
             ).fetchone()
             if row is None:
                 raise
+            if row["deleted_at"] is not None:
+                con.execute(
+                    """
+                    UPDATE videos
+                    SET title=?, duration_sec=?, status='added',
+                        deleted_at=NULL, source_file_deleted_at=NULL
+                    WHERE id=?
+                    """,
+                    (title, duration_sec, int(row["id"])),
+                )
             return int(row["id"])
 
 
@@ -97,7 +107,7 @@ def get_video_by_source_path(source_path: Path) -> sqlite3.Row | None:
 def list_videos() -> list[sqlite3.Row]:
     with connect() as con:
         return con.execute(
-            "SELECT * FROM videos ORDER BY id DESC"
+            "SELECT * FROM videos WHERE deleted_at IS NULL ORDER BY id DESC"
         ).fetchall()
 
 
@@ -109,10 +119,13 @@ def list_videos_with_counts() -> list[sqlite3.Row]:
             SELECT
                 v.*,
                 COUNT(DISTINCT m.id) AS mark_count,
-                COUNT(DISTINCT c.id) AS clip_count
+                COUNT(DISTINCT c.id) AS clip_count,
+                COUNT(DISTINCT s.id) AS segment_count
             FROM videos v
             LEFT JOIN marks m ON m.video_id = v.id
             LEFT JOIN clips c ON c.video_id = v.id
+            LEFT JOIN segments s ON s.video_id = v.id
+            WHERE v.deleted_at IS NULL
             GROUP BY v.id
             ORDER BY v.id ASC
             """
@@ -125,6 +138,7 @@ def count_videos_by_review_status() -> dict[str, int]:
             """
             SELECT COALESCE(review_status, 'inbox') AS status, COUNT(*) AS count
             FROM videos
+            WHERE deleted_at IS NULL
             GROUP BY COALESCE(review_status, 'inbox')
             """
         ).fetchall()
@@ -133,7 +147,7 @@ def count_videos_by_review_status() -> dict[str, int]:
 
 def count_videos() -> int:
     with connect() as con:
-        row = con.execute("SELECT COUNT(*) FROM videos").fetchone()
+        row = con.execute("SELECT COUNT(*) FROM videos WHERE deleted_at IS NULL").fetchone()
     return int(row[0]) if row else 0
 
 
@@ -363,6 +377,88 @@ def delete_videos(video_ids: list[int]) -> dict[str, Any]:
         }
 
 
+def soft_delete_videos(video_ids: list[int]) -> dict[str, Any]:
+    """Hide source video rows while keeping generated clips linked and visible."""
+    normalized_ids = sorted({int(value) for value in video_ids if int(value) > 0})
+    if not normalized_ids:
+        return {
+            "requested": 0,
+            "deleted": 0,
+            "missing_ids": [],
+            "already_deleted_ids": [],
+            "deleted_ids": [],
+            "source_paths": [],
+            "source_path_by_id": {},
+        }
+
+    placeholders = ",".join("?" for _ in normalized_ids)
+    now = now_utc()
+    with connect() as con:
+        rows = con.execute(
+            f"SELECT id, source_path, deleted_at FROM videos WHERE id IN ({placeholders})",
+            normalized_ids,
+        ).fetchall()
+        found_ids = sorted(int(row["id"]) for row in rows)
+        active_rows = [row for row in rows if row["deleted_at"] is None]
+        active_ids = sorted(int(row["id"]) for row in active_rows)
+        missing_ids = [video_id for video_id in normalized_ids if video_id not in found_ids]
+        already_deleted_ids = sorted(int(row["id"]) for row in rows if row["deleted_at"] is not None)
+        source_path_by_id = {
+            str(int(row["id"])): str(row["source_path"])
+            for row in active_rows
+            if row["source_path"]
+        }
+        source_paths = list(source_path_by_id.values())
+
+        if active_ids:
+            active_placeholders = ",".join("?" for _ in active_ids)
+            cur = con.execute(
+                f"UPDATE videos SET deleted_at=? WHERE id IN ({active_placeholders}) AND deleted_at IS NULL",
+                [now, *active_ids],
+            )
+            deleted = int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+        else:
+            deleted = 0
+
+        return {
+            "requested": len(normalized_ids),
+            "deleted": deleted,
+            "missing_ids": missing_ids,
+            "already_deleted_ids": already_deleted_ids,
+            "deleted_ids": active_ids,
+            "source_paths": source_paths,
+            "source_path_by_id": source_path_by_id,
+        }
+
+
+def mark_video_source_files_deleted(video_ids: list[int]) -> int:
+    normalized_ids = sorted({int(value) for value in video_ids if int(value) > 0})
+    if not normalized_ids:
+        return 0
+    placeholders = ",".join("?" for _ in normalized_ids)
+    with connect() as con:
+        cur = con.execute(
+            f"""
+            UPDATE videos
+            SET source_file_deleted_at=COALESCE(source_file_deleted_at, ?)
+            WHERE id IN ({placeholders})
+            """,
+            [now_utc(), *normalized_ids],
+        )
+        return int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+
+
+def list_workspace_item_keys_for_video(video_id: int, *, include_hidden: bool = False) -> list[str]:
+    video_id = int(video_id)
+    if video_id <= 0:
+        return []
+    return [
+        str(item["id"])
+        for item in list_workspace_items(limit=10000, include_hidden=include_hidden)
+        if int(item.get("video_id") or 0) == video_id
+    ]
+
+
 def claim_inbox_video() -> sqlite3.Row | None:
     """Atomically pick the first 'inbox' video and set it to 'reviewing'.
 
@@ -377,7 +473,11 @@ def claim_inbox_video() -> sqlite3.Row | None:
     try:
         con.execute("BEGIN IMMEDIATE")
         row = con.execute(
-            "SELECT * FROM videos WHERE review_status = 'inbox' ORDER BY id LIMIT 1"
+            """
+            SELECT * FROM videos
+            WHERE review_status = 'inbox' AND deleted_at IS NULL
+            ORDER BY id LIMIT 1
+            """
         ).fetchone()
         if row is None:
             con.execute("COMMIT")
@@ -385,7 +485,7 @@ def claim_inbox_video() -> sqlite3.Row | None:
 
         result = con.execute(
             "UPDATE videos SET review_status = 'reviewing' "
-            "WHERE id = ? AND review_status = 'inbox'",
+            "WHERE id = ? AND review_status = 'inbox' AND deleted_at IS NULL",
             (int(row["id"]),),
         )
         # rowcount == 0 means someone else grabbed it between our SELECT and UPDATE
@@ -1162,6 +1262,8 @@ def _workspace_item_dict(
     title: str | None,
     description: str | None,
     tags: str | None,
+    source_deleted_at: str | None = None,
+    source_file_deleted_at: str | None = None,
     target_aspect: str | None = None,
     prepared_path: str | None = None,
     prepared_at: str | None = None,
@@ -1208,6 +1310,9 @@ def _workspace_item_dict(
         "video_id": video_id,
         "video_title": video_title,
         "source_path": source_path,
+        "source_deleted_at": source_deleted_at,
+        "source_file_deleted_at": source_file_deleted_at,
+        "source_deleted": source_deleted_at is not None,
         "path": path,
         "folder_path": str(item_path.parent) if item_path else "",
         "file_name": item_path.name if item_path else "",
@@ -1257,6 +1362,8 @@ def list_workspace_items(
                 s.*,
                 v.title AS video_title,
                 v.source_path AS source_path,
+                v.deleted_at AS source_deleted_at,
+                v.source_file_deleted_at AS source_file_deleted_at,
                 pc.id AS publish_clip_id,
                 pj.id AS publish_job_id,
                 pj.status AS publish_job_status,
@@ -1310,6 +1417,8 @@ def list_workspace_items(
                     video_id=int(row["video_id"]),
                     video_title=str(row["video_title"] or ""),
                     source_path=str(row["source_path"] or ""),
+                    source_deleted_at=row["source_deleted_at"],
+                    source_file_deleted_at=row["source_file_deleted_at"],
                     path=str(row["path"] or ""),
                     duration_sec=float(row["end_sec"] - row["start_sec"]),
                     workspace_status=item_status,
@@ -1335,6 +1444,8 @@ def list_workspace_items(
                 c.*,
                 v.title AS video_title,
                 v.source_path AS source_path,
+                v.deleted_at AS source_deleted_at,
+                v.source_file_deleted_at AS source_file_deleted_at,
                 m.in_sec AS mark_in_sec,
                 m.out_sec AS mark_out_sec,
                 wm.workspace_status,
@@ -1396,6 +1507,8 @@ def list_workspace_items(
                     video_id=int(row["video_id"]),
                     video_title=str(row["video_title"] or ""),
                     source_path=str(row["source_path"] or ""),
+                    source_deleted_at=row["source_deleted_at"],
+                    source_file_deleted_at=row["source_file_deleted_at"],
                     path=str(item_path),
                     duration_sec=duration_sec,
                     workspace_status=_derive_clip_workspace_status(row, uploaded_clip_ids),

@@ -229,6 +229,15 @@ def test_upload_privacy_modes(monkeypatch, tmp_path, mode, expected):
     assert job["youtube_url"] == "https://www.youtube.com/watch?v=yt123"
 
 
+def test_validate_publish_options_defaults_to_public():
+    from shortsfarm.publish_youtube import validate_publish_options
+
+    data = validate_publish_options(title="Default public")
+
+    assert data["privacy_status"] == "public"
+    assert data["publish_at"] is None
+
+
 def test_schedule_requires_publish_at():
     from shortsfarm.publish_youtube import validate_publish_options
 
@@ -357,15 +366,40 @@ def test_enqueue_clip_creates_queued_job(tmp_path):
             description="Desc",
             tags=["a", "b"],
             category_id="22",
-            publish_mode="private",
             publish_at=None,
             made_for_kids=False,
         ),
     )
 
     assert result["job"]["status"] == "queued"
+    assert result["job"]["privacy_status"] == "public"
+    assert result["job"]["publish_mode"] == "public"
     assert result["job"]["channel_title"] == "Channel"
     assert result["job"]["profile_name"] == "Profile"
+
+
+def test_enqueue_clip_keeps_explicit_private(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import YouTubeUploadRequest
+
+    account_id = _make_account()
+    clip_id, _output = _make_done_clip(tmp_path)
+
+    result = api.youtube_enqueue_clip(
+        clip_id,
+        YouTubeUploadRequest(
+            account_id=account_id,
+            title="Private upload",
+            description="Desc",
+            tags=[],
+            category_id="22",
+            publish_mode="private",
+            made_for_kids=False,
+        ),
+    )
+
+    assert result["job"]["privacy_status"] == "private"
+    assert result["job"]["publish_mode"] == "private"
 
 
 def test_publish_jobs_api_returns_context(tmp_path):
