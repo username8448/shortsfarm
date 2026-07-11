@@ -2682,6 +2682,7 @@ def update_local_storage_profile(
     avatar_color: Any = _PROFILE_UNSET,
     avatar_url: Any = _PROFILE_UNSET,
     banner_color: Any = _PROFILE_UNSET,
+    banner_url: Any = _PROFILE_UNSET,
     youtube_branding_sync_enabled: Any = _PROFILE_UNSET,
     name_override: Any = _PROFILE_UNSET,
     handle_override: Any = _PROFILE_UNSET,
@@ -2689,6 +2690,7 @@ def update_local_storage_profile(
     avatar_override: Any = _PROFILE_UNSET,
     banner_override: Any = _PROFILE_UNSET,
     youtube_branding_synced_at: Any = _PROFILE_UNSET,
+    youtube_branding_attempted_at: Any = _PROFILE_UNSET,
     youtube_branding_sync_error: Any = _PROFILE_UNSET,
     auto_import_enabled: Any = _PROFILE_UNSET,
     auto_import_sections: Any = _PROFILE_UNSET,
@@ -2718,11 +2720,12 @@ def update_local_storage_profile(
             """
             UPDATE local_storage_profiles
             SET name=?, handle=?, description=?, avatar_initials=?,
-                avatar_color=?, avatar_url=?, banner_color=?,
+                avatar_color=?, avatar_url=?, banner_color=?, banner_url=?,
                 youtube_branding_sync_enabled=?,
                 name_override=?, handle_override=?, description_override=?,
                 avatar_override=?, banner_override=?,
-                youtube_branding_synced_at=?, youtube_branding_sync_error=?,
+                youtube_branding_synced_at=?, youtube_branding_attempted_at=?,
+                youtube_branding_sync_error=?,
                 auto_import_enabled=?, auto_import_sections=?,
                 auto_import_prefix=?, auto_import_last_scan_at=?,
                 tag_match_mode=?, enabled=?, updated_at=?
@@ -2746,6 +2749,9 @@ def update_local_storage_profile(
                 row["banner_color"]
                 if banner_color is _PROFILE_UNSET
                 else _normalize_profile_color(banner_color, row["banner_color"]),
+                row["banner_url"]
+                if banner_url is _PROFILE_UNSET
+                else _normalize_profile_text(banner_url, max_length=2000),
                 row["youtube_branding_sync_enabled"]
                 if youtube_branding_sync_enabled is _PROFILE_UNSET
                 else (1 if youtube_branding_sync_enabled else 0),
@@ -2767,6 +2773,9 @@ def update_local_storage_profile(
                 row["youtube_branding_synced_at"]
                 if youtube_branding_synced_at is _PROFILE_UNSET
                 else youtube_branding_synced_at,
+                row["youtube_branding_attempted_at"]
+                if youtube_branding_attempted_at is _PROFILE_UNSET
+                else youtube_branding_attempted_at,
                 row["youtube_branding_sync_error"]
                 if youtube_branding_sync_error is _PROFILE_UNSET
                 else _normalize_profile_text(youtube_branding_sync_error, max_length=2000),
@@ -2797,12 +2806,22 @@ def update_local_storage_profile_youtube_branding_sync(
     profile_id: int,
     *,
     synced_at: str | None = None,
+    attempted_at: str | None = None,
     error: str | None = None,
 ) -> bool:
+    attempt_time = attempted_at or now_utc()
+    if error:
+        return update_local_storage_profile(
+            profile_id,
+            youtube_branding_attempted_at=attempt_time,
+            youtube_branding_sync_error=error,
+        )
+    success_time = synced_at or attempt_time
     return update_local_storage_profile(
         profile_id,
-        youtube_branding_synced_at=synced_at or now_utc(),
-        youtube_branding_sync_error=error,
+        youtube_branding_synced_at=success_time,
+        youtube_branding_attempted_at=attempt_time,
+        youtube_branding_sync_error=None,
     )
 
 
@@ -3004,6 +3023,25 @@ def list_local_storage_profile_service_links(profile_id: int) -> list[sqlite3.Ro
         ).fetchall()
 
 
+def list_local_storage_profile_service_links_for_profiles(
+    profile_ids: list[int] | tuple[int, ...] | set[int],
+) -> list[sqlite3.Row]:
+    ids = sorted({int(value) for value in profile_ids if int(value) > 0})
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT *
+            FROM local_storage_profile_service_links
+            WHERE profile_id IN ({placeholders})
+            ORDER BY profile_id ASC, platform ASC, id ASC
+            """,
+            ids,
+        ).fetchall()
+
+
 def get_local_storage_profile_service_link(
     profile_id: int,
     platform: str,
@@ -3144,6 +3182,26 @@ def list_local_storage_profiles_for_service_account(
             ORDER BY lsp.name COLLATE NOCASE ASC, lsp.id ASC
             """,
             (normalized_platform, int(external_account_id)),
+        ).fetchall()
+
+
+def list_social_accounts_by_ids(
+    account_ids: list[int] | tuple[int, ...] | set[int],
+) -> list[sqlite3.Row]:
+    ids = sorted({int(value) for value in account_ids if int(value) > 0})
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT sa.*, yop.name AS profile_name
+            FROM social_accounts sa
+            LEFT JOIN youtube_oauth_profiles yop ON yop.id=sa.oauth_profile_id
+            WHERE sa.id IN ({placeholders})
+            ORDER BY sa.id ASC
+            """,
+            ids,
         ).fetchall()
 
 
@@ -4127,6 +4185,8 @@ def update_social_account_channel_metadata(
     channel_published_at: str | None = None,
     channel_avatar_url: str | None = None,
     channel_thumbnails_json: str | None = None,
+    channel_banner_url: str | None = None,
+    channel_branding_json: str | None = None,
     subscriber_count: int | None = None,
     view_count: int | None = None,
     video_count: int | None = None,
@@ -4150,6 +4210,8 @@ def update_social_account_channel_metadata(
                 channel_published_at=?,
                 channel_avatar_url=?,
                 channel_thumbnails_json=?,
+                channel_banner_url=?,
+                channel_branding_json=?,
                 subscriber_count=?,
                 view_count=?,
                 video_count=?,
@@ -4172,6 +4234,8 @@ def update_social_account_channel_metadata(
                 _normalize_text(channel_published_at),
                 _normalize_text(channel_avatar_url),
                 channel_thumbnails_json,
+                _normalize_text(channel_banner_url),
+                channel_branding_json,
                 subscriber_count,
                 view_count,
                 video_count,

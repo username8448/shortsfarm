@@ -503,6 +503,7 @@ def test_youtube_callback_saves_channel_metadata_after_oauth(monkeypatch):
                 },
                 "contentDetails": {"relatedPlaylists": {"uploads": "UU-meta"}},
                 "status": {"privacyStatus": "public", "madeForKids": False},
+                "brandingSettings": {"image": {"bannerExternalUrl": "https://img.example/banner.jpg"}},
             }
         ],
     )
@@ -520,6 +521,7 @@ def test_youtube_callback_saves_channel_metadata_after_oauth(monkeypatch):
     assert account["channel_handle"] == "@meta"
     assert account["channel_country"] == "US"
     assert account["channel_avatar_url"] == "https://img.example/high.jpg"
+    assert account["channel_banner_url"] == "https://img.example/banner.jpg"
     assert account["subscriber_count"] == 1234
     assert account["view_count"] == 98765
     assert account["video_count"] == 42
@@ -531,6 +533,7 @@ def test_youtube_callback_saves_channel_metadata_after_oauth(monkeypatch):
     assert data["local_alias"] == "Official Meta Channel"
     assert data["official_channel_title"] == "Official Meta Channel"
     assert data["channel_avatar_url"] == "https://img.example/high.jpg"
+    assert data["channel_banner_url"] == "https://img.example/banner.jpg"
     assert data["subscriber_count"] == 1234
     assert "access_token" not in data
     assert "refresh_token" not in data

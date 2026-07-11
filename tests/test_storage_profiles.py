@@ -68,6 +68,7 @@ def _set_youtube_account_metadata(
     handle: str = "@official",
     description: str = "Official description",
     avatar_url: str = "https://img.example/avatar.jpg",
+    banner_url: str = "https://img.example/banner.jpg",
 ) -> None:
     from shortsfarm import db
 
@@ -78,6 +79,8 @@ def _set_youtube_account_metadata(
         channel_custom_url=handle,
         channel_handle=handle,
         channel_avatar_url=avatar_url,
+        channel_banner_url=banner_url,
+        channel_branding_json=f'{{"image":{{"bannerExternalUrl":"{banner_url}"}}}}',
         uploads_playlist_id="UU-official",
         metadata_synced_at=db.now_utc(),
         metadata_sync_error=None,
@@ -101,6 +104,7 @@ def _patch_youtube_channel_metadata(monkeypatch, *, title="Synced Channel", avat
                                     "customUrl": "@synced",
                                     "thumbnails": {"high": {"url": avatar_url}},
                                 },
+                                "brandingSettings": {"image": {"bannerExternalUrl": "https://img.example/synced-banner.jpg"}},
                                 "statistics": {"subscriberCount": "10", "viewCount": "20", "videoCount": "3"},
                                 "contentDetails": {"relatedPlaylists": {"uploads": "UU-synced"}},
                                 "status": {"privacyStatus": "public"},
@@ -202,6 +206,8 @@ def test_storage_profile_youtube_link_uses_effective_channel_branding(tmp_path):
     assert profile["effective_handle"] == "official-shorts"
     assert profile["effective_description"] == "Official YouTube channel description"
     assert profile["effective_avatar_url"] == "https://img.example/official.jpg"
+    assert profile["effective_banner_url"] == "https://img.example/banner.jpg"
+    assert profile["effective_avatar_initials"] == "OF"
 
 
 def test_storage_profile_manual_name_override_wins_over_youtube_branding(tmp_path):
@@ -241,6 +247,75 @@ def test_storage_profile_manual_name_override_wins_over_youtube_branding(tmp_pat
     assert detail["effective_avatar_url"] == "https://img.example/two.jpg"
 
 
+def test_storage_profile_field_overrides_can_return_to_youtube(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import (
+        LocalStorageProfileUpdateRequest,
+        LocalStorageProfileYouTubeLinkRequest,
+    )
+
+    _workspace(tmp_path)
+    profile_id = _profile_id(name="Local Name")
+    account_id = _youtube_account(channel_title="Official One")
+    _set_youtube_account_metadata(
+        account_id,
+        title="Official One",
+        avatar_url="https://img.example/youtube-avatar.jpg",
+    )
+    api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )
+
+    local = api.local_storage_profile_update(
+        profile_id,
+        LocalStorageProfileUpdateRequest(
+            name="Manual Name",
+            avatar_url="https://img.example/local-avatar.jpg",
+        ),
+    )["profile"]
+    assert local["effective_name"] == "Manual Name"
+    assert local["effective_avatar_url"] == "https://img.example/local-avatar.jpg"
+    assert local["youtube_branding"]["overrides"]["name"] is True
+    assert local["youtube_branding"]["overrides"]["avatar"] is True
+
+    reset = api.local_storage_profile_update(
+        profile_id,
+        LocalStorageProfileUpdateRequest(name_override=False, avatar_override=False),
+    )["profile"]
+    assert reset["effective_name"] == "Official One"
+    assert reset["effective_avatar_url"] == "https://img.example/youtube-avatar.jpg"
+    assert reset["youtube_branding"]["overrides"]["name"] is False
+    assert reset["youtube_branding"]["overrides"]["avatar"] is False
+
+
+def test_storage_profile_youtube_branding_disabled_uses_local_values(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import (
+        LocalStorageProfileUpdateRequest,
+        LocalStorageProfileYouTubeLinkRequest,
+    )
+
+    _workspace(tmp_path)
+    profile_id = _profile_id(name="Local Name")
+    account_id = _youtube_account(channel_title="Official One")
+    _set_youtube_account_metadata(account_id, title="Official One")
+    api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )
+
+    profile = api.local_storage_profile_update(
+        profile_id,
+        LocalStorageProfileUpdateRequest(youtube_branding_sync_enabled=False),
+    )["profile"]
+
+    assert profile["effective_name"] == "Local Name"
+    assert profile["effective_handle"] == "local-name"
+    assert profile["effective_avatar_url"] == ""
+    assert profile["youtube_branding"]["sync_enabled"] is False
+
+
 def test_youtube_account_sync_updates_linked_profile_branding(monkeypatch, tmp_path):
     from shortsfarm.web import api
     from shortsfarm.web.schemas import LocalStorageProfileYouTubeLinkRequest
@@ -266,8 +341,10 @@ def test_youtube_account_sync_updates_linked_profile_branding(monkeypatch, tmp_p
     assert profile["effective_name"] == "Synced Official"
     assert profile["effective_handle"] == "synced"
     assert profile["effective_avatar_url"] == "https://img.example/synced-official.jpg"
+    assert profile["effective_banner_url"] == "https://img.example/synced-banner.jpg"
     assert profile["youtube_branding"]["sync_error"] is None
     assert profile["youtube_branding"]["synced_at"] is not None
+    assert profile["youtube_branding"]["attempted_at"] is not None
 
 
 def test_storage_profile_youtube_branding_sync_error_is_stored(monkeypatch, tmp_path):
@@ -295,6 +372,112 @@ def test_storage_profile_youtube_branding_sync_error_is_stored(monkeypatch, tmp_
     assert "YouTube metadata unavailable" in result["error"]
     assert result["profile"]["service_links"][0]["external_account_id"] == account_id
     assert result["profile"]["youtube_branding"]["sync_error"] == "YouTube metadata unavailable"
+
+
+def test_storage_profile_sync_error_keeps_last_success_time(monkeypatch, tmp_path):
+    from shortsfarm import db
+    from shortsfarm import publish_youtube
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileYouTubeLinkRequest
+
+    _workspace(tmp_path)
+    profile_id = _profile_id(name="Local Name")
+    account_id = _youtube_account(channel_title="Broken Channel")
+    _set_youtube_account_metadata(account_id, title="Broken Channel")
+    success_at = "2026-07-01T10:00:00+00:00"
+    db.update_local_storage_profile_youtube_branding_sync(profile_id, synced_at=success_at, error=None)
+    api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )
+
+    def fail_build(account):
+        raise RuntimeError("YouTube metadata unavailable")
+
+    monkeypatch.setattr(publish_youtube, "build_youtube_client", fail_build)
+    result = api.local_storage_profile_youtube_sync_branding(profile_id)
+
+    assert result["status"] == "failed"
+    assert result["profile"]["youtube_branding"]["synced_at"] == success_at
+    assert result["profile"]["youtube_branding"]["attempted_at"] != success_at
+
+
+def test_storage_profile_youtube_link_keeps_link_on_sync_error(monkeypatch, tmp_path):
+    from shortsfarm import publish_youtube
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileYouTubeLinkRequest
+
+    _workspace(tmp_path)
+    profile_id = _profile_id(name="Local Name")
+    account_id = _youtube_account(channel_title="Broken Channel")
+
+    def fail_build(account):
+        raise RuntimeError("metadata failed")
+
+    monkeypatch.setattr(publish_youtube, "build_youtube_client", fail_build)
+    result = api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )
+
+    assert result["status"] == "linked_with_sync_error"
+    assert result["sync_error"] == "metadata failed"
+    assert result["profile"]["service_links"][0]["external_account_id"] == account_id
+    assert result["profile"]["youtube_branding"]["sync_error"] == "metadata failed"
+
+
+def test_storage_profile_youtube_unlink_clears_branding_status(monkeypatch, tmp_path):
+    from shortsfarm import publish_youtube
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileYouTubeLinkRequest
+
+    _workspace(tmp_path)
+    profile_id = _profile_id(name="Local Name")
+    account_id = _youtube_account(channel_title="Broken Channel")
+
+    def fail_build(account):
+        raise RuntimeError("metadata failed")
+
+    monkeypatch.setattr(publish_youtube, "build_youtube_client", fail_build)
+    api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )
+
+    profile = api.local_storage_profile_youtube_unlink(profile_id)["profile"]
+
+    assert profile["service_links"] == []
+    assert profile["youtube_branding"]["sync_error"] is None
+    assert profile["youtube_branding"]["synced_at"] is None
+    assert profile["youtube_branding"]["attempted_at"] is None
+
+
+def test_youtube_account_sync_updates_multiple_linked_profiles(monkeypatch, tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileYouTubeLinkRequest
+
+    _workspace(tmp_path)
+    first_profile_id = _profile_id(name="First")
+    second_profile_id = _profile_id(name="Second")
+    account_id = _youtube_account(channel_id="sync-channel", channel_title="Before Sync")
+    _patch_youtube_channel_metadata(
+        monkeypatch,
+        title="Synced Official",
+        avatar_url="https://img.example/synced-official.jpg",
+    )
+
+    for profile_id in (first_profile_id, second_profile_id):
+        api.local_storage_profile_youtube_link(
+            profile_id,
+            LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+        )
+
+    result = api.youtube_account_sync_metadata(account_id)
+
+    assert result["status"] == "ok"
+    assert result["branding_profiles"] == 2
+    assert api.local_storage_profile_detail(first_profile_id)["profile"]["effective_name"] == "Synced Official"
+    assert api.local_storage_profile_detail(second_profile_id)["profile"]["effective_name"] == "Synced Official"
 
 
 def test_storage_profile_youtube_link_updates_existing_link(tmp_path):
@@ -1114,6 +1297,13 @@ def test_storage_profiles_ui_is_registered():
     assert "storage-profile-card create-card" in js
     assert "openStorageProfile(profileId" in js
     assert "openStorageProfilesHub" in js
+    assert "storage-channel-compact" in js
+    assert "storage-profile-tabs" in js
+    assert "storage-profile-actionbar" in js
+    assert "storage-profile-drawer" in js
+    assert "storageProfileMainContent(profile)" in js
+    assert "renderStorageProfileDrawer(profile)" in js
+    assert "openStorageProfileVideoPicker" in js
     assert "openGlobalTagsView" in js
     assert "loadTagsView" in js
     assert "renderGlobalTagsManager" in js
@@ -1134,6 +1324,15 @@ def test_storage_profiles_ui_is_registered():
     assert "Отвязать" in js
     assert "Обновить оформление с YouTube" in js
     assert "Автоматически брать оформление из YouTube" in js
+    assert "Вернуть имя из YouTube" in js
+    assert "Вернуть описание из YouTube" in js
+    assert "Вернуть фото YouTube" in js
+    assert "Вернуть шапку из YouTube" in js
+    assert "linked_with_sync_error" in js
+    assert "storage-avatar-fallback" in js
+    assert "onerror=\"this.style.display='none'\"" in js
+    assert "effective_banner_url" in js
+    assert "setStorageProfileBrandingOverride" in js
     assert "Публикация YouTube" in js
     assert "Настройки публикации профиля" in js
     assert "Теги профиля" in js
@@ -1187,8 +1386,19 @@ def test_storage_profiles_ui_is_registered():
     assert "openStorageProfile" in window_exports
     assert "addWorkspaceItemToStorageProfile" in js
     assert "storage-youtube-controls" in css
+    assert "storage-avatar-wrap" in css
+    assert "storage-avatar-fallback" in css
     assert "storage-profiles-hub" in css
     assert "storage-profile-route-head" in css
+    assert "storage-profile-drawer" in css
+    assert "storage-profile-main-grid" in css
+    assert "storage-video-grid-compact" in css
+    assert "storage-profile-actionbar" in css
+    render_detail_body = js.split("function renderStorageProfileDetail()", 1)[1].split("async function saveStorageProfile", 1)[0]
+    assert "${storageProfilePublishSettingsPanel()}" not in render_detail_body
+    assert "${storageProfileTagRulesPanel(profile)}" not in render_detail_body
+    assert "${storageProfileServiceLinks(profile)}" not in render_detail_body
+    assert "${renderStorageCandidatePicker()}" not in render_detail_body
     assert "storage-tag-panel" in css
     assert "tags-manager" in css
     assert "tags-manager-grid" in css

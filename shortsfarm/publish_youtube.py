@@ -20,7 +20,7 @@ YOUTUBE_METADATA_WRITE_SCOPES = {
     "https://www.googleapis.com/auth/youtube.force-ssl",
     "https://www.googleapis.com/auth/youtubepartner",
 }
-YOUTUBE_CHANNEL_METADATA_PARTS = "snippet,statistics,contentDetails,status"
+YOUTUBE_CHANNEL_METADATA_PARTS = "snippet,statistics,contentDetails,status,brandingSettings"
 
 
 def parse_tags(value: str | list[str] | None) -> list[str]:
@@ -394,9 +394,11 @@ def youtube_channel_metadata_from_item(
     statistics = item.get("statistics") or {}
     content_details = item.get("contentDetails") or {}
     status = item.get("status") or {}
+    branding = item.get("brandingSettings") or {}
     thumbnails = snippet.get("thumbnails") or {}
     custom_url = str(snippet.get("customUrl") or "").strip()
     handle = custom_url if custom_url.startswith("@") else ""
+    banner_url = str(((branding.get("image") or {}).get("bannerExternalUrl")) or "").strip()
     return {
         "channel_id": str(item.get("id") or "").strip(),
         "channel_title": str(snippet.get("title") or "").strip() or "YouTube канал",
@@ -407,6 +409,8 @@ def youtube_channel_metadata_from_item(
         "channel_published_at": str(snippet.get("publishedAt") or "").strip(),
         "channel_avatar_url": _best_thumbnail(snippet),
         "channel_thumbnails_json": _json_dump(thumbnails),
+        "channel_banner_url": banner_url,
+        "channel_branding_json": _json_dump(branding),
         "subscriber_count": _safe_int(statistics.get("subscriberCount")),
         "view_count": _safe_int(statistics.get("viewCount")),
         "video_count": _safe_int(statistics.get("videoCount")),

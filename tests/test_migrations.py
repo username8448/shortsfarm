@@ -135,6 +135,8 @@ def test_social_accounts_oauth_profile_columns_exist(tmp_data_dir):
     assert "uploads_playlist_id" in columns
     assert "metadata_synced_at" in columns
     assert "metadata_sync_error" in columns
+    assert "channel_banner_url" in columns
+    assert "channel_branding_json" in columns
 
 
 def test_local_storage_profile_youtube_branding_columns_exist(tmp_data_dir):
@@ -150,8 +152,95 @@ def test_local_storage_profile_youtube_branding_columns_exist(tmp_data_dir):
     assert "handle_override" in columns
     assert "description_override" in columns
     assert "avatar_override" in columns
+    assert "banner_override" in columns
     assert "youtube_branding_synced_at" in columns
+    assert "youtube_branding_attempted_at" in columns
     assert "youtube_branding_sync_error" in columns
+    assert "banner_url" in columns
+
+
+def test_local_storage_profile_youtube_branding_repair_partial_043(tmp_path):
+    from shortsfarm.migrations import MIGRATIONS_DIR, apply_all
+
+    con = sqlite3.connect(tmp_path / "partial-043.sqlite")
+    con.row_factory = sqlite3.Row
+    try:
+        con.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        for sql_file in MIGRATIONS_DIR.glob("*.sql"):
+            con.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, '2026-07-11T00:00:00+00:00')",
+                (sql_file.stem,),
+            )
+        con.execute(
+            """
+            CREATE TABLE local_storage_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                handle TEXT NOT NULL UNIQUE,
+                description TEXT,
+                avatar_initials TEXT,
+                avatar_color TEXT NOT NULL DEFAULT '#3b82f6',
+                banner_color TEXT NOT NULL DEFAULT '#111827',
+                avatar_url TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        con.execute(
+            """
+            CREATE TABLE social_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL,
+                display_name TEXT,
+                channel_id TEXT,
+                channel_title TEXT,
+                access_token TEXT,
+                refresh_token TEXT,
+                token_expires_at TEXT,
+                scopes TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        con.commit()
+
+        assert apply_all(con) == []
+
+        profile_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(local_storage_profiles)")
+        }
+        account_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(social_accounts)")
+        }
+
+        assert {
+            "youtube_branding_sync_enabled",
+            "name_override",
+            "handle_override",
+            "description_override",
+            "avatar_override",
+            "banner_override",
+            "youtube_branding_synced_at",
+            "youtube_branding_attempted_at",
+            "youtube_branding_sync_error",
+            "banner_url",
+        } <= profile_columns
+        assert {"channel_banner_url", "channel_branding_json"} <= account_columns
+    finally:
+        con.close()
 
 
 def test_oauth_states_oauth_profile_column_exists(tmp_data_dir):

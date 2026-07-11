@@ -163,7 +163,13 @@ class LocalStorageProfileUpdateRequest(BaseModel):
     avatar_color: str | None = None
     avatar_url: str | None = None
     banner_color: str | None = None
+    banner_url: str | None = None
     youtube_branding_sync_enabled: bool | None = None
+    name_override: bool | None = None
+    handle_override: bool | None = None
+    description_override: bool | None = None
+    avatar_override: bool | None = None
+    banner_override: bool | None = None
     auto_import_enabled: bool | None = None
     auto_import_sections: list[str] | None = None
     auto_import_prefix: str | None = None
