@@ -61,6 +61,62 @@ def _youtube_account(
     )
 
 
+def _set_youtube_account_metadata(
+    account_id: int,
+    *,
+    title: str = "Official Channel",
+    handle: str = "@official",
+    description: str = "Official description",
+    avatar_url: str = "https://img.example/avatar.jpg",
+) -> None:
+    from shortsfarm import db
+
+    db.update_social_account_channel_metadata(
+        account_id,
+        channel_title=title,
+        channel_description=description,
+        channel_custom_url=handle,
+        channel_handle=handle,
+        channel_avatar_url=avatar_url,
+        uploads_playlist_id="UU-official",
+        metadata_synced_at=db.now_utc(),
+        metadata_sync_error=None,
+    )
+
+
+def _patch_youtube_channel_metadata(monkeypatch, *, title="Synced Channel", avatar_url="https://img.example/synced.jpg"):
+    from shortsfarm import publish_youtube
+
+    class Channels:
+        def list(self, **kwargs):
+            class Request:
+                def execute(self):
+                    return {
+                        "items": [
+                            {
+                                "id": kwargs.get("id") or "channel-1",
+                                "snippet": {
+                                    "title": title,
+                                    "description": "Synced description",
+                                    "customUrl": "@synced",
+                                    "thumbnails": {"high": {"url": avatar_url}},
+                                },
+                                "statistics": {"subscriberCount": "10", "viewCount": "20", "videoCount": "3"},
+                                "contentDetails": {"relatedPlaylists": {"uploads": "UU-synced"}},
+                                "status": {"privacyStatus": "public"},
+                            }
+                        ]
+                    }
+
+            return Request()
+
+    class YouTube:
+        def channels(self):
+            return Channels()
+
+    monkeypatch.setattr(publish_youtube, "build_youtube_client", lambda account: YouTube())
+
+
 def test_storage_profile_create_update_and_list(tmp_path):
     from shortsfarm.web import api
     from shortsfarm.web.schemas import (
@@ -119,6 +175,126 @@ def test_storage_profile_youtube_link_and_unlink(tmp_path):
     unlinked = api.local_storage_profile_youtube_unlink(profile_id)["profile"]
 
     assert unlinked["service_links"] == []
+
+
+def test_storage_profile_youtube_link_uses_effective_channel_branding(tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileYouTubeLinkRequest
+
+    _workspace(tmp_path)
+    profile_id = _profile_id(name="Local Name")
+    account_id = _youtube_account(channel_title="Old Channel")
+    _set_youtube_account_metadata(
+        account_id,
+        title="Official Shorts",
+        handle="@official-shorts",
+        description="Official YouTube channel description",
+        avatar_url="https://img.example/official.jpg",
+    )
+
+    profile = api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )["profile"]
+
+    assert profile["name"] == "Local Name"
+    assert profile["effective_name"] == "Official Shorts"
+    assert profile["effective_handle"] == "official-shorts"
+    assert profile["effective_description"] == "Official YouTube channel description"
+    assert profile["effective_avatar_url"] == "https://img.example/official.jpg"
+
+
+def test_storage_profile_manual_name_override_wins_over_youtube_branding(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import (
+        LocalStorageProfileUpdateRequest,
+        LocalStorageProfileYouTubeLinkRequest,
+    )
+
+    _workspace(tmp_path)
+    profile_id = _profile_id(name="Local Name")
+    account_id = _youtube_account(channel_title="Official One")
+    _set_youtube_account_metadata(account_id, title="Official One")
+    api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )
+
+    updated = api.local_storage_profile_update(
+        profile_id,
+        LocalStorageProfileUpdateRequest(name="Manual Profile Name"),
+    )["profile"]
+    assert updated["effective_name"] == "Manual Profile Name"
+    assert updated["youtube_branding"]["overrides"]["name"] is True
+
+    db.update_social_account_channel_metadata(
+        account_id,
+        channel_title="Official Two",
+        channel_avatar_url="https://img.example/two.jpg",
+        metadata_synced_at=db.now_utc(),
+        metadata_sync_error=None,
+    )
+    detail = api.local_storage_profile_detail(profile_id)["profile"]
+
+    assert detail["effective_name"] == "Manual Profile Name"
+    assert detail["effective_avatar_url"] == "https://img.example/two.jpg"
+
+
+def test_youtube_account_sync_updates_linked_profile_branding(monkeypatch, tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileYouTubeLinkRequest
+
+    _workspace(tmp_path)
+    profile_id = _profile_id(name="Local Name")
+    account_id = _youtube_account(channel_id="sync-channel", channel_title="Before Sync")
+    _patch_youtube_channel_metadata(
+        monkeypatch,
+        title="Synced Official",
+        avatar_url="https://img.example/synced-official.jpg",
+    )
+    api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )
+
+    result = api.youtube_account_sync_metadata(account_id)
+    profile = api.local_storage_profile_detail(profile_id)["profile"]
+
+    assert result["status"] == "ok"
+    assert result["branding_profiles"] == 1
+    assert profile["effective_name"] == "Synced Official"
+    assert profile["effective_handle"] == "synced"
+    assert profile["effective_avatar_url"] == "https://img.example/synced-official.jpg"
+    assert profile["youtube_branding"]["sync_error"] is None
+    assert profile["youtube_branding"]["synced_at"] is not None
+
+
+def test_storage_profile_youtube_branding_sync_error_is_stored(monkeypatch, tmp_path):
+    from shortsfarm import publish_youtube
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileYouTubeLinkRequest
+
+    _workspace(tmp_path)
+    profile_id = _profile_id(name="Local Name")
+    account_id = _youtube_account(channel_title="Broken Channel")
+    _set_youtube_account_metadata(account_id, title="Broken Channel")
+    api.local_storage_profile_youtube_link(
+        profile_id,
+        LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
+    )
+
+    def fail_build(account):
+        raise RuntimeError("YouTube metadata unavailable")
+
+    monkeypatch.setattr(publish_youtube, "build_youtube_client", fail_build)
+
+    result = api.local_storage_profile_youtube_sync_branding(profile_id)
+
+    assert result["status"] == "failed"
+    assert "YouTube metadata unavailable" in result["error"]
+    assert result["profile"]["service_links"][0]["external_account_id"] == account_id
+    assert result["profile"]["youtube_branding"]["sync_error"] == "YouTube metadata unavailable"
 
 
 def test_storage_profile_youtube_link_updates_existing_link(tmp_path):
@@ -950,11 +1126,14 @@ def test_storage_profiles_ui_is_registered():
     assert "/youtube/link" in js
     assert "/youtube/enqueue" in js
     assert "/youtube/sync" in js
+    assert "/youtube/sync-branding" in js
     assert "/youtube/videos" in js
     assert "/publish-jobs" in js
     assert "/publish-settings" in js
     assert "Привязать YouTube" in js
     assert "Отвязать" in js
+    assert "Обновить оформление с YouTube" in js
+    assert "Автоматически брать оформление из YouTube" in js
     assert "Публикация YouTube" in js
     assert "Настройки публикации профиля" in js
     assert "Теги профиля" in js

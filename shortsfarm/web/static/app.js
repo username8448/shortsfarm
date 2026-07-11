@@ -2795,8 +2795,25 @@ async function workspacePathForStorageProfile(path) {
 function storageProfileById(id) {
   return storageProfiles.find(profile => Number(profile.id) === Number(id)) || null;
 }
+function storageProfileName(profile) {
+  return profile?.effective_name || profile?.name || 'Профиль';
+}
+function storageProfileHandle(profile) {
+  return profile?.effective_handle || profile?.handle || `profile-${profile?.id || ''}`;
+}
+function storageProfileDescription(profile) {
+  return profile?.effective_description || profile?.description || 'Локальный профиль ShortsFarm для готового контента.';
+}
 function storageProfileInitials(profile) {
-  return profile?.avatar_initials || String(profile?.name || 'SF').trim().slice(0, 2).toUpperCase();
+  return profile?.effective_avatar_initials || profile?.avatar_initials || String(storageProfileName(profile) || 'SF').trim().slice(0, 2).toUpperCase();
+}
+function storageProfileAvatarHtml(profile, className = 'storage-profile-icon') {
+  const url = profile?.effective_avatar_url || profile?.avatar_url || '';
+  const bg = profile?.effective_avatar_color || profile?.avatar_color || '#3b82f6';
+  const initials = storageProfileInitials(profile);
+  return url
+    ? `<img class="${esc(className)} storage-avatar-img" src="${esc(url)}" alt="">`
+    : `<span class="${esc(className)}" style="background:${esc(bg)}">${esc(initials)}</span>`;
 }
 function tagPill(tag, options = {}) {
   if (!tag) return '';
@@ -2898,9 +2915,9 @@ function storageProfileCard(profile) {
   const active = currentView === 'storage-profile' && Number(profile.id) === Number(currentStorageProfileId);
   const youtube = storageProfileYoutubeLink(profile);
   return `<button class="storage-profile-card${active ? ' active' : ''}" onclick="selectStorageProfile(${Number(profile.id)})">
-    <span class="storage-profile-icon" style="background:${esc(profile.avatar_color || '#3b82f6')}">${esc(storageProfileInitials(profile))}</span>
-    <span class="storage-profile-card-title">${esc(profile.name)}</span>
-    <span class="mono dim">@${esc(profile.handle || `profile-${profile.id}`)} · ${Number(profile.item_count || 0)} видео</span>
+    ${storageProfileAvatarHtml(profile, 'storage-profile-icon')}
+    <span class="storage-profile-card-title">${esc(storageProfileName(profile))}</span>
+    <span class="mono dim">@${esc(storageProfileHandle(profile))} · ${Number(profile.item_count || 0)} видео</span>
     ${youtube ? `<span class="badge b-err"><i class="ti ti-brand-youtube"></i>${esc(youtube.display_name || 'YouTube')}</span>` : ''}
     <span class="storage-profile-open-hint">Открыть профиль</span>
   </button>`;
@@ -3024,15 +3041,27 @@ function storageProfileServiceLinks(profile) {
     ? `<div class="storage-youtube-controls">
         <select id="storage-profile-youtube-account">${accountOptions}</select>
         <button class="btn-secondary" onclick="linkStorageProfileYoutube()">${youtube ? 'Сменить канал' : 'Привязать YouTube'}</button>
+        ${youtube ? '<button class="btn-secondary" onclick="syncStorageProfileYoutubeBranding()">Обновить оформление с YouTube</button>' : ''}
         ${youtube ? '<button class="btn-danger" onclick="unlinkStorageProfileYoutube()">Отвязать</button>' : ''}
       </div>`
     : `<div class="storage-youtube-controls">
         <button class="btn-secondary" onclick="openStorageProfileYoutubeSettings()">Подключить YouTube-канал</button>
       </div>`;
+  const branding = profile?.youtube_branding || {};
+  const brandingState = youtube
+    ? `<div class="storage-youtube-branding">
+        <label class="workspace-youtube-toggle">
+          <input type="checkbox" ${branding.sync_enabled !== false ? 'checked' : ''} onchange="toggleStorageProfileYoutubeBranding(this.checked)">
+          <span>Автоматически брать оформление из YouTube</span>
+        </label>
+        <div class="mono dim">${branding.synced_at ? `Оформление sync: ${esc(formatMtime(branding.synced_at))}` : 'Оформление ещё не синхронизировалось.'}</div>
+        ${branding.sync_error ? `<div class="mono err">Ошибка оформления: ${esc(shortErrorText(branding.sync_error))}</div>` : ''}
+      </div>`
+    : '';
   const status = youtube
     ? `<b>Привязан YouTube: ${esc(storageAccountTitle(linkedAccount) || youtube.display_name || 'канал')}</b><p>Выбирайте видео ниже: очередь, таймер и запуск публикации доступны прямо в профиле.</p>`
     : '<b>YouTube не привязан</b><p>Выберите уже подключённый канал. После привязки можно будет отправлять выбранные видео в очередь и на таймер прямо отсюда.</p>';
-  return `<div class="storage-service-note storage-youtube-link"><i class="ti ti-brand-youtube"></i><div>${status}${accountControls}</div></div>`;
+  return `<div class="storage-service-note storage-youtube-link"><i class="ti ti-brand-youtube"></i><div>${status}${brandingState}${accountControls}</div></div>`;
 }
 function storageProfileRulesByMode(mode) {
   return (currentStorageProfile?.tag_rules || []).filter(rule => rule.mode === mode);
@@ -3492,6 +3521,41 @@ async function unlinkStorageProfileYoutube() {
 function openStorageProfileYoutubeSettings() {
   nav('integrations', document.querySelector('[data-v="integrations"]'));
 }
+async function syncStorageProfileYoutubeBranding() {
+  if (!currentStorageProfileId) return;
+  try {
+    const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/youtube/sync-branding`, {});
+    if (data.profile) {
+      currentStorageProfile = data.profile;
+      storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(data.profile.id) ? data.profile : profile);
+    }
+    renderStorageProfilesGrid();
+    renderStorageProfileDetail();
+    if (data.status === 'failed') {
+      showStorageProfileError(data.error || 'Не удалось обновить оформление YouTube');
+      showToast('Оформление YouTube не обновлено', 'err');
+    } else {
+      showToast('Оформление YouTube обновлено');
+    }
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось обновить оформление YouTube');
+  }
+}
+async function toggleStorageProfileYoutubeBranding(enabled) {
+  if (!currentStorageProfileId) return;
+  try {
+    const data = await api.patch(`/api/storage-profiles/${Number(currentStorageProfileId)}`, {
+      youtube_branding_sync_enabled: Boolean(enabled),
+    });
+    currentStorageProfile = data.profile;
+    storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(data.profile.id) ? data.profile : profile);
+    renderStorageProfilesGrid();
+    renderStorageProfileDetail();
+    showToast(enabled ? 'Автооформление YouTube включено' : 'Автооформление YouTube выключено');
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось изменить режим оформления YouTube');
+  }
+}
 async function syncStorageProfileYoutube() {
   if (!currentStorageProfileId) return;
   try {
@@ -3876,20 +3940,23 @@ function renderStorageProfileDetail() {
   const title = document.getElementById('storage-profile-view-title');
   const subtitle = document.getElementById('storage-profile-view-subtitle');
   const headTitle = document.getElementById('storage-profile-page-head-title');
-  if (title) title.textContent = profile.name || 'Профиль';
-  if (subtitle) subtitle.textContent = `@${profile.handle || `profile-${profile.id}`} · отдельная страница локального канала`;
-  if (headTitle) headTitle.textContent = `Витрина: ${profile.name || `Профиль #${profile.id}`}`;
+  const effectiveName = storageProfileName(profile);
+  const effectiveHandle = storageProfileHandle(profile);
+  const effectiveDescription = storageProfileDescription(profile);
+  if (title) title.textContent = effectiveName || 'Профиль';
+  if (subtitle) subtitle.textContent = `@${effectiveHandle} · отдельная страница локального канала`;
+  if (headTitle) headTitle.textContent = `Витрина: ${effectiveName || `Профиль #${profile.id}`}`;
   const videos = storageProfileItems.length
     ? `<div class="storage-video-grid">${storageProfileItems.map(storageProfileItemCard).join('')}</div>`
     : '<div class="empty">В профиле пока нет видео. Добавьте готовый файл из «Результатов монтажа», «Готовых» или «Опубликованных».</div>';
   el.innerHTML = `<div class="storage-channel">
-    <div class="storage-channel-banner" style="background:${esc(profile.banner_color || '#111827')}"></div>
+    <div class="storage-channel-banner" style="background:${esc(profile.effective_banner_color || profile.banner_color || '#111827')}"></div>
     <div class="storage-channel-head">
-      <div class="storage-channel-avatar" style="background:${esc(profile.avatar_color || '#3b82f6')}">${esc(storageProfileInitials(profile))}</div>
+      ${storageProfileAvatarHtml(profile, 'storage-channel-avatar')}
       <div style="min-width:0;flex:1">
-        <div class="storage-channel-name">${esc(profile.name)}</div>
-        <div class="mono dim">@${esc(profile.handle)} · ${Number(profile.item_count || storageProfileItems.length || 0)} видео</div>
-        <p>${esc(profile.description || 'Локальный профиль ShortsFarm для готового контента.')}</p>
+        <div class="storage-channel-name">${esc(effectiveName)}</div>
+        <div class="mono dim">@${esc(effectiveHandle)} · ${Number(profile.item_count || storageProfileItems.length || 0)} видео</div>
+        <p>${esc(effectiveDescription)}</p>
       </div>
       <div class="row-actions">
         <button class="btn-secondary" onclick="saveStorageProfile()">Сохранить</button>
@@ -3901,14 +3968,16 @@ function renderStorageProfileDetail() {
     ${storageProfileTagRulesPanel(profile)}
     ${storageProfilePublishControls()}
     <div class="storage-profile-edit">
+      <div class="settings-meta">Локальные значения ниже работают как ручное переопределение оформления YouTube, только если вы их измените.</div>
       <div class="field-grid">
-        <div class="field"><label class="field-lbl">Название</label><input id="storage-profile-name" type="text" value="${esc(profile.name)}"></div>
-        <div class="field"><label class="field-lbl">Handle</label><input id="storage-profile-handle" type="text" value="${esc(profile.handle)}"></div>
+        <div class="field"><label class="field-lbl">Локальное название</label><input id="storage-profile-name" type="text" value="${esc(profile.name)}"></div>
+        <div class="field"><label class="field-lbl">Локальный Handle</label><input id="storage-profile-handle" type="text" value="${esc(profile.handle)}"></div>
       </div>
-      <div class="field"><label class="field-lbl">Описание</label><textarea id="storage-profile-description" rows="3">${esc(profile.description || '')}</textarea></div>
+      <div class="field"><label class="field-lbl">Локальное описание</label><textarea id="storage-profile-description" rows="3">${esc(profile.description || '')}</textarea></div>
       <div class="field-grid">
         <div class="field"><label class="field-lbl">Инициалы</label><input id="storage-profile-initials" type="text" value="${esc(profile.avatar_initials || '')}"></div>
         <div class="field"><label class="field-lbl">Цвет аватара</label><input id="storage-profile-avatar-color" type="text" value="${esc(profile.avatar_color || '#3b82f6')}"></div>
+        <div class="field"><label class="field-lbl">URL локального аватара</label><input id="storage-profile-avatar-url" type="text" value="${esc(profile.avatar_url || '')}"></div>
         <div class="field"><label class="field-lbl">Цвет баннера</label><input id="storage-profile-banner-color" type="text" value="${esc(profile.banner_color || '#111827')}"></div>
       </div>
     </div>
@@ -3930,6 +3999,7 @@ async function saveStorageProfile() {
       description: document.getElementById('storage-profile-description')?.value || '',
       avatar_initials: document.getElementById('storage-profile-initials')?.value || '',
       avatar_color: document.getElementById('storage-profile-avatar-color')?.value || '',
+      avatar_url: document.getElementById('storage-profile-avatar-url')?.value || '',
       banner_color: document.getElementById('storage-profile-banner-color')?.value || '',
     });
     currentStorageProfile = data.profile;
@@ -7404,6 +7474,8 @@ Object.assign(window, {
   syncYouTubeAccountMetadata,
   syncAllYouTubeAccountsMetadata,
   editYouTubeAccountAlias,
+  syncStorageProfileYoutubeBranding,
+  toggleStorageProfileYoutubeBranding,
   openYouTubeSettings,
   openStorageProfile,
 });

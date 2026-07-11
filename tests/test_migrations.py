@@ -137,6 +137,23 @@ def test_social_accounts_oauth_profile_columns_exist(tmp_data_dir):
     assert "metadata_sync_error" in columns
 
 
+def test_local_storage_profile_youtube_branding_columns_exist(tmp_data_dir):
+    from shortsfarm import db
+    with db.connect() as con:
+        columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(local_storage_profiles)").fetchall()
+        }
+    assert "avatar_url" in columns
+    assert "youtube_branding_sync_enabled" in columns
+    assert "name_override" in columns
+    assert "handle_override" in columns
+    assert "description_override" in columns
+    assert "avatar_override" in columns
+    assert "youtube_branding_synced_at" in columns
+    assert "youtube_branding_sync_error" in columns
+
+
 def test_oauth_states_oauth_profile_column_exists(tmp_data_dir):
     from shortsfarm import db
     with db.connect() as con:

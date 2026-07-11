@@ -161,7 +161,9 @@ class LocalStorageProfileUpdateRequest(BaseModel):
     description: str | None = None
     avatar_initials: str | None = None
     avatar_color: str | None = None
+    avatar_url: str | None = None
     banner_color: str | None = None
+    youtube_branding_sync_enabled: bool | None = None
     auto_import_enabled: bool | None = None
     auto_import_sections: list[str] | None = None
     auto_import_prefix: str | None = None

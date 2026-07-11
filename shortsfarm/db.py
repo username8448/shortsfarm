@@ -2680,7 +2680,16 @@ def update_local_storage_profile(
     description: Any = _PROFILE_UNSET,
     avatar_initials: Any = _PROFILE_UNSET,
     avatar_color: Any = _PROFILE_UNSET,
+    avatar_url: Any = _PROFILE_UNSET,
     banner_color: Any = _PROFILE_UNSET,
+    youtube_branding_sync_enabled: Any = _PROFILE_UNSET,
+    name_override: Any = _PROFILE_UNSET,
+    handle_override: Any = _PROFILE_UNSET,
+    description_override: Any = _PROFILE_UNSET,
+    avatar_override: Any = _PROFILE_UNSET,
+    banner_override: Any = _PROFILE_UNSET,
+    youtube_branding_synced_at: Any = _PROFILE_UNSET,
+    youtube_branding_sync_error: Any = _PROFILE_UNSET,
     auto_import_enabled: Any = _PROFILE_UNSET,
     auto_import_sections: Any = _PROFILE_UNSET,
     auto_import_prefix: Any = _PROFILE_UNSET,
@@ -2709,7 +2718,11 @@ def update_local_storage_profile(
             """
             UPDATE local_storage_profiles
             SET name=?, handle=?, description=?, avatar_initials=?,
-                avatar_color=?, banner_color=?,
+                avatar_color=?, avatar_url=?, banner_color=?,
+                youtube_branding_sync_enabled=?,
+                name_override=?, handle_override=?, description_override=?,
+                avatar_override=?, banner_override=?,
+                youtube_branding_synced_at=?, youtube_branding_sync_error=?,
                 auto_import_enabled=?, auto_import_sections=?,
                 auto_import_prefix=?, auto_import_last_scan_at=?,
                 tag_match_mode=?, enabled=?, updated_at=?
@@ -2727,9 +2740,36 @@ def update_local_storage_profile(
                 row["avatar_color"]
                 if avatar_color is _PROFILE_UNSET
                 else _normalize_profile_color(avatar_color, row["avatar_color"]),
+                row["avatar_url"]
+                if avatar_url is _PROFILE_UNSET
+                else _normalize_profile_text(avatar_url, max_length=2000),
                 row["banner_color"]
                 if banner_color is _PROFILE_UNSET
                 else _normalize_profile_color(banner_color, row["banner_color"]),
+                row["youtube_branding_sync_enabled"]
+                if youtube_branding_sync_enabled is _PROFILE_UNSET
+                else (1 if youtube_branding_sync_enabled else 0),
+                row["name_override"]
+                if name_override is _PROFILE_UNSET
+                else (1 if name_override else 0),
+                row["handle_override"]
+                if handle_override is _PROFILE_UNSET
+                else (1 if handle_override else 0),
+                row["description_override"]
+                if description_override is _PROFILE_UNSET
+                else (1 if description_override else 0),
+                row["avatar_override"]
+                if avatar_override is _PROFILE_UNSET
+                else (1 if avatar_override else 0),
+                row["banner_override"]
+                if banner_override is _PROFILE_UNSET
+                else (1 if banner_override else 0),
+                row["youtube_branding_synced_at"]
+                if youtube_branding_synced_at is _PROFILE_UNSET
+                else youtube_branding_synced_at,
+                row["youtube_branding_sync_error"]
+                if youtube_branding_sync_error is _PROFILE_UNSET
+                else _normalize_profile_text(youtube_branding_sync_error, max_length=2000),
                 row["auto_import_enabled"]
                 if auto_import_enabled is _PROFILE_UNSET
                 else (1 if auto_import_enabled else 0),
@@ -2751,6 +2791,19 @@ def update_local_storage_profile(
             ),
         )
         return True
+
+
+def update_local_storage_profile_youtube_branding_sync(
+    profile_id: int,
+    *,
+    synced_at: str | None = None,
+    error: str | None = None,
+) -> bool:
+    return update_local_storage_profile(
+        profile_id,
+        youtube_branding_synced_at=synced_at or now_utc(),
+        youtube_branding_sync_error=error,
+    )
 
 
 def disable_local_storage_profile(profile_id: int) -> bool:

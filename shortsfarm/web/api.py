@@ -619,6 +619,87 @@ def _local_storage_service_link_dict(row: Any) -> dict[str, Any]:
     return data
 
 
+def _clean_youtube_profile_handle(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.startswith("@"):
+        text = text[1:]
+    return text.strip().strip("/")
+
+
+def _first_youtube_service_link(service_links: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return next(
+        (
+            link for link in service_links
+            if link.get("platform") == "youtube" and link.get("status") == "linked"
+        ),
+        None,
+    )
+
+
+def _local_storage_effective_profile_fields(
+    row: Any,
+    service_links: list[dict[str, Any]],
+) -> dict[str, Any]:
+    youtube_link = _first_youtube_service_link(service_links)
+    account = (youtube_link or {}).get("youtube_account") or {}
+    sync_enabled = bool(_row(row, "youtube_branding_sync_enabled", 1))
+    use_youtube = bool(sync_enabled and account)
+    local_name = _row(row, "name", "") or ""
+    local_handle = _row(row, "handle", "") or ""
+    local_description = _row(row, "description", "") or ""
+    local_avatar_url = _row(row, "avatar_url", "") or ""
+    local_initials = _row(row, "avatar_initials", "") or ""
+    official_name = account.get("channel_title") or account.get("official_channel_title") or ""
+    official_handle = _clean_youtube_profile_handle(
+        account.get("channel_handle") or account.get("channel_custom_url") or ""
+    )
+    official_description = account.get("channel_description") or ""
+    official_avatar_url = account.get("channel_avatar_url") or ""
+    effective_name = (
+        official_name
+        if use_youtube and not bool(_row(row, "name_override", 0)) and official_name
+        else local_name
+    )
+    effective_handle = (
+        official_handle
+        if use_youtube and not bool(_row(row, "handle_override", 0)) and official_handle
+        else local_handle
+    )
+    effective_description = (
+        official_description
+        if use_youtube and not bool(_row(row, "description_override", 0)) and official_description
+        else local_description
+    )
+    effective_avatar_url = (
+        official_avatar_url
+        if use_youtube and not bool(_row(row, "avatar_override", 0)) and official_avatar_url
+        else local_avatar_url
+    )
+    fallback_initials = (effective_name or local_name or "SF").strip()[:2].upper()
+    return {
+        "effective_name": effective_name or local_name,
+        "effective_handle": effective_handle or local_handle,
+        "effective_description": effective_description or local_description,
+        "effective_avatar_url": effective_avatar_url or "",
+        "effective_avatar_initials": local_initials or fallback_initials,
+        "effective_avatar_color": _row(row, "avatar_color", "#3b82f6") or "#3b82f6",
+        "effective_banner_color": _row(row, "banner_color", "#111827") or "#111827",
+        "youtube_branding": {
+            "sync_enabled": sync_enabled,
+            "source": "youtube" if use_youtube else "local",
+            "synced_at": _row(row, "youtube_branding_synced_at"),
+            "sync_error": _row(row, "youtube_branding_sync_error"),
+            "overrides": {
+                "name": bool(_row(row, "name_override", 0)),
+                "handle": bool(_row(row, "handle_override", 0)),
+                "description": bool(_row(row, "description_override", 0)),
+                "avatar": bool(_row(row, "avatar_override", 0)),
+                "banner": bool(_row(row, "banner_override", 0)),
+            },
+        },
+    }
+
+
 def _local_storage_profile_dict(row: Any, *, include_links: bool = False) -> dict[str, Any]:
     profile_id = int(row["id"])
     try:
@@ -627,6 +708,10 @@ def _local_storage_profile_dict(row: Any, *, include_links: bool = False) -> dic
         auto_sections = ["edits", "ready", "published"]
     if not isinstance(auto_sections, list):
         auto_sections = ["edits", "ready", "published"]
+    service_links = [
+        _local_storage_service_link_dict(link)
+        for link in db.list_local_storage_profile_service_links(profile_id)
+    ] if include_links else []
     data = {
         "id": profile_id,
         "name": _row(row, "name", "") or "",
@@ -634,6 +719,7 @@ def _local_storage_profile_dict(row: Any, *, include_links: bool = False) -> dic
         "description": _row(row, "description", "") or "",
         "avatar_initials": _row(row, "avatar_initials", "") or "",
         "avatar_color": _row(row, "avatar_color", "#3b82f6") or "#3b82f6",
+        "avatar_url": _row(row, "avatar_url", "") or "",
         "banner_color": _row(row, "banner_color", "#111827") or "#111827",
         "enabled": bool(_row(row, "enabled", 1)),
         "item_count": int(_row(row, "item_count", 0) or 0),
@@ -647,11 +733,9 @@ def _local_storage_profile_dict(row: Any, *, include_links: bool = False) -> dic
         "created_at": _row(row, "created_at"),
         "updated_at": _row(row, "updated_at"),
     }
+    data.update(_local_storage_effective_profile_fields(row, service_links))
     if include_links:
-        data["service_links"] = [
-            _local_storage_service_link_dict(link)
-            for link in db.list_local_storage_profile_service_links(profile_id)
-        ]
+        data["service_links"] = service_links
         data["tag_rules"] = [
             _tag_rule_dict(rule)
             for rule in db.list_local_storage_profile_tag_rules(profile_id)
@@ -2460,21 +2544,33 @@ def youtube_accounts_sync_metadata() -> dict[str, Any]:
                 continue
             try:
                 updated = sync_youtube_account_metadata(account)
+                branding_profiles = _touch_linked_storage_profiles_youtube_branding(
+                    account_id,
+                    account=updated,
+                    error=None,
+                )
                 summary["ok"] += 1
                 items.append({
                     "account_id": account_id,
                     "status": "ok",
                     "account": _social_account_dict(updated, include_profile_links=True),
+                    "branding_profiles": branding_profiles,
                 })
             except Exception as sync_exc:
                 message = str(sync_exc) or sync_exc.__class__.__name__
                 db.set_social_account_metadata_sync_error(account_id, message)
+                branding_profiles = _touch_linked_storage_profiles_youtube_branding(
+                    account_id,
+                    account=account,
+                    error=message,
+                )
                 updated = db.get_social_account(account_id)
                 summary["failed"] += 1
                 items.append({
                     "account_id": account_id,
                     "status": "failed",
                     "error": message,
+                    "branding_profiles": branding_profiles,
                     "account": _social_account_dict(updated, include_profile_links=True) if updated else None,
                 })
         return {"status": "ok", "summary": summary, "items": items}
@@ -2491,17 +2587,29 @@ def youtube_account_sync_metadata(account_id: int) -> dict[str, Any]:
             raise FileNotFoundError("YouTube аккаунт не найден.")
         try:
             updated = sync_youtube_account_metadata(account)
+            branding_profiles = _touch_linked_storage_profiles_youtube_branding(
+                account_id,
+                account=updated,
+                error=None,
+            )
             return {
                 "status": "ok",
                 "account": _social_account_dict(updated, include_profile_links=True),
+                "branding_profiles": branding_profiles,
             }
         except Exception as sync_exc:
             message = str(sync_exc) or sync_exc.__class__.__name__
             db.set_social_account_metadata_sync_error(account_id, message)
+            branding_profiles = _touch_linked_storage_profiles_youtube_branding(
+                account_id,
+                account=account,
+                error=message,
+            )
             updated = db.get_social_account(account_id)
             return {
                 "status": "failed",
                 "error": message,
+                "branding_profiles": branding_profiles,
                 "account": _social_account_dict(updated, include_profile_links=True) if updated else None,
             }
     except FileNotFoundError as exc:
@@ -5148,6 +5256,9 @@ def local_storage_profile_update(
 ) -> dict[str, Any]:
     try:
         _init()
+        current = db.get_local_storage_profile(profile_id)
+        if current is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
         updates = _request_updates(
             req,
             (
@@ -5156,7 +5267,9 @@ def local_storage_profile_update(
                 "description",
                 "avatar_initials",
                 "avatar_color",
+                "avatar_url",
                 "banner_color",
+                "youtube_branding_sync_enabled",
                 "auto_import_enabled",
                 "auto_import_sections",
                 "auto_import_prefix",
@@ -5164,6 +5277,20 @@ def local_storage_profile_update(
                 "enabled",
             ),
         )
+        if "name" in updates and str(updates["name"] or "").strip() != str(_row(current, "name", "") or ""):
+            updates["name_override"] = True
+        if "handle" in updates and str(updates["handle"] or "").strip().lstrip("@") != str(_row(current, "handle", "") or ""):
+            updates["handle_override"] = True
+        if "description" in updates and str(updates["description"] or "").strip() != str(_row(current, "description", "") or ""):
+            updates["description_override"] = True
+        if any(
+            field in updates
+            and str(updates[field] or "").strip() != str(_row(current, field, "") or "")
+            for field in ("avatar_initials", "avatar_color", "avatar_url")
+        ):
+            updates["avatar_override"] = True
+        if "banner_color" in updates and str(updates["banner_color"] or "").strip() != str(_row(current, "banner_color", "") or ""):
+            updates["banner_override"] = True
         if not db.update_local_storage_profile(profile_id, **updates):
             raise FileNotFoundError("Локальный профиль не найден.")
         db.reconcile_local_storage_profile_channel_tags(profile_id)
@@ -5219,6 +5346,90 @@ def _linked_storage_profile_youtube_account_id(
         raise ValueError("Профиль привязан к другому YouTube-каналу.")
     _active_youtube_account(linked_account_id)
     return linked_account_id
+
+
+def _youtube_account_display_name(account: Any, account_id: int | None = None) -> str:
+    return (
+        _row(account, "channel_title")
+        or _row(account, "display_name")
+        or (f"YouTube аккаунт #{int(account_id)}" if account_id is not None else "YouTube аккаунт")
+    )
+
+
+def _touch_storage_profile_youtube_branding(
+    profile_id: int,
+    *,
+    account: Any | None = None,
+    error: str | None = None,
+) -> None:
+    if account is not None:
+        account_id = int(_row(account, "id"))
+        db.upsert_local_storage_profile_service_link(
+            profile_id,
+            platform="youtube",
+            external_account_id=account_id,
+            display_name=_youtube_account_display_name(account, account_id),
+            status="linked",
+        )
+    db.update_local_storage_profile_youtube_branding_sync(
+        profile_id,
+        synced_at=db.now_utc(),
+        error=error,
+    )
+
+
+def _touch_linked_storage_profiles_youtube_branding(
+    account_id: int,
+    *,
+    account: Any | None = None,
+    error: str | None = None,
+) -> int:
+    touched = 0
+    for profile in db.list_local_storage_profiles_for_service_account(
+        platform="youtube",
+        external_account_id=int(account_id),
+    ):
+        _touch_storage_profile_youtube_branding(
+            int(profile["id"]),
+            account=account,
+            error=error,
+        )
+        touched += 1
+    return touched
+
+
+def _sync_storage_profile_youtube_branding(profile_id: int) -> dict[str, Any]:
+    link = db.get_local_storage_profile_service_link(profile_id, "youtube")
+    if (
+        link is None
+        or _row(link, "status", "not_connected") != "linked"
+        or _row(link, "external_account_id") is None
+    ):
+        raise ValueError("Сначала привяжите YouTube-канал к профилю.")
+    account_id = int(_row(link, "external_account_id"))
+    account = _active_youtube_account(account_id)
+    try:
+        updated = sync_youtube_account_metadata(account)
+        _touch_storage_profile_youtube_branding(profile_id, account=updated, error=None)
+        db.reconcile_local_storage_profile_channel_tags(profile_id)
+        profile = db.get_local_storage_profile(profile_id)
+        assert profile is not None
+        return {
+            "status": "ok",
+            "profile": _local_storage_profile_dict(profile, include_links=True),
+            "account": _social_account_dict(updated, include_profile_links=True),
+        }
+    except Exception as sync_exc:
+        message = str(sync_exc) or sync_exc.__class__.__name__
+        db.set_social_account_metadata_sync_error(account_id, message)
+        _touch_storage_profile_youtube_branding(profile_id, account=account, error=message)
+        profile = db.get_local_storage_profile(profile_id)
+        assert profile is not None
+        return {
+            "status": "failed",
+            "error": message,
+            "profile": _local_storage_profile_dict(profile, include_links=True),
+        }
 
 
 def _storage_profile_publish_title(item: Any) -> str:
@@ -5423,6 +5634,13 @@ def local_storage_profile_youtube_link(
             display_name=display_name,
             status="linked",
         )
+        try:
+            updated_account = sync_youtube_account_metadata(account)
+            _touch_storage_profile_youtube_branding(profile_id, account=updated_account, error=None)
+        except Exception as sync_exc:
+            message = str(sync_exc) or sync_exc.__class__.__name__
+            db.set_social_account_metadata_sync_error(int(req.account_id), message)
+            _touch_storage_profile_youtube_branding(profile_id, account=account, error=message)
         db.reconcile_local_storage_profile_channel_tags(profile_id)
         profile = db.get_local_storage_profile(profile_id)
         assert profile is not None
@@ -5446,6 +5664,21 @@ def local_storage_profile_youtube_unlink(profile_id: int) -> dict[str, Any]:
         return {"profile": _local_storage_profile_dict(profile, include_links=True)}
     except FileNotFoundError as exc:
         raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/storage-profiles/{profile_id}/youtube/sync-branding")
+def local_storage_profile_youtube_sync_branding(profile_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_local_storage_profile(profile_id) is None:
+            raise FileNotFoundError("Локальный профиль не найден.")
+        return _sync_storage_profile_youtube_branding(profile_id)
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except ValueError as exc:
+        raise _fail(exc, status_code=400)
     except Exception as exc:
         raise _fail(exc)
 
