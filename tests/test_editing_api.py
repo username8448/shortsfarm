@@ -142,7 +142,13 @@ def test_templates_api_ensure_defaults_and_reject_invalid_json():
 
     item = api.editing_templates_ensure_defaults()["item"]
     assert item["key"] == "reaction_top_25"
-    assert len(api.editing_templates()["items"]) == 1
+    items = api.editing_templates()["items"]
+    assert len([row for row in items if row["source"] == "studio"]) >= 5
+    assert len([row for row in items if row["source"] == "legacy"]) == 1
+    assert any(
+        row["key"] == "reaction_top_25" and row["source"] == "studio"
+        for row in items
+    )
 
     with pytest.raises(HTTPException) as exc:
         api.editing_template_update(

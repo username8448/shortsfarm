@@ -787,20 +787,38 @@ def test_shorts_pipeline_ui_is_registered():
     assert "Настройка цикла" in pipeline_html
     assert "Таймер" not in pipeline_html
     assert "YouTube" not in pipeline_html
-    queue_html = html.split('<div id="v-queue"', 1)[1].split('<div id="v-videos"', 1)[0]
+    queue_html = html.split('<div id="v-queue"', 1)[1].split('<div id="v-tags"', 1)[0]
     assert "Конвейер · полный цикл" in queue_html
-    assert "Нарезка · split-задачи" in queue_html
+    assert "Единая очередь · источники и задачи" in queue_html
     assert "техническая история нарезки" in queue_html
     assert 'id="pipeline-health"' in html
     assert 'id="queue-pipeline-health"' in html
     assert 'data-v="files"' in html
     nav_html = html.split("<nav>", 1)[1].split("</nav>", 1)[0]
     assert 'data-v="queue"' in nav_html
+    assert 'data-v="videos"' not in nav_html
     assert 'data-v="split"' not in nav_html
     assert 'data-v="clips"' not in nav_html
+    assert 'id="v-videos"' not in html
     assert 'id="v-clips"' not in html
     assert 'id="v-split"' in html
     assert 'id="queue-overview"' in queue_html
+    assert 'data-queue-filter="source"' in queue_html
+    assert 'data-queue-filter="jobs"' in queue_html
+    assert 'data-queue-filter="missing"' in queue_html
+    assert 'data-queue-filter="deleted"' in queue_html
+    assert 'data-queue-view="table"' in queue_html
+    assert 'data-queue-view="grid"' in queue_html
+    assert 'id="queue-sources-bulk-toolbar"' in queue_html
+    assert "Единая очередь" in queue_html
+    assert "Указать новый путь…" in js
+    assert "Восстановить" in js
+    assert "/api/queue/items" in js
+    assert "/api/videos/{videoId}/restore" not in js
+    assert "/restore" in js
+    assert "/relink-source" in js
+    assert "currentView === 'videos'" not in js
+    assert "nav('videos'" not in js
     assert 'id="queue-clips-section" hidden' in queue_html
     assert 'id="queue-clips-section"' in queue_html
     assert 'id="workspace-parent-filter-line"' in queue_html
@@ -830,12 +848,16 @@ def test_shorts_pipeline_ui_is_registered():
     assert "Запустить цикл" in js
     assert "renderQueuePipelineRuns" in js
     assert "Монтаж / Remotion render" in js
-    assert 'id="videos-bulk-toolbar"' in html
+    assert 'id="videos-bulk-toolbar"' not in html
+    assert 'id="queue-sources-bulk-toolbar"' in html
     assert "/api/videos/bulk-delete" in js
     assert "deleteSelectedVideos" in js
     assert "video-delete-child-clips" in js
+    assert "video-delete-profile-items" in js
+    assert "Удалить видео из локальных профилей" in js
     assert "Удалить нарезки и клипы вместе с видео" in js
     assert "Клипы останутся видимыми и будут привязаны к удалённому исходнику" in js
+    assert "remove_from_profiles" in js
     assert "/clips/delete" in js
     assert "Удалить все клипы этого исходника" in js
     assert "Исходник удалён" in js

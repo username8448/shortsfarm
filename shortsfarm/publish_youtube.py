@@ -20,6 +20,7 @@ YOUTUBE_METADATA_WRITE_SCOPES = {
     "https://www.googleapis.com/auth/youtube.force-ssl",
     "https://www.googleapis.com/auth/youtubepartner",
 }
+YOUTUBE_CHANNEL_METADATA_PARTS = "snippet,statistics,contentDetails,status"
 
 
 def parse_tags(value: str | list[str] | None) -> list[str]:
@@ -166,6 +167,7 @@ def refresh_youtube_credentials_if_needed(account: Any) -> Any:
             last_connected_at=account["last_connected_at"],
             status=account["status"],
             error=None,
+            preserve_display_name=True,
         )
 
     return credentials
@@ -370,18 +372,118 @@ def _best_thumbnail(snippet: dict[str, Any]) -> str:
     return ""
 
 
+def _safe_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_dump(value: Any) -> str:
+    return json.dumps(value or {}, ensure_ascii=False, sort_keys=True)
+
+
+def youtube_channel_metadata_from_item(
+    item: dict[str, Any],
+    *,
+    synced_at: str | None = None,
+) -> dict[str, Any]:
+    snippet = item.get("snippet") or {}
+    statistics = item.get("statistics") or {}
+    content_details = item.get("contentDetails") or {}
+    status = item.get("status") or {}
+    thumbnails = snippet.get("thumbnails") or {}
+    custom_url = str(snippet.get("customUrl") or "").strip()
+    handle = custom_url if custom_url.startswith("@") else ""
+    return {
+        "channel_id": str(item.get("id") or "").strip(),
+        "channel_title": str(snippet.get("title") or "").strip() or "YouTube канал",
+        "channel_description": str(snippet.get("description") or "").strip(),
+        "channel_custom_url": custom_url,
+        "channel_handle": handle,
+        "channel_country": str(snippet.get("country") or "").strip(),
+        "channel_published_at": str(snippet.get("publishedAt") or "").strip(),
+        "channel_avatar_url": _best_thumbnail(snippet),
+        "channel_thumbnails_json": _json_dump(thumbnails),
+        "subscriber_count": _safe_int(statistics.get("subscriberCount")),
+        "view_count": _safe_int(statistics.get("viewCount")),
+        "video_count": _safe_int(statistics.get("videoCount")),
+        "hidden_subscriber_count": bool(statistics.get("hiddenSubscriberCount")),
+        "uploads_playlist_id": str((content_details.get("relatedPlaylists") or {}).get("uploads") or "").strip(),
+        "channel_status_json": _json_dump(status),
+        "channel_metadata_json": _json_dump(item),
+        "metadata_synced_at": synced_at or db.now_utc(),
+        "metadata_sync_error": None,
+    }
+
+
+def fetch_youtube_channel_metadata_items(
+    youtube: Any,
+    *,
+    mine: bool = False,
+    channel_id: str | None = None,
+) -> list[dict[str, Any]]:
+    request: dict[str, Any] = {"part": YOUTUBE_CHANNEL_METADATA_PARTS}
+    clean_channel_id = str(channel_id or "").strip()
+    if clean_channel_id:
+        request["id"] = clean_channel_id
+    else:
+        request["mine"] = bool(mine)
+    response = youtube.channels().list(**request).execute()
+    return list(response.get("items") or [])
+
+
+def save_youtube_channel_metadata(account_id: int, item: dict[str, Any]) -> dict[str, Any]:
+    metadata = youtube_channel_metadata_from_item(item, synced_at=db.now_utc())
+    db.update_social_account_channel_metadata(account_id, **metadata)
+    row = db.get_social_account(account_id)
+    if row is None:
+        raise FileNotFoundError("YouTube аккаунт не найден.")
+    return dict(row)
+
+
+def sync_youtube_account_metadata(account: Any) -> dict[str, Any]:
+    if str(account["platform"] or "") != "youtube":
+        raise ValueError("Аккаунт не является YouTube аккаунтом.")
+    if str(account["status"] or "") != "active":
+        raise ValueError("YouTube аккаунт не активен.")
+
+    youtube = build_youtube_client(account)
+    channel_id = str(account["channel_id"] or "").strip()
+    items = fetch_youtube_channel_metadata_items(youtube, channel_id=channel_id) if channel_id else []
+    if not items:
+        mine_items = fetch_youtube_channel_metadata_items(youtube, mine=True)
+        items = [
+            item for item in mine_items
+            if not channel_id or str(item.get("id") or "").strip() == channel_id
+        ]
+    if not items:
+        raise FileNotFoundError("YouTube канал для этого аккаунта не найден.")
+    return save_youtube_channel_metadata(int(account["id"]), items[0])
+
+
 def _channel_uploads_playlist(youtube: Any, account: Any) -> tuple[str, dict[str, Any]]:
-    response = youtube.channels().list(
-        part="snippet,contentDetails",
-        mine=True,
-    ).execute()
-    items = response.get("items") or []
-    if not items and account["channel_id"]:
+    items: list[dict[str, Any]] = []
+    if account["channel_id"]:
         response = youtube.channels().list(
             part="snippet,contentDetails",
             id=str(account["channel_id"]),
         ).execute()
         items = response.get("items") or []
+    if not items:
+        response = youtube.channels().list(
+            part="snippet,contentDetails",
+            mine=True,
+        ).execute()
+        mine_items = response.get("items") or []
+        channel_id = str(account["channel_id"] or "").strip()
+        items = (
+            [item for item in mine_items if str(item.get("id") or "").strip() == channel_id]
+            if channel_id
+            else mine_items
+        )
     if not items:
         raise FileNotFoundError("YouTube канал для этого аккаунта не найден.")
     channel = items[0]

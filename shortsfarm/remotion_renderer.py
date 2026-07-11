@@ -527,6 +527,56 @@ def _fit_filter(
     )
 
 
+def _escape_drawtext(value: Any) -> str:
+    text = str(value or "")
+    return (
+        text
+        .replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("%", "\\%")
+        .replace("\n", " ")
+    )
+
+
+def _with_text_overlays(
+    parts: list[str],
+    source_label: str,
+    recipe: dict[str, Any],
+) -> str:
+    overlays = recipe.get("overlays") or {}
+    width = int(recipe["canvas"]["width"])
+    height = int(recipe["canvas"]["height"])
+    current = source_label
+    font_size = max(28, int(round(width * 0.055)))
+    box_border = max(12, int(round(width * 0.018)))
+    specs = [
+        ("top_text", f"(w-text_w)/2", str(max(24, int(round(height * 0.035))))),
+        ("bottom_text", f"(w-text_w)/2", f"h-text_h-{max(34, int(round(height * 0.055)))}"),
+    ]
+    idx = 0
+    for key, x, y in specs:
+        text = str(overlays.get(key) or "").strip()
+        if not text:
+            continue
+        target = f"[txt{idx}]"
+        parts.append(
+            f"{current}drawtext="
+            f"text='{_escape_drawtext(text)}':"
+            f"x={x}:y={y}:"
+            f"fontsize={font_size}:"
+            "fontcolor=white:"
+            "box=1:boxcolor=black@0.55:"
+            f"boxborderw={box_border}"
+            f"{target}"
+        )
+        current = target
+        idx += 1
+    if current != "[v]":
+        parts.append(f"{current}null[v]")
+    return ";".join(parts)
+
+
 def _ffmpeg_filter(recipe: dict[str, Any], *, original_canvas_height: int) -> str:
     width = int(recipe["canvas"]["width"])
     height = int(recipe["canvas"]["height"])
@@ -541,15 +591,16 @@ def _ffmpeg_filter(recipe: dict[str, Any], *, original_canvas_height: int) -> st
     reaction_fit = str(layout.get("reaction_fit") or "cover")
 
     if position == "none":
-        return _fit_filter(
+        parts = [_fit_filter(
             "[0:v]",
-            "[v]",
+            "[basev]",
             width=width,
             height=height,
             fit=main_fit,
             background=background,
             fps=fps,
-        )
+        )]
+        return _with_text_overlays(parts, "[basev]", recipe)
 
     if position in {"top", "bottom"}:
         main_height = max(120, height - reaction_height)
@@ -572,11 +623,11 @@ def _ffmpeg_filter(recipe: dict[str, Any], *, original_canvas_height: int) -> st
             fps=fps,
         )
         stack = (
-            "[react][main]vstack=inputs=2[v]"
+            "[react][main]vstack=inputs=2[basev]"
             if position == "top"
-            else "[main][react]vstack=inputs=2[v]"
+            else "[main][react]vstack=inputs=2[basev]"
         )
-        return ";".join([main, reaction, stack])
+        return _with_text_overlays([main, reaction, stack], "[basev]", recipe)
 
     pip_height = max(140, min(int(round(height * 0.42)), reaction_height))
     pip_width = max(80, int(round(pip_height * 9 / 16)))
@@ -602,11 +653,11 @@ def _ffmpeg_filter(recipe: dict[str, Any], *, original_canvas_height: int) -> st
         background=background,
         fps=fps,
     )
-    return ";".join([
+    return _with_text_overlays([
         main,
         reaction,
-        f"[main][react]overlay={x}:{y}:format=auto[v]",
-    ])
+        f"[main][react]overlay={x}:{y}:format=auto[basev]",
+    ], "[basev]", recipe)
 
 
 def _run_ffmpeg_fast(

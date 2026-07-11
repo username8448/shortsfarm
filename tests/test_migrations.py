@@ -43,6 +43,41 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "037_create_tag_catalog" in versions
     assert "038_create_shorts_pipeline" in versions
     assert "039_remotion_auto_retry" in versions
+    assert "041_unify_studio_editing_templates" in versions
+
+
+def test_studio_editing_bridge_schema_exists(tmp_data_dir):
+    from shortsfarm import db
+    with db.connect() as con:
+        edit_template_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(edit_templates)").fetchall()
+        }
+        channel_profile_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(channel_profiles)").fetchall()
+        }
+        edit_job_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(edit_jobs)").fetchall()
+        }
+        studio_template_columns = {
+            row["name"]
+            for row in con.execute("PRAGMA table_info(studio_templates)").fetchall()
+        }
+        edit_job_indexes = {
+            row["name"]
+            for row in con.execute("PRAGMA index_list(edit_jobs)").fetchall()
+        }
+    assert "studio_template_id" in edit_template_columns
+    assert "default_studio_template_id" in channel_profile_columns
+    assert {
+        "studio_template_id",
+        "studio_project_id",
+        "remotion_render_job_id",
+    } <= edit_job_columns
+    assert "deleted_at" in studio_template_columns
+    assert "idx_edit_jobs_studio_duplicate" in edit_job_indexes
 
 
 def test_review_status_column_exists(tmp_data_dir):
@@ -95,6 +130,11 @@ def test_social_accounts_oauth_profile_columns_exist(tmp_data_dir):
     assert "oauth_profile_id" in columns
     assert "account_email" in columns
     assert "last_connected_at" in columns
+    assert "channel_avatar_url" in columns
+    assert "subscriber_count" in columns
+    assert "uploads_playlist_id" in columns
+    assert "metadata_synced_at" in columns
+    assert "metadata_sync_error" in columns
 
 
 def test_oauth_states_oauth_profile_column_exists(tmp_data_dir):

@@ -6,11 +6,15 @@ export const TemplatesPage = ({
   onOpen,
   onDuplicate,
   onTest,
+  onDelete,
+  onRestore,
 }: {
   templates: AutomationTemplate[];
   onOpen: (item: AutomationTemplate) => void;
   onDuplicate: (item: AutomationTemplate) => void;
   onTest: (item: AutomationTemplate) => void;
+  onDelete: (item: AutomationTemplate) => void;
+  onRestore: (item: AutomationTemplate) => void;
 }) => (
   <section className="ts-card templates-list">
     <div className="ts-card-head">
@@ -40,13 +44,21 @@ export const TemplatesPage = ({
             </td>
             <td><span className="ts-badge engine">{item.engine}</span></td>
             <td>v{item.version}</td>
-            <td><span className={`ts-badge ${item.status}`}>{statusLabel(item.status)}</span></td>
+            <td>
+              <span className={`ts-badge ${item.status}`}>{statusLabel(item.status)}</span>
+              {item.deleted_at ? <span className="ts-badge archived">Скрыт</span> : null}
+            </td>
             <td>{new Date(item.updated_at || item.created_at).toLocaleString('ru-RU')}</td>
             <td>
               <div className="ts-row-actions">
                 <button onClick={() => onOpen(item)}>Открыть</button>
                 <button onClick={() => onDuplicate(item)}>Дублировать</button>
                 <button className="primary" onClick={() => onTest(item)}>Тест</button>
+                {item.deleted_at ? (
+                  <button onClick={() => onRestore(item)}>Восстановить</button>
+                ) : (
+                  <button onClick={() => onDelete(item)}>Удалить</button>
+                )}
               </div>
             </td>
           </tr>

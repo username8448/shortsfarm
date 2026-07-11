@@ -7,6 +7,8 @@ export type Recipe = {
   template: {
     key: string;
     renderer: 'remotion';
+    studio_template_id?: number;
+    version?: number;
     renderer_adapter?: string;
     composition_id?: string;
   };

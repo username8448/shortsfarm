@@ -74,12 +74,22 @@ class WorkspaceBulkStatusRequest(BaseModel):
 
 class WorkspaceBulkDeleteRequest(BaseModel):
     items: list[str] = Field(default_factory=list)
+    remove_from_profiles: bool = False
 
 
 class VideoBulkDeleteRequest(BaseModel):
     video_ids: list[int] = Field(default_factory=list)
     delete_source_files: bool = False
     delete_child_clips: bool = False
+    remove_from_profiles: bool = False
+
+
+class VideoChildClipsDeleteRequest(BaseModel):
+    remove_from_profiles: bool = False
+
+
+class VideoRelinkSourceRequest(BaseModel):
+    source_path: str
 
 
 class DatabaseResetRequest(BaseModel):
@@ -235,6 +245,11 @@ class YouTubeConnectStartRequest(BaseModel):
     oauth_profile_id: int | None = None
 
 
+class YouTubeAccountUpdateRequest(BaseModel):
+    display_name: str | None = None
+    local_alias: str | None = None
+
+
 class YouTubeUploadRequest(BaseModel):
     account_id: int
     title: str
@@ -381,6 +396,7 @@ class ChannelProfileCreateRequest(BaseModel):
     name: str
     youtube_account_id: int | None = None
     default_template_id: int | None = None
+    default_studio_template_id: int | None = None
     reaction_pool_id: int | None = None
     title_template: str | None = None
     description_template: str | None = None
@@ -394,6 +410,7 @@ class ChannelProfileUpdateRequest(BaseModel):
     name: str | None = None
     youtube_account_id: int | None = None
     default_template_id: int | None = None
+    default_studio_template_id: int | None = None
     reaction_pool_id: int | None = None
     title_template: str | None = None
     description_template: str | None = None
@@ -407,7 +424,14 @@ class EditJobsPlanRequest(BaseModel):
     item_keys: list[str] = Field(default_factory=list)
     channel_profile_id: int
     template_id: int | None = None
+    studio_template_id: int | None = None
     reaction_asset_id: int | None = None
+    parameter_values: dict = Field(default_factory=dict)
+    renderer_engine: str = "ffmpeg_fast"
+    render_profile: str = "low_540p"
+    duration_limit_sec: float | None = None
+    start_offset_sec: float = 0
+    full_length: bool = False
     force_new: bool = False
 
 

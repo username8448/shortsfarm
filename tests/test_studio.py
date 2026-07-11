@@ -267,6 +267,34 @@ def test_template_definition_lists_slots_parameters_rules_and_versions():
     assert new_version["version"] == template["version"] + 1
 
 
+def test_studio_template_delete_soft_hides_seeded_and_restore():
+    from shortsfarm.web.studio_api import (
+        studio_template_delete,
+        studio_template_restore,
+        studio_templates,
+    )
+
+    template = next(
+        item for item in studio_templates()["items"]
+        if item["key"] == "reaction_top_25"
+    )
+
+    deleted = studio_template_delete(template["id"])
+    assert deleted["action"] == "soft_deleted"
+    assert deleted["item"]["deleted_at"] is not None
+    assert all(
+        item["id"] != template["id"]
+        for item in studio_templates()["items"]
+    )
+
+    restored = studio_template_restore(template["id"])
+    assert restored["item"]["deleted_at"] is None
+    assert any(
+        item["id"] == template["id"]
+        for item in studio_templates()["items"]
+    )
+
+
 def test_studio_project_allows_main_only_test_context(tmp_path, monkeypatch):
     from shortsfarm.web.studio_api import (
         StudioProjectRequest,

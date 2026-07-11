@@ -47,6 +47,9 @@ const templateForBatch = (
     || items.find((item) => item.key === batch.template_key)
     || items[0];
 
+const firstUsableTemplate = (items: AutomationTemplate[]): AutomationTemplate | undefined =>
+  items.find((item) => !item.deleted_at && item.status !== 'archived') || items[0];
+
 export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   const [mode, setMode] = useState<StudioMode>('templates');
   const [templates, setTemplates] = useState<AutomationTemplate[]>([]);
@@ -87,7 +90,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   }, [recipe, mainItem, reaction]);
 
   const refreshTemplates = async () => {
-    const data = await studioApi.templates();
+    const data = await studioApi.templates(true);
     setTemplates(data.items);
     return data.items;
   };
@@ -125,7 +128,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           studioApi.applySources(),
           studioApi.reactions(),
           studioApi.reactionPools(),
-          studioApi.templates(),
+          studioApi.templates(true),
           studioApi.renderBatches(),
           studioApi.pipelines(),
           studioApi.completedRenderJobs(5),
@@ -140,16 +143,25 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
         setCompletedRenders(completedData.items);
 
         const params = new URLSearchParams(window.location.search);
+        const templateIdFromUrl = Number(params.get('template'));
         const projectIdFromUrl = Number(params.get('project'));
         const batchIdFromUrl = Number(params.get('batch'));
         const mediaPathFromUrl = params.get('media');
-        if (projectIdFromUrl > 0) {
+        if (templateIdFromUrl > 0) {
+          const template = templateData.items.find((item) => item.id === templateIdFromUrl);
+          if (template) {
+            setSelectedTemplate(template);
+            setDefinition(cloneDefinition(template.definition));
+            setRecipe(recipeFromTemplate(template));
+            setMode('builder');
+          }
+        } else if (projectIdFromUrl > 0) {
           const project = await studioApi.project(projectIdFromUrl);
           const template = templateData.items.find(
             (item) => item.id === project.item.studio_template_id,
           ) || templateData.items.find(
             (item) => item.key === project.item.template_key,
-          ) || templateData.items[0];
+          ) || firstUsableTemplate(templateData.items);
           if (template) {
             setSelectedTemplate(template);
             setDefinition(cloneDefinition(template.definition));
@@ -170,17 +182,19 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           setMode('apply');
         } else if (mediaPathFromUrl) {
           setMode('workbench');
-          if (templateData.items[0]) {
-            const template = templateData.items[0];
+          const template = firstUsableTemplate(templateData.items);
+          if (template) {
             setSelectedTemplate(template);
             setDefinition(cloneDefinition(template.definition));
             setRecipe(recipeFromTemplate(template));
           }
-        } else if (templateData.items[0]) {
-          const template = templateData.items[0];
-          setSelectedTemplate(template);
-          setDefinition(cloneDefinition(template.definition));
-          setRecipe(recipeFromTemplate(template));
+        } else {
+          const template = firstUsableTemplate(templateData.items);
+          if (template) {
+            setSelectedTemplate(template);
+            setDefinition(cloneDefinition(template.definition));
+            setRecipe(recipeFromTemplate(template));
+          }
         }
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));
@@ -232,6 +246,42 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
       await refreshTemplates();
       openTemplate(result.item);
       setMessage(`Создан черновик шаблона ${result.item.key}.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteTemplate = async (template: AutomationTemplate) => {
+    if (!window.confirm(`Удалить/скрыть template «${template.name}»? Используемые шаблоны будут архивированы безопасно.`)) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await studioApi.deleteTemplate(template.id);
+      const items = await refreshTemplates();
+      if (selectedTemplate?.id === template.id) {
+        const next = result.item || firstUsableTemplate(items) || null;
+        setSelectedTemplate(next);
+        setDefinition(next ? cloneDefinition(next.definition) : null);
+        if (next) setRecipe(recipeFromTemplate(next));
+      }
+      setMessage(result.action === 'hard_deleted' ? 'Template удалён.' : 'Template скрыт/архивирован.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restoreTemplate = async (template: AutomationTemplate) => {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await studioApi.restoreTemplate(template.id);
+      await refreshTemplates();
+      openTemplate(result.item, 'builder');
+      setMessage('Template восстановлен.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -453,6 +503,8 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
           onOpen={(item) => openTemplate(item, 'builder')}
           onDuplicate={duplicateTemplate}
           onTest={(item) => openTemplate(item, 'test')}
+          onDelete={deleteTemplate}
+          onRestore={restoreTemplate}
         />
       ) : null}
 

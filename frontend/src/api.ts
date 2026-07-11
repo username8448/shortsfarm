@@ -290,7 +290,7 @@ export const studioApi = {
     engines: string[];
     profiles: RenderProfile[];
   }>('/api/studio/render-profiles'),
-  templates: () => request<{items: AutomationTemplate[]}>('/api/studio/templates'),
+  templates: (includeDeleted = false) => request<{items: AutomationTemplate[]}>(`/api/studio/templates${includeDeleted ? '?include_deleted=true' : ''}`),
   template: (id: number) => request<{item: AutomationTemplate}>(`/api/studio/templates/${id}`),
   updateTemplate: (
     id: number,
@@ -313,6 +313,13 @@ export const studioApi = {
   ) => request<{item: AutomationTemplate}>(`/api/studio/templates/${id}/versions`, {
     method: 'POST',
     body: JSON.stringify({name, status, definition}),
+  }),
+  deleteTemplate: (id: number) => request<{status: string; action: string; item: AutomationTemplate | null}>(`/api/studio/templates/${id}`, {
+    method: 'DELETE',
+  }),
+  restoreTemplate: (id: number) => request<{status: string; item: AutomationTemplate}>(`/api/studio/templates/${id}/restore`, {
+    method: 'POST',
+    body: '{}',
   }),
   project: (id: number) => request<{item: StudioProject}>(`/api/studio/projects/${id}`),
   createProject: (

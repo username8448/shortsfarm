@@ -114,6 +114,55 @@ def test_plan_endpoint_creates_materialized_job_for_ready_segment(video_in_db, t
     assert recipe["output"]["path"] == job["output_path"]
 
 
+def test_plan_with_studio_template_creates_remotion_links(tmp_path):
+    from shortsfarm import db
+    from shortsfarm.studio_templates import ensure_default_studio_templates
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import EditJobsPlanRequest
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "workspace")
+    source = root / "sources" / "parent.mp4"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"source")
+    video_id = db.add_video(source, source.stem, 60.0)
+    segment_path = root / "cuts" / "parent" / "segment.mp4"
+    segment_path.parent.mkdir(parents=True, exist_ok=True)
+    segment_path.write_bytes(b"segment")
+    split_job_id = db.create_job(video_id, "fast", 60)
+    db.mark_job_done(split_job_id)
+    segment_id = db.insert_segment(video_id, split_job_id, 1, 0.0, 10.0, segment_path)
+    db.update_workspace_item("segment", segment_id, workspace_status="ready")
+    template = ensure_default_studio_templates()[0]
+    profile_id = db.create_channel_profile(
+        name="Studio profile",
+        default_studio_template_id=int(template["id"]),
+    )
+
+    data = api.editing_jobs_plan(
+        EditJobsPlanRequest(
+            item_keys=[f"segment:{segment_id}"],
+            channel_profile_id=profile_id,
+            parameter_values={"reaction_height": 360},
+        )
+    )
+
+    assert data["summary"]["created"] == 1
+    job = db.get_edit_job(data["results"][0]["job"]["id"])
+    assert job is not None
+    assert job["studio_template_id"] == template["id"]
+    assert job["studio_project_id"] is not None
+    assert job["remotion_render_job_id"] is not None
+    assert job["renderer"] == "remotion"
+    render_job = db.get_remotion_render_job(int(job["remotion_render_job_id"]))
+    assert render_job is not None
+    assert render_job["status"] == "queued"
+    assert str(render_job["output_path"]).startswith(str(root / "edits"))
+    recipe = json.loads(str(job["recipe_json"]))
+    assert recipe["template"]["studio_template_id"] == template["id"]
+    assert recipe["layout"]["reaction_height"] == 360
+
+
 def test_plan_uses_workspace_edits_for_managed_source(tmp_path):
     from shortsfarm import db
     from shortsfarm.edit_planner import plan_edit_job_for_workspace_item

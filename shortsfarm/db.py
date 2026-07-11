@@ -111,11 +111,12 @@ def list_videos() -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def list_videos_with_counts() -> list[sqlite3.Row]:
+def list_videos_with_counts(*, include_deleted: bool = False) -> list[sqlite3.Row]:
     """Return videos with mark/clip counters for the CLI inbox view."""
+    deleted_clause = "" if include_deleted else "WHERE v.deleted_at IS NULL"
     with connect() as con:
         return con.execute(
-            """
+            f"""
             SELECT
                 v.*,
                 COUNT(DISTINCT m.id) AS mark_count,
@@ -125,7 +126,7 @@ def list_videos_with_counts() -> list[sqlite3.Row]:
             LEFT JOIN marks m ON m.video_id = v.id
             LEFT JOIN clips c ON c.video_id = v.id
             LEFT JOIN segments s ON s.video_id = v.id
-            WHERE v.deleted_at IS NULL
+            {deleted_clause}
             GROUP BY v.id
             ORDER BY v.id ASC
             """
@@ -446,6 +447,37 @@ def mark_video_source_files_deleted(video_ids: list[int]) -> int:
             [now_utc(), *normalized_ids],
         )
         return int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+
+
+def restore_video(video_id: int) -> bool:
+    with connect() as con:
+        cur = con.execute(
+            "UPDATE videos SET deleted_at=NULL WHERE id=?",
+            (int(video_id),),
+        )
+        return bool(cur.rowcount and cur.rowcount > 0)
+
+
+def relink_video_source(video_id: int, source_path: str | Path) -> bool:
+    with connect() as con:
+        row = con.execute(
+            "SELECT id FROM videos WHERE id=?",
+            (int(video_id),),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            con.execute(
+                """
+                UPDATE videos
+                SET source_path=?, source_file_deleted_at=NULL, deleted_at=NULL
+                WHERE id=?
+                """,
+                (str(Path(source_path).expanduser().resolve()), int(video_id)),
+            )
+            return True
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Этот файл уже зарегистрирован как другое исходное видео.") from exc
 
 
 def list_workspace_item_keys_for_video(video_id: int, *, include_hidden: bool = False) -> list[str]:
@@ -2818,6 +2850,66 @@ def remove_local_storage_profile_item(profile_id: int, item_id: int) -> bool:
         return result.rowcount > 0
 
 
+def list_local_storage_profile_items_by_workspace_paths(
+    workspace_paths: list[str],
+) -> list[sqlite3.Row]:
+    normalized_paths = sorted({str(path).strip() for path in workspace_paths if str(path).strip()})
+    if not normalized_paths:
+        return []
+    placeholders = ",".join("?" for _ in normalized_paths)
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT i.*, p.name AS profile_name, p.handle AS profile_handle
+            FROM local_storage_profile_items i
+            JOIN local_storage_profiles p ON p.id=i.profile_id
+            WHERE i.workspace_path IN ({placeholders})
+            ORDER BY p.name ASC, i.id ASC
+            """,
+            normalized_paths,
+        ).fetchall()
+
+
+def remove_local_storage_profile_items_by_workspace_paths(
+    workspace_paths: list[str],
+) -> dict[str, Any]:
+    normalized_paths = sorted({str(path).strip() for path in workspace_paths if str(path).strip()})
+    if not normalized_paths:
+        return {
+            "requested_paths": 0,
+            "matched_items": 0,
+            "removed": 0,
+            "affected_profiles": 0,
+            "paths": [],
+        }
+    placeholders = ",".join("?" for _ in normalized_paths)
+    with connect() as con:
+        rows = con.execute(
+            f"""
+            SELECT id, profile_id, workspace_path
+            FROM local_storage_profile_items
+            WHERE workspace_path IN ({placeholders})
+            """,
+            normalized_paths,
+        ).fetchall()
+        profile_ids = {int(row["profile_id"]) for row in rows}
+        cur = con.execute(
+            f"""
+            DELETE FROM local_storage_profile_items
+            WHERE workspace_path IN ({placeholders})
+            """,
+            normalized_paths,
+        )
+        removed = int(cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0)
+        return {
+            "requested_paths": len(normalized_paths),
+            "matched_items": len(rows),
+            "removed": removed,
+            "affected_profiles": len(profile_ids),
+            "paths": normalized_paths,
+        }
+
+
 def update_local_storage_profile_item_status(
     profile_item_id: int,
     status: str,
@@ -3863,6 +3955,7 @@ def save_social_account(
     last_connected_at: str | None = None,
     status: str = "active",
     error: str | None = None,
+    preserve_display_name: bool = False,
 ) -> int:
     """Insert or update a publishing account.
 
@@ -3883,6 +3976,11 @@ def save_social_account(
         if existing is not None:
             account_id = int(existing["id"])
             stored_refresh_token = _normalize_token(refresh_token) or existing["refresh_token"]
+            next_display_name = (
+                existing["display_name"]
+                if preserve_display_name and _normalize_text(existing["display_name"])
+                else (display_name if display_name is not None else existing["display_name"])
+            )
             con.execute(
                 """
                 UPDATE social_accounts
@@ -3892,7 +3990,7 @@ def save_social_account(
                 WHERE id=?
                 """,
                 (
-                    display_name if display_name is not None else existing["display_name"],
+                    next_display_name,
                     channel_title if channel_title is not None else existing["channel_title"],
                     access_token if access_token is not None else existing["access_token"],
                     stored_refresh_token,
@@ -3936,6 +4034,105 @@ def save_social_account(
             ),
         )
         return int(cur.lastrowid)
+
+
+def update_social_account_alias(account_id: int, display_name: str | None) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE social_accounts
+            SET display_name=?, updated_at=?
+            WHERE id=?
+            """,
+            (_normalize_text(display_name), now_utc(), int(account_id)),
+        )
+        return result.rowcount > 0
+
+
+def set_social_account_metadata_sync_error(account_id: int, error: str | None) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE social_accounts
+            SET metadata_sync_error=?, updated_at=?
+            WHERE id=?
+            """,
+            (_normalize_text(error), now_utc(), int(account_id)),
+        )
+        return result.rowcount > 0
+
+
+def update_social_account_channel_metadata(
+    account_id: int,
+    *,
+    channel_id: str | None = None,
+    channel_title: str | None = None,
+    channel_description: str | None = None,
+    channel_custom_url: str | None = None,
+    channel_handle: str | None = None,
+    channel_country: str | None = None,
+    channel_published_at: str | None = None,
+    channel_avatar_url: str | None = None,
+    channel_thumbnails_json: str | None = None,
+    subscriber_count: int | None = None,
+    view_count: int | None = None,
+    video_count: int | None = None,
+    hidden_subscriber_count: bool | int | None = None,
+    uploads_playlist_id: str | None = None,
+    channel_status_json: str | None = None,
+    channel_metadata_json: str | None = None,
+    metadata_synced_at: str | None = None,
+    metadata_sync_error: str | None = None,
+) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE social_accounts
+            SET channel_id=COALESCE(?, channel_id),
+                channel_title=?,
+                channel_description=?,
+                channel_custom_url=?,
+                channel_handle=?,
+                channel_country=?,
+                channel_published_at=?,
+                channel_avatar_url=?,
+                channel_thumbnails_json=?,
+                subscriber_count=?,
+                view_count=?,
+                video_count=?,
+                hidden_subscriber_count=?,
+                uploads_playlist_id=?,
+                channel_status_json=?,
+                channel_metadata_json=?,
+                metadata_synced_at=?,
+                metadata_sync_error=?,
+                updated_at=?
+            WHERE id=?
+            """,
+            (
+                _normalize_text(channel_id),
+                _normalize_text(channel_title),
+                _normalize_text(channel_description),
+                _normalize_text(channel_custom_url),
+                _normalize_text(channel_handle),
+                _normalize_text(channel_country),
+                _normalize_text(channel_published_at),
+                _normalize_text(channel_avatar_url),
+                channel_thumbnails_json,
+                subscriber_count,
+                view_count,
+                video_count,
+                int(bool(hidden_subscriber_count)) if hidden_subscriber_count is not None else None,
+                _normalize_text(uploads_playlist_id),
+                channel_status_json,
+                channel_metadata_json,
+                metadata_synced_at or now_utc(),
+                _normalize_text(metadata_sync_error),
+                now_utc(),
+                int(account_id),
+            ),
+        )
+        return result.rowcount > 0
 
 
 def disconnect_social_account(account_id: int, platform: str | None = None) -> bool:
@@ -5092,6 +5289,7 @@ def create_edit_template(
     description: str | None = None,
     renderer: str = "ffmpeg",
     enabled: bool = True,
+    studio_template_id: int | None = None,
 ) -> int:
     normalized_recipe = _normalize_recipe_json(recipe_json, required=True)
     now = now_utc()
@@ -5100,8 +5298,8 @@ def create_edit_template(
             """
             INSERT INTO edit_templates
                 (key, name, description, renderer, recipe_json,
-                 enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 enabled, created_at, updated_at, studio_template_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 key,
@@ -5112,6 +5310,7 @@ def create_edit_template(
                 1 if enabled else 0,
                 now,
                 now,
+                studio_template_id,
             ),
         )
         return int(cur.lastrowid)
@@ -5154,6 +5353,7 @@ def update_edit_template(
     renderer: Any = _UNSET,
     recipe_json: Any = _UNSET,
     enabled: Any = _UNSET,
+    studio_template_id: Any = _UNSET,
 ) -> bool:
     with connect() as con:
         row = con.execute(
@@ -5172,7 +5372,7 @@ def update_edit_template(
             """
             UPDATE edit_templates
             SET key=?, name=?, description=?, renderer=?, recipe_json=?,
-                enabled=?, updated_at=?
+                enabled=?, updated_at=?, studio_template_id=?
             WHERE id=?
             """,
             (
@@ -5183,6 +5383,7 @@ def update_edit_template(
                 normalized_recipe,
                 enabled_value,
                 now_utc(),
+                _updated_value(row, "studio_template_id", studio_template_id),
                 int(template_id),
             ),
         )
@@ -5203,6 +5404,7 @@ def create_channel_profile(
     name: str,
     youtube_account_id: int | None = None,
     default_template_id: int | None = None,
+    default_studio_template_id: int | None = None,
     reaction_pool_id: int | None = None,
     title_template: str | None = None,
     description_template: str | None = None,
@@ -5218,8 +5420,9 @@ def create_channel_profile(
             INSERT INTO channel_profiles
                 (name, youtube_account_id, default_template_id, reaction_pool_id,
                  title_template, description_template, tags_template,
-                 default_privacy, default_category_id, enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 default_privacy, default_category_id, enabled, created_at, updated_at,
+                 default_studio_template_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
@@ -5234,6 +5437,7 @@ def create_channel_profile(
                 1 if enabled else 0,
                 now,
                 now,
+                default_studio_template_id,
             ),
         )
         return int(cur.lastrowid)
@@ -5288,10 +5492,15 @@ def list_channel_profiles_with_details(enabled: bool | None = None) -> list[sqli
                 sa.channel_title AS youtube_channel_title,
                 sa.display_name AS youtube_display_name,
                 et.name AS default_template_name,
+                et.key AS default_template_key,
+                st.name AS default_studio_template_name,
+                st.template_key AS default_studio_template_key,
+                st.version AS default_studio_template_version,
                 rp.name AS reaction_pool_name
             FROM channel_profiles cp
             LEFT JOIN social_accounts sa ON sa.id=cp.youtube_account_id
             LEFT JOIN edit_templates et ON et.id=cp.default_template_id
+            LEFT JOIN studio_templates st ON st.id=cp.default_studio_template_id
             LEFT JOIN reaction_pools rp ON rp.id=cp.reaction_pool_id
             {where}
             ORDER BY cp.id ASC
@@ -5306,6 +5515,7 @@ def update_channel_profile(
     name: Any = _UNSET,
     youtube_account_id: Any = _UNSET,
     default_template_id: Any = _UNSET,
+    default_studio_template_id: Any = _UNSET,
     reaction_pool_id: Any = _UNSET,
     title_template: Any = _UNSET,
     description_template: Any = _UNSET,
@@ -5327,7 +5537,8 @@ def update_channel_profile(
             UPDATE channel_profiles
             SET name=?, youtube_account_id=?, default_template_id=?, reaction_pool_id=?,
                 title_template=?, description_template=?, tags_template=?,
-                default_privacy=?, default_category_id=?, enabled=?, updated_at=?
+                default_privacy=?, default_category_id=?, enabled=?, updated_at=?,
+                default_studio_template_id=?
             WHERE id=?
             """,
             (
@@ -5342,6 +5553,11 @@ def update_channel_profile(
                 _updated_value(row, "default_category_id", default_category_id),
                 enabled_value,
                 now_utc(),
+                _updated_value(
+                    row,
+                    "default_studio_template_id",
+                    default_studio_template_id,
+                ),
                 int(profile_id),
             ),
         )
@@ -5362,6 +5578,9 @@ def create_edit_job(
     workspace_item_key: str,
     channel_profile_id: int | None = None,
     template_id: int | None = None,
+    studio_template_id: int | None = None,
+    studio_project_id: int | None = None,
+    remotion_render_job_id: int | None = None,
     reaction_asset_id: int | None = None,
     input_path: str | None = None,
     output_path: str | None = None,
@@ -5376,8 +5595,9 @@ def create_edit_job(
             INSERT INTO edit_jobs
                 (workspace_item_key, channel_profile_id, template_id,
                  reaction_asset_id, input_path, output_path, edited_path,
-                 status, renderer, recipe_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                 status, renderer, recipe_json, created_at,
+                 studio_template_id, studio_project_id, remotion_render_job_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
             """,
             (
                 workspace_item_key,
@@ -5390,6 +5610,9 @@ def create_edit_job(
                 renderer,
                 normalized_recipe,
                 now_utc(),
+                studio_template_id,
+                studio_project_id,
+                remotion_render_job_id,
             ),
         )
         return int(cur.lastrowid)
@@ -5457,10 +5680,25 @@ def list_edit_jobs_with_details(
                 cp.name AS channel_profile_name,
                 et.name AS template_name,
                 et.key AS template_key,
+                st.name AS studio_template_name,
+                st.template_key AS studio_template_key,
+                st.version AS studio_template_version,
+                st.status AS studio_template_status,
+                st.deleted_at AS studio_template_deleted_at,
+                rrj.status AS remotion_status,
+                rrj.output_path AS remotion_output_path,
+                rrj.error AS remotion_error,
+                rrj.progress_percent AS remotion_progress_percent,
+                rrj.progress_stage AS remotion_progress_stage,
+                rrj.progress_message AS remotion_progress_message,
+                rrj.started_at AS remotion_started_at,
+                rrj.finished_at AS remotion_finished_at,
                 ra.name AS reaction_asset_name
             FROM edit_jobs ej
             LEFT JOIN channel_profiles cp ON cp.id=ej.channel_profile_id
             LEFT JOIN edit_templates et ON et.id=ej.template_id
+            LEFT JOIN studio_templates st ON st.id=ej.studio_template_id
+            LEFT JOIN remotion_render_jobs rrj ON rrj.id=ej.remotion_render_job_id
             LEFT JOIN reaction_assets ra ON ra.id=ej.reaction_asset_id
             {where}
             ORDER BY ej.id DESC
@@ -5507,22 +5745,138 @@ def find_existing_edit_job(
         ).fetchone()
 
 
+def find_existing_studio_edit_job(
+    workspace_item_key: str,
+    channel_profile_id: int,
+    studio_template_id: int,
+    *,
+    include_done: bool = True,
+) -> sqlite3.Row | None:
+    statuses = ("queued", "rendering", "done") if include_done else ("queued", "rendering")
+    placeholders = ",".join("?" for _ in statuses)
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT ej.*
+            FROM edit_jobs ej
+            LEFT JOIN remotion_render_jobs rrj ON rrj.id=ej.remotion_render_job_id
+            WHERE ej.workspace_item_key=?
+              AND ej.channel_profile_id=?
+              AND ej.studio_template_id=?
+              AND COALESCE(rrj.status, ej.status) IN ({placeholders})
+            ORDER BY
+                CASE COALESCE(rrj.status, ej.status)
+                    WHEN 'rendering' THEN 0
+                    WHEN 'queued' THEN 1
+                    WHEN 'done' THEN 2
+                    ELSE 3
+                END,
+                ej.id DESC
+            LIMIT 1
+            """,
+            (
+                workspace_item_key,
+                int(channel_profile_id),
+                int(studio_template_id),
+                *statuses,
+            ),
+        ).fetchone()
+
+
 def update_edit_job_plan(
     job_id: int,
     *,
     input_path: str | None,
     output_path: str | None,
     recipe_json: dict[str, Any] | str | None,
+    studio_template_id: int | None = None,
+    studio_project_id: int | None = None,
+    remotion_render_job_id: int | None = None,
+    renderer: str | None = None,
 ) -> bool:
     normalized_recipe = _normalize_recipe_json(recipe_json, required=False)
+    assignments = ["input_path=?", "output_path=?", "recipe_json=?"]
+    values: list[Any] = [input_path, output_path, normalized_recipe]
+    if studio_template_id is not None:
+        assignments.append("studio_template_id=?")
+        values.append(int(studio_template_id))
+    if studio_project_id is not None:
+        assignments.append("studio_project_id=?")
+        values.append(int(studio_project_id))
+    if remotion_render_job_id is not None:
+        assignments.append("remotion_render_job_id=?")
+        values.append(int(remotion_render_job_id))
+    if renderer is not None:
+        assignments.append("renderer=?")
+        values.append(renderer)
     with connect() as con:
+        result = con.execute(
+            f"""
+            UPDATE edit_jobs
+            SET {", ".join(assignments)}
+            WHERE id=?
+            """,
+            (*values, int(job_id)),
+        )
+        return result.rowcount > 0
+
+
+def update_edit_job_remotion_links(
+    job_id: int,
+    *,
+    input_path: str | None,
+    studio_template_id: int,
+    studio_project_id: int,
+    remotion_render_job_id: int,
+    output_path: str | None,
+    recipe_json: dict[str, Any] | str | None,
+    renderer: str = "remotion",
+) -> bool:
+    return update_edit_job_plan(
+        job_id,
+        input_path=input_path,
+        output_path=output_path,
+        recipe_json=recipe_json,
+        studio_template_id=studio_template_id,
+        studio_project_id=studio_project_id,
+        remotion_render_job_id=remotion_render_job_id,
+        renderer=renderer,
+    )
+
+
+def sync_edit_job_from_remotion_render_job(render_job_id: int) -> bool:
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT id, status, output_path, error, started_at, finished_at
+            FROM remotion_render_jobs
+            WHERE id=?
+            """,
+            (int(render_job_id),),
+        ).fetchone()
+        if row is None:
+            return False
+        status = str(row["status"] or "queued")
+        edit_status = status if status in EDIT_JOB_STATUSES else "queued"
+        edited_path = row["output_path"] if edit_status == "done" else None
         result = con.execute(
             """
             UPDATE edit_jobs
-            SET input_path=?, output_path=?, recipe_json=?
-            WHERE id=?
+            SET status=?,
+                edited_path=COALESCE(?, edited_path),
+                error=?,
+                started_at=COALESCE(started_at, ?),
+                finished_at=?
+            WHERE remotion_render_job_id=?
             """,
-            (input_path, output_path, normalized_recipe, int(job_id)),
+            (
+                edit_status,
+                edited_path,
+                row["error"],
+                row["started_at"],
+                row["finished_at"],
+                int(render_job_id),
+            ),
         )
         return result.rowcount > 0
 
@@ -5609,7 +5963,7 @@ def claim_edit_job(
 
 def claim_next_edit_job() -> sqlite3.Row | None:
     return _claim_edit_job_where(
-        "status='queued'",
+        "status='queued' AND remotion_render_job_id IS NULL",
         (),
         order_by="ORDER BY created_at ASC, id ASC",
     )
@@ -6278,6 +6632,28 @@ def list_shorts_pipeline_run_items(run_id: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def list_shorts_pipeline_run_items_matching_workspace_paths(
+    workspace_paths: list[str],
+) -> list[sqlite3.Row]:
+    normalized_paths = sorted({str(path).strip() for path in workspace_paths if str(path).strip()})
+    if not normalized_paths:
+        return []
+    placeholders = ",".join("?" for _ in normalized_paths)
+    params = [*normalized_paths, *normalized_paths, *normalized_paths]
+    with connect() as con:
+        return con.execute(
+            f"""
+            SELECT *
+            FROM shorts_pipeline_run_items
+            WHERE source_workspace_path IN ({placeholders})
+               OR segment_workspace_path IN ({placeholders})
+               OR output_workspace_path IN ({placeholders})
+            ORDER BY id ASC
+            """,
+            params,
+        ).fetchall()
+
+
 def update_remotion_render_job_process(
     job_id: int,
     *,
@@ -6514,6 +6890,20 @@ def claim_remotion_render_job(job_id: int) -> sqlite3.Row | None:
                 """,
                 (now_utc(), now_utc(), batch_id),
             )
+        con.execute(
+            """
+            UPDATE edit_jobs
+            SET status='rendering',
+                started_at=COALESCE(started_at, ?),
+                finished_at=NULL,
+                error=NULL,
+                review_status='pending',
+                reviewed_at=NULL,
+                review_note=NULL
+            WHERE remotion_render_job_id=?
+            """,
+            (now_utc(), int(job_id)),
+        )
         con.execute("COMMIT")
         return row
     except Exception:
@@ -6608,6 +6998,20 @@ def claim_next_remotion_render_job() -> sqlite3.Row | None:
                 """,
                 (now, now, batch_id),
             )
+        con.execute(
+            """
+            UPDATE edit_jobs
+            SET status='rendering',
+                started_at=COALESCE(started_at, ?),
+                finished_at=NULL,
+                error=NULL,
+                review_status='pending',
+                reviewed_at=NULL,
+                review_note=NULL
+            WHERE remotion_render_job_id=?
+            """,
+            (now, job_id),
+        )
         con.execute("COMMIT")
         return row
     except sqlite3.IntegrityError:
@@ -6685,6 +7089,20 @@ def mark_remotion_render_job_done(
                 (now_utc(), int(job_id)),
             )
             _sync_remotion_render_batch_in_connection(con, batch_id)
+        con.execute(
+            """
+            UPDATE edit_jobs
+            SET status='done',
+                edited_path=?,
+                error=NULL,
+                finished_at=?,
+                review_status='pending',
+                reviewed_at=NULL,
+                review_note=NULL
+            WHERE remotion_render_job_id=?
+            """,
+            (output_path, now_utc(), int(job_id)),
+        )
         return result.rowcount > 0
 
 
@@ -6736,6 +7154,14 @@ def mark_remotion_render_job_failed(
                 (error, now_utc(), int(job_id)),
             )
             _sync_remotion_render_batch_in_connection(con, batch_id)
+        con.execute(
+            """
+            UPDATE edit_jobs
+            SET status='failed', error=?, finished_at=?
+            WHERE remotion_render_job_id=?
+            """,
+            (error, now_utc(), int(job_id)),
+        )
         return result.rowcount > 0
 
 
@@ -6763,6 +7189,15 @@ def cancel_remotion_render_job(job_id: int) -> bool:
                 (now_utc(), int(job_id)),
             )
             _sync_remotion_render_batch_in_connection(con, batch_id)
+        if result.rowcount > 0:
+            con.execute(
+                """
+                UPDATE edit_jobs
+                SET status='cancelled', finished_at=?
+                WHERE remotion_render_job_id=?
+                """,
+                (now_utc(), int(job_id)),
+            )
         return result.rowcount > 0
 
 
@@ -6808,6 +7243,19 @@ def retry_remotion_render_job(job_id: int) -> bool:
                 (now_utc(), int(job_id)),
             )
             _sync_remotion_render_batch_in_connection(con, batch_id)
+        if result.rowcount > 0:
+            con.execute(
+                """
+                UPDATE edit_jobs
+                SET status='queued',
+                    edited_path=NULL,
+                    error=NULL,
+                    started_at=NULL,
+                    finished_at=NULL
+                WHERE remotion_render_job_id=?
+                """,
+                (int(job_id),),
+            )
         return result.rowcount > 0
 
 
@@ -7310,13 +7758,17 @@ def get_studio_template(template_id: int) -> sqlite3.Row | None:
 
 def get_latest_studio_template_by_key(
     template_key: str,
+    *,
+    include_deleted: bool = True,
 ) -> sqlite3.Row | None:
+    deleted_clause = "" if include_deleted else "AND deleted_at IS NULL"
     with connect() as con:
         return con.execute(
-            """
+            f"""
             SELECT *
             FROM studio_templates
             WHERE template_key=?
+              {deleted_clause}
             ORDER BY version DESC, id DESC
             LIMIT 1
             """,
@@ -7324,14 +7776,28 @@ def get_latest_studio_template_by_key(
         ).fetchone()
 
 
-def list_studio_templates() -> list[sqlite3.Row]:
+def list_studio_templates(
+    *,
+    include_deleted: bool = False,
+    status: str | None = None,
+) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if not include_deleted:
+        clauses.append("deleted_at IS NULL")
+    if status is not None:
+        clauses.append("status=?")
+        params.append(status)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     with connect() as con:
         return con.execute(
-            """
+            f"""
             SELECT *
             FROM studio_templates
+            {where}
             ORDER BY updated_at DESC, id DESC
-            """
+            """,
+            params,
         ).fetchall()
 
 
@@ -7353,6 +7819,170 @@ def update_studio_template(
             (name, status, normalized, now_utc(), int(template_id)),
         )
         return result.rowcount > 0
+
+
+def studio_template_usage_counts(template_id: int) -> dict[str, int]:
+    tid = int(template_id)
+    with connect() as con:
+        counts = {
+            "studio_projects": int(con.execute(
+                "SELECT COUNT(*) AS count FROM studio_projects WHERE studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+            "remotion_batches": int(con.execute(
+                "SELECT COUNT(*) AS count FROM remotion_render_batches WHERE studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+            "remotion_pipelines": int(con.execute(
+                "SELECT COUNT(*) AS count FROM remotion_pipelines WHERE studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+            "channel_profiles": int(con.execute(
+                "SELECT COUNT(*) AS count FROM channel_profiles WHERE default_studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+            "edit_jobs": int(con.execute(
+                "SELECT COUNT(*) AS count FROM edit_jobs WHERE studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+            "edit_templates": int(con.execute(
+                "SELECT COUNT(*) AS count FROM edit_templates WHERE studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+        }
+    counts["total"] = sum(counts.values())
+    return counts
+
+
+def delete_studio_template_safe(
+    template_id: int,
+    *,
+    seeded_keys: set[str] | None = None,
+) -> dict[str, Any]:
+    seeded = seeded_keys or set()
+    tid = int(template_id)
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM studio_templates WHERE id=?",
+            (tid,),
+        ).fetchone()
+        if row is None:
+            raise FileNotFoundError("Studio template не найден.")
+        counts = {
+            "studio_projects": int(con.execute(
+                "SELECT COUNT(*) AS count FROM studio_projects WHERE studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+            "remotion_batches": int(con.execute(
+                "SELECT COUNT(*) AS count FROM remotion_render_batches WHERE studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+            "remotion_pipelines": int(con.execute(
+                "SELECT COUNT(*) AS count FROM remotion_pipelines WHERE studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+            "channel_profiles": int(con.execute(
+                "SELECT COUNT(*) AS count FROM channel_profiles WHERE default_studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+            "edit_jobs": int(con.execute(
+                "SELECT COUNT(*) AS count FROM edit_jobs WHERE studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+            "edit_templates": int(con.execute(
+                "SELECT COUNT(*) AS count FROM edit_templates WHERE studio_template_id=?",
+                (tid,),
+            ).fetchone()["count"]),
+        }
+        total = sum(counts.values())
+        hard_delete = (
+            total == 0
+            and str(row["status"]) == "draft"
+            and str(row["template_key"]) not in seeded
+        )
+        if hard_delete:
+            con.execute("DELETE FROM studio_templates WHERE id=?", (tid,))
+            action = "hard_deleted"
+        else:
+            con.execute(
+                """
+                UPDATE studio_templates
+                SET deleted_at=COALESCE(deleted_at, ?),
+                    status=CASE WHEN status='draft' THEN 'archived' ELSE status END,
+                    updated_at=?
+                WHERE id=?
+                """,
+                (now_utc(), now_utc(), tid),
+            )
+            con.execute(
+                """
+                UPDATE channel_profiles
+                SET default_studio_template_id=NULL, updated_at=?
+                WHERE default_studio_template_id=?
+                """,
+                (now_utc(), tid),
+            )
+            action = "soft_deleted"
+        return {
+            "action": action,
+            "template_id": tid,
+            "usage": counts | {"total": total},
+        }
+
+
+def restore_studio_template(template_id: int) -> bool:
+    with connect() as con:
+        result = con.execute(
+            """
+            UPDATE studio_templates
+            SET deleted_at=NULL,
+                updated_at=?,
+                status=CASE WHEN status='archived' THEN 'draft' ELSE status END
+            WHERE id=?
+            """,
+            (now_utc(), int(template_id)),
+        )
+        return result.rowcount > 0
+
+
+def link_legacy_edit_templates_to_studio() -> int:
+    """Attach legacy edit_templates/channel defaults to matching Studio templates."""
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT et.id, et.key
+            FROM edit_templates et
+            WHERE et.studio_template_id IS NULL
+            """
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            studio = con.execute(
+                """
+                SELECT id
+                FROM studio_templates
+                WHERE template_key=? AND deleted_at IS NULL
+                ORDER BY version DESC, id DESC
+                LIMIT 1
+                """,
+                (row["key"],),
+            ).fetchone()
+            if studio is None:
+                continue
+            con.execute(
+                "UPDATE edit_templates SET studio_template_id=?, updated_at=? WHERE id=?",
+                (int(studio["id"]), now_utc(), int(row["id"])),
+            )
+            con.execute(
+                """
+                UPDATE channel_profiles
+                SET default_studio_template_id=?
+                WHERE default_template_id=? AND default_studio_template_id IS NULL
+                """,
+                (int(studio["id"]), int(row["id"])),
+            )
+            updated += 1
+        return updated
 
 
 def next_studio_template_version(template_key: str) -> int:

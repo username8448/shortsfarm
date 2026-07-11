@@ -927,6 +927,14 @@ def test_storage_profiles_ui_is_registered():
     assert "Интеграции" in html
     assert "integrations-oauth-profiles" in html
     assert "integrations-accounts-list" in html
+    assert "integration-oauth-modal" in html
+    assert "integration-oauth-json" in html
+    assert "integration-oauth-client-id" in html
+    assert "integration-oauth-client-secret" in html
+    assert "OAuth Client JSON" in html
+    assert "Теперь нажмите" in html
+    assert "ui-text-modal" in html
+    assert "storage-profile-pick-modal" in html
     assert "storage-profile-card create-card" in js
     assert "openStorageProfile(profileId" in js
     assert "openStorageProfilesHub" in js
@@ -975,6 +983,29 @@ def test_storage_profiles_ui_is_registered():
     assert "enqueueStorageProfileSelection" in js
     assert "loadIntegrationsView" in js
     assert "renderIntegrationsAccountsPanel" in js
+    assert "prompt(" not in js
+    assert "settings-oauth" not in js
+    assert "data-tag-color-id" in js
+    assert "openTextActionModal" in js
+    assert "openStorageProfilePickModal" in js
+    create_integration_body = js.split("function createIntegrationOAuthProfile", 1)[1].split("function editIntegrationOAuthProfile", 1)[0]
+    assert "prompt(" not in create_integration_body
+    assert "/api/publish/youtube/oauth-profiles/import-client-json" in create_integration_body
+    assert "/api/publish/youtube/oauth-profiles" in create_integration_body
+    window_exports = js.split("Object.assign(window,", 1)[1].split("});", 1)[0]
+    assert "loadIntegrationsView" in window_exports
+    assert "closeTextActionModal" in window_exports
+    assert "confirmTextActionModal" in window_exports
+    assert "closeStorageProfilePickModal" in window_exports
+    assert "confirmStorageProfilePickModal" in window_exports
+    assert "createIntegrationOAuthProfile" in window_exports
+    assert "closeIntegrationOAuthModal" in window_exports
+    assert "saveIntegrationOAuthProfile" in window_exports
+    assert "editIntegrationOAuthProfile" in window_exports
+    assert "setIntegrationDefaultOAuthProfile" in window_exports
+    assert "deleteIntegrationOAuthProfile" in window_exports
+    assert "disconnectYouTubeAccount" in window_exports
+    assert "openStorageProfile" in window_exports
     assert "addWorkspaceItemToStorageProfile" in js
     assert "storage-youtube-controls" in css
     assert "storage-profiles-hub" in css

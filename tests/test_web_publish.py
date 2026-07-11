@@ -69,7 +69,15 @@ class _FakeFlow:
         return Credentials()
 
 
-def _install_fake_google_modules(monkeypatch, *, email="owner@example.com", channel_id="channel-1", channel_title="Channel One"):
+def _install_fake_google_modules(
+    monkeypatch,
+    *,
+    email="owner@example.com",
+    channel_id="channel-1",
+    channel_title="Channel One",
+    channels=None,
+    channels_error: Exception | None = None,
+):
     _FakeFlow.last_client_config = None
     _FakeFlow.last_scopes = None
     _FakeFlow.last_redirect_uri = None
@@ -87,19 +95,26 @@ def _install_fake_google_modules(monkeypatch, *, email="owner@example.com", chan
     fake_googleapi = types.ModuleType("googleapiclient")
     fake_discovery = types.ModuleType("googleapiclient.discovery")
 
+    if channels is None:
+        channels = [
+            {
+                "id": channel_id,
+                "snippet": {"title": channel_title},
+            }
+        ]
+
     def build(service_name, version, credentials=None, cache_discovery=False):
         class ChannelsResource:
             def list(self, **kwargs):
                 class Request:
                     def execute(self):
-                        return {
-                            "items": [
-                                {
-                                    "id": channel_id,
-                                    "snippet": {"title": channel_title},
-                                }
-                            ]
-                        }
+                        if channels_error is not None:
+                            raise channels_error
+                        requested_id = kwargs.get("id")
+                        items = channels
+                        if requested_id:
+                            items = [item for item in channels if item.get("id") == requested_id]
+                        return {"items": items}
 
                 return Request()
 
@@ -452,6 +467,267 @@ def test_youtube_callback_saves_social_account_with_oauth_profile_id(monkeypatch
     assert saved_scopes == set(YOUTUBE_SCOPES)
     assert "email" not in saved_scopes
     assert "profile" not in saved_scopes
+
+
+def test_youtube_callback_saves_channel_metadata_after_oauth(monkeypatch):
+    from shortsfarm import db
+    from shortsfarm.web import api
+
+    profile_id = db.create_youtube_oauth_profile(
+        name="Metadata Profile",
+        mode="custom",
+        client_id="metadata-client",
+        client_secret="metadata-secret",
+        redirect_uri="http://127.0.0.1:8000/api/publish/youtube/oauth/callback",
+        is_default=True,
+    )
+    _install_fake_google_modules(
+        monkeypatch,
+        email="meta@example.com",
+        channels=[
+            {
+                "id": "meta-channel",
+                "snippet": {
+                    "title": "Official Meta Channel",
+                    "description": "Channel description",
+                    "customUrl": "@meta",
+                    "country": "US",
+                    "publishedAt": "2020-01-02T03:04:05Z",
+                    "thumbnails": {"high": {"url": "https://img.example/high.jpg"}},
+                },
+                "statistics": {
+                    "subscriberCount": "1234",
+                    "viewCount": "98765",
+                    "videoCount": "42",
+                    "hiddenSubscriberCount": False,
+                },
+                "contentDetails": {"relatedPlaylists": {"uploads": "UU-meta"}},
+                "status": {"privacyStatus": "public", "madeForKids": False},
+            }
+        ],
+    )
+
+    start = api.youtube_connect_start()
+    state = start["auth_url"].split("state=", 1)[1]
+    response = api.youtube_oauth_callback(code="oauth-code", state=state)
+
+    assert response.status_code == 200
+    account = db.list_social_accounts(platform="youtube")[0]
+    assert account["oauth_profile_id"] == profile_id
+    assert account["channel_title"] == "Official Meta Channel"
+    assert account["display_name"] == "Official Meta Channel"
+    assert account["channel_description"] == "Channel description"
+    assert account["channel_handle"] == "@meta"
+    assert account["channel_country"] == "US"
+    assert account["channel_avatar_url"] == "https://img.example/high.jpg"
+    assert account["subscriber_count"] == 1234
+    assert account["view_count"] == 98765
+    assert account["video_count"] == 42
+    assert account["uploads_playlist_id"] == "UU-meta"
+    assert account["metadata_synced_at"] is not None
+    assert account["metadata_sync_error"] is None
+
+    data = api.youtube_accounts()["accounts"][0]
+    assert data["local_alias"] == "Official Meta Channel"
+    assert data["official_channel_title"] == "Official Meta Channel"
+    assert data["channel_avatar_url"] == "https://img.example/high.jpg"
+    assert data["subscriber_count"] == 1234
+    assert "access_token" not in data
+    assert "refresh_token" not in data
+
+
+def test_youtube_callback_imports_all_channels(monkeypatch):
+    from shortsfarm import db
+    from shortsfarm.web import api
+
+    db.create_youtube_oauth_profile(
+        name="Multi Profile",
+        mode="custom",
+        client_id="multi-client",
+        client_secret="multi-secret",
+        redirect_uri="http://127.0.0.1:8000/api/publish/youtube/oauth/callback",
+        is_default=True,
+    )
+    _install_fake_google_modules(
+        monkeypatch,
+        channels=[
+            {"id": "channel-a", "snippet": {"title": "Channel A"}},
+            {"id": "channel-b", "snippet": {"title": "Channel B"}},
+        ],
+    )
+
+    state = api.youtube_connect_start()["auth_url"].split("state=", 1)[1]
+    response = api.youtube_oauth_callback(code="oauth-code", state=state)
+    body = response.body.decode("utf-8")
+
+    assert response.status_code == 200
+    assert "Импортировано YouTube каналов: 2" in body
+    accounts = sorted(db.list_social_accounts(platform="youtube"), key=lambda row: row["channel_id"])
+    assert [row["channel_id"] for row in accounts] == ["channel-a", "channel-b"]
+
+
+def test_youtube_callback_without_channels_does_not_create_account(monkeypatch):
+    from shortsfarm import db
+    from shortsfarm.web import api
+
+    db.create_youtube_oauth_profile(
+        name="Empty Profile",
+        mode="custom",
+        client_id="empty-client",
+        client_secret="empty-secret",
+        redirect_uri="http://127.0.0.1:8000/api/publish/youtube/oauth/callback",
+        is_default=True,
+    )
+    _install_fake_google_modules(monkeypatch, channels=[])
+
+    state = api.youtube_connect_start()["auth_url"].split("state=", 1)[1]
+    response = api.youtube_oauth_callback(code="oauth-code", state=state)
+    body = response.body.decode("utf-8")
+
+    assert response.status_code == 400
+    assert "YouTube канал для этого аккаунта не найден" in body
+    assert db.list_social_accounts(platform="youtube") == []
+
+
+def test_youtube_reconnect_preserves_local_alias(monkeypatch):
+    from shortsfarm import db
+    from shortsfarm.web import api
+
+    db.create_youtube_oauth_profile(
+        name="Reconnect Profile",
+        mode="custom",
+        client_id="reconnect-client",
+        client_secret="reconnect-secret",
+        redirect_uri="http://127.0.0.1:8000/api/publish/youtube/oauth/callback",
+        is_default=True,
+    )
+    db.save_social_account(
+        platform="youtube",
+        display_name="Local Alias",
+        channel_id="same-channel",
+        channel_title="Old Official",
+        access_token="old-access",
+        refresh_token="old-refresh",
+        token_expires_at=None,
+        scopes="scope",
+        status="active",
+    )
+    _install_fake_google_modules(
+        monkeypatch,
+        channels=[{"id": "same-channel", "snippet": {"title": "New Official"}}],
+    )
+
+    state = api.youtube_connect_start()["auth_url"].split("state=", 1)[1]
+    response = api.youtube_oauth_callback(code="oauth-code", state=state)
+
+    assert response.status_code == 200
+    account = db.list_social_accounts(platform="youtube")[0]
+    assert account["display_name"] == "Local Alias"
+    assert account["channel_title"] == "New Official"
+    assert account["access_token"] == "access-token"
+
+
+def test_youtube_account_manual_sync_updates_metadata(monkeypatch):
+    from shortsfarm import db, publish_youtube
+    from shortsfarm.web import api
+
+    profile_id = db.create_youtube_oauth_profile(
+        name="Manual Sync Profile",
+        mode="custom",
+        client_id="manual-client",
+        client_secret="manual-secret",
+        redirect_uri="http://127.0.0.1:8000/api/publish/youtube/oauth/callback",
+        is_default=True,
+    )
+    account_id = db.save_social_account(
+        platform="youtube",
+        display_name="Manual Alias",
+        channel_id="manual-channel",
+        channel_title="Old Title",
+        access_token="access",
+        refresh_token="refresh",
+        token_expires_at=None,
+        scopes="https://www.googleapis.com/auth/youtube.readonly",
+        oauth_profile_id=profile_id,
+        status="active",
+    )
+
+    class Channels:
+        def list(self, **kwargs):
+            class Request:
+                def execute(self):
+                    return {
+                        "items": [
+                            {
+                                "id": "manual-channel",
+                                "snippet": {
+                                    "title": "Manual Official",
+                                    "customUrl": "@manual",
+                                    "thumbnails": {"default": {"url": "https://img.example/manual.jpg"}},
+                                },
+                                "statistics": {"subscriberCount": "7", "viewCount": "8", "videoCount": "9"},
+                                "contentDetails": {"relatedPlaylists": {"uploads": "UU-manual"}},
+                                "status": {"privacyStatus": "public"},
+                            }
+                        ]
+                    }
+
+            return Request()
+
+    class YouTube:
+        def channels(self):
+            return Channels()
+
+    monkeypatch.setattr(publish_youtube, "build_youtube_client", lambda account: YouTube())
+
+    result = api.youtube_account_sync_metadata(account_id)
+
+    assert result["status"] == "ok"
+    assert result["account"]["local_alias"] == "Manual Alias"
+    assert result["account"]["channel_title"] == "Manual Official"
+    assert result["account"]["channel_handle"] == "@manual"
+    assert result["account"]["subscriber_count"] == 7
+    assert result["account"]["metadata_sync_error"] is None
+
+
+def test_youtube_account_manual_sync_error_preserves_tokens(monkeypatch):
+    from shortsfarm import db, publish_youtube
+    from shortsfarm.web import api
+
+    profile_id = db.create_youtube_oauth_profile(
+        name="Manual Error Profile",
+        mode="custom",
+        client_id="error-client",
+        client_secret="error-secret",
+        redirect_uri="http://127.0.0.1:8000/api/publish/youtube/oauth/callback",
+        is_default=True,
+    )
+    account_id = db.save_social_account(
+        platform="youtube",
+        display_name="Error Alias",
+        channel_id="error-channel",
+        channel_title="Error Channel",
+        access_token="access-secret",
+        refresh_token="refresh-secret",
+        token_expires_at=None,
+        scopes="https://www.googleapis.com/auth/youtube.readonly",
+        oauth_profile_id=profile_id,
+        status="active",
+    )
+
+    def fail_build(account):
+        raise RuntimeError("YouTube API недоступен")
+
+    monkeypatch.setattr(publish_youtube, "build_youtube_client", fail_build)
+
+    result = api.youtube_account_sync_metadata(account_id)
+    account = db.get_social_account(account_id)
+
+    assert result["status"] == "failed"
+    assert "YouTube API недоступен" in result["error"]
+    assert account["access_token"] == "access-secret"
+    assert account["refresh_token"] == "refresh-secret"
+    assert account["metadata_sync_error"] == "YouTube API недоступен"
 
 
 def test_youtube_callback_without_state_returns_russian_html_error():

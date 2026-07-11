@@ -66,6 +66,7 @@ export type AutomationTemplate = {
   engine: TemplateEngine;
   version: number;
   status: TemplateStatus;
+  deleted_at?: string | null;
   definition: TemplateDefinition;
   created_at: string;
   updated_at: string | null;
@@ -84,6 +85,8 @@ export const recipeFromTemplate = (
     template: {
       key: template.key,
       renderer: 'remotion',
+      studio_template_id: template.id,
+      version: template.version,
       renderer_adapter: adapter?.key || rendererAdapterKey(template.definition),
       composition_id: String(
         template.definition.rules.composition_id || adapter?.compositionId || 'ReactionLayoutTemplate',

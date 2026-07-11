@@ -350,6 +350,188 @@ def test_video_child_clips_delete_keeps_parent(video_in_db, tmp_path):
     assert f"clip:{clip_id}" not in visible_ids
 
 
+def test_videos_bulk_delete_keeps_profile_items_by_default(video_in_db, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileItemCreateRequest, VideoBulkDeleteRequest
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "workspace")
+    segment_path = root / "cuts/main/seg.mp4"
+    segment_path.parent.mkdir(parents=True, exist_ok=True)
+    segment_path.write_bytes(b"segment")
+    output = root / "edits/main/final.mp4"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(b"final")
+    job_id = db.create_job(video_in_db, "fast", 60)
+    db.mark_job_done(job_id)
+    db.insert_segment(video_in_db, job_id, 1, 0.0, 15.0, segment_path)
+    run_id = db.create_shorts_pipeline_run(source_mode="workspace", source_path="sources/main.mp4")
+    db.create_shorts_pipeline_run_item(
+        run_id=run_id,
+        source_workspace_path="sources/main.mp4",
+        segment_workspace_path="cuts/main/seg.mp4",
+        output_workspace_path="edits/main/final.mp4",
+        status="done",
+    )
+    profile_id = db.create_local_storage_profile(name="Profile")
+    api.local_storage_profile_item_add(
+        profile_id,
+        LocalStorageProfileItemCreateRequest(workspace_path="edits/main/final.mp4"),
+    )
+
+    data = api.videos_bulk_delete(VideoBulkDeleteRequest(video_ids=[video_in_db]))
+
+    assert data["summary"]["profile_items"]["requested"] is False
+    assert [item["workspace_path"] for item in db.list_local_storage_profile_items(profile_id)] == ["edits/main/final.mp4"]
+
+
+def test_videos_bulk_delete_can_remove_related_profile_items(video_in_db, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import LocalStorageProfileItemCreateRequest, VideoBulkDeleteRequest
+    from shortsfarm.workspace_fs import set_workspace_root
+
+    root = set_workspace_root(tmp_path / "workspace")
+    segment_path = root / "cuts/main/seg.mp4"
+    segment_path.parent.mkdir(parents=True, exist_ok=True)
+    segment_path.write_bytes(b"segment")
+    output = root / "edits/main/final.mp4"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_bytes(b"final")
+    unrelated = root / "edits/other/final.mp4"
+    unrelated.parent.mkdir(parents=True, exist_ok=True)
+    unrelated.write_bytes(b"other")
+    job_id = db.create_job(video_in_db, "fast", 60)
+    db.mark_job_done(job_id)
+    db.insert_segment(video_in_db, job_id, 1, 0.0, 15.0, segment_path)
+    run_id = db.create_shorts_pipeline_run(source_mode="workspace", source_path="sources/main.mp4")
+    db.create_shorts_pipeline_run_item(
+        run_id=run_id,
+        source_workspace_path="sources/main.mp4",
+        segment_workspace_path="cuts/main/seg.mp4",
+        output_workspace_path="edits/main/final.mp4",
+        status="done",
+    )
+    profile_id = db.create_local_storage_profile(name="Profile")
+    api.local_storage_profile_item_add(
+        profile_id,
+        LocalStorageProfileItemCreateRequest(workspace_path="edits/main/final.mp4"),
+    )
+    api.local_storage_profile_item_add(
+        profile_id,
+        LocalStorageProfileItemCreateRequest(workspace_path="edits/other/final.mp4"),
+    )
+
+    data = api.videos_bulk_delete(
+        VideoBulkDeleteRequest(video_ids=[video_in_db], remove_from_profiles=True)
+    )
+
+    assert data["summary"]["profile_items"]["requested"] is True
+    assert data["summary"]["profile_items"]["removed"] == 1
+    assert [item["workspace_path"] for item in db.list_local_storage_profile_items(profile_id)] == ["edits/other/final.mp4"]
+
+
+def test_queue_items_include_sources_and_split_jobs(video_in_db, dummy_video, tmp_path):
+    from shortsfarm.web import api
+    segment_id = _make_segment(video_in_db, tmp_path, under_output=True)
+
+    data = api.queue_items()
+
+    source = next(item for item in data["items"] if item["id"] == f"source:{video_in_db}")
+    split = next(item for item in data["items"] if item["kind"] == "split" and item["video_id"] == video_in_db)
+    assert source["kind"] == "source"
+    assert source["source_state"] == "ok"
+    assert source["source_file_exists"] is True
+    assert source["counts"]["segments"] >= 1
+    assert source["actions"]["show_clips"] is True
+    assert split["source_state"] == "ok"
+    assert split["actions"]["show_clips"] is True
+    assert f"segment:{segment_id}" in {item["id"] for item in api.workspace_clips()["items"]}
+
+
+def test_queue_items_marks_missing_or_moved_source(video_in_db, dummy_video):
+    from shortsfarm.web import api
+
+    dummy_video.unlink()
+    data = api.queue_items(kind="source")
+
+    source = next(item for item in data["items"] if item["id"] == f"source:{video_in_db}")
+    assert source["source_state"] == "missing_or_moved"
+    assert source["source_missing"] is True
+    assert source["source_file_exists"] is False
+    assert source["actions"]["relink_source"] is True
+
+
+def test_queue_items_hide_and_restore_soft_deleted_source(video_in_db):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import VideoBulkDeleteRequest
+
+    api.videos_bulk_delete(VideoBulkDeleteRequest(video_ids=[video_in_db]))
+
+    assert f"source:{video_in_db}" not in {item["id"] for item in api.queue_items(kind="source")["items"]}
+    deleted = api.queue_items(kind="source", include_deleted=True)
+    source = next(item for item in deleted["items"] if item["id"] == f"source:{video_in_db}")
+    assert source["source_state"] == "hidden_deleted"
+    assert source["actions"]["restore"] is True
+
+    restored = api.video_restore(video_in_db)
+    assert restored["video"]["source_hidden"] is False
+    assert f"source:{video_in_db}" in {item["id"] for item in api.queue_items(kind="source")["items"]}
+
+
+def test_video_relink_source_updates_path_and_preserves_children(video_in_db, dummy_video, tmp_path):
+    from shortsfarm import db
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import VideoRelinkSourceRequest
+    segment_id = _make_segment(video_in_db, tmp_path, under_output=True)
+    dummy_video.unlink()
+    replacement = tmp_path / "replacement.mp4"
+    replacement.write_bytes(b"new-video")
+
+    data = api.video_relink_source(
+        video_in_db,
+        VideoRelinkSourceRequest(source_path=str(replacement)),
+    )
+
+    assert data["video"]["source_path"] == str(replacement.resolve())
+    assert data["video"]["source_state"] == "ok"
+    assert db.list_segments(video_in_db)[0]["id"] == segment_id
+    source = next(item for item in api.queue_items(kind="source")["items"] if item["id"] == f"source:{video_in_db}")
+    assert source["counts"]["segments"] >= 1
+    assert source["source_path"] == str(replacement.resolve())
+
+
+def test_video_relink_source_rejects_bad_paths(video_in_db, tmp_path):
+    from shortsfarm.web import api
+    from shortsfarm.web.schemas import VideoRelinkSourceRequest
+
+    missing = tmp_path / "missing.mp4"
+    with pytest.raises(HTTPException) as missing_exc:
+        api.video_relink_source(video_in_db, VideoRelinkSourceRequest(source_path=str(missing)))
+    assert missing_exc.value.status_code == 404
+
+    non_video = tmp_path / "notes.txt"
+    non_video.write_text("not video", encoding="utf-8")
+    with pytest.raises(HTTPException) as non_video_exc:
+        api.video_relink_source(video_in_db, VideoRelinkSourceRequest(source_path=str(non_video)))
+    assert non_video_exc.value.status_code == 400
+
+    folder = tmp_path / "folder.mp4"
+    folder.mkdir()
+    with pytest.raises(HTTPException) as folder_exc:
+        api.video_relink_source(video_in_db, VideoRelinkSourceRequest(source_path=str(folder)))
+    assert folder_exc.value.status_code == 400
+
+    target = tmp_path / "target.mp4"
+    target.write_bytes(b"video")
+    symlink = tmp_path / "link.mp4"
+    symlink.symlink_to(target)
+    with pytest.raises(HTTPException) as symlink_exc:
+        api.video_relink_source(video_in_db, VideoRelinkSourceRequest(source_path=str(symlink)))
+    assert symlink_exc.value.status_code == 403
+
+
 def test_settings_database_reset_requires_exact_confirmation(video_in_db):
     from shortsfarm.web import api
     from shortsfarm.web.schemas import DatabaseResetRequest

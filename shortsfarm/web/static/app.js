@@ -452,6 +452,102 @@ function showToast(message, kind='ok') {
   }, 2600);
 }
 
+let textActionModalState = null;
+let storageProfilePickModalState = null;
+
+function openTextActionModal(options = {}) {
+  return new Promise(resolve => {
+    textActionModalState = {
+      resolve,
+      validate: options.validate || null,
+    };
+    const modal = document.getElementById('ui-text-modal');
+    const title = document.getElementById('ui-text-modal-title');
+    const label = document.getElementById('ui-text-modal-label');
+    const input = document.getElementById('ui-text-modal-input');
+    const hint = document.getElementById('ui-text-modal-hint');
+    const confirm = document.getElementById('ui-text-modal-confirm');
+    hideInlineError('ui-text-modal-error');
+    if (title) title.textContent = options.title || 'Действие';
+    if (label) label.textContent = options.label || 'Название';
+    if (hint) hint.textContent = options.hint || '';
+    if (confirm) confirm.textContent = options.confirmText || 'Сохранить';
+    if (input) {
+      input.value = options.value || '';
+      input.placeholder = options.placeholder || '';
+      input.maxLength = options.maxLength || 255;
+    }
+    if (modal) modal.style.display = 'grid';
+    setTimeout(() => {
+      input?.focus();
+      input?.select();
+    }, 0);
+  });
+}
+
+function resolveTextActionModal(value) {
+  const state = textActionModalState;
+  textActionModalState = null;
+  const modal = document.getElementById('ui-text-modal');
+  if (modal) modal.style.display = 'none';
+  hideInlineError('ui-text-modal-error');
+  state?.resolve(value);
+}
+
+function closeTextActionModal(event) {
+  if (event && event.target && event.target.id !== 'ui-text-modal') return;
+  resolveTextActionModal(null);
+}
+
+function confirmTextActionModal() {
+  const value = (document.getElementById('ui-text-modal-input')?.value || '').trim();
+  const error = textActionModalState?.validate ? textActionModalState.validate(value) : (!value ? 'Введите значение.' : '');
+  if (error) {
+    showInlineError('ui-text-modal-error', error);
+    return;
+  }
+  resolveTextActionModal(value);
+}
+
+function openStorageProfilePickModal(profiles = []) {
+  return new Promise(resolve => {
+    storageProfilePickModalState = {resolve};
+    const select = document.getElementById('storage-profile-pick-select');
+    hideInlineError('storage-profile-pick-error');
+    if (select) {
+      select.innerHTML = profiles.map(profile => (
+        `<option value="${Number(profile.id)}">#${Number(profile.id)} · ${esc(profile.name || profile.handle || 'Профиль')}</option>`
+      )).join('');
+    }
+    const modal = document.getElementById('storage-profile-pick-modal');
+    if (modal) modal.style.display = 'grid';
+    setTimeout(() => select?.focus(), 0);
+  });
+}
+
+function resolveStorageProfilePickModal(value) {
+  const state = storageProfilePickModalState;
+  storageProfilePickModalState = null;
+  const modal = document.getElementById('storage-profile-pick-modal');
+  if (modal) modal.style.display = 'none';
+  hideInlineError('storage-profile-pick-error');
+  state?.resolve(value);
+}
+
+function closeStorageProfilePickModal(event) {
+  if (event && event.target && event.target.id !== 'storage-profile-pick-modal') return;
+  resolveStorageProfilePickModal(null);
+}
+
+function confirmStorageProfilePickModal() {
+  const profileId = Number(document.getElementById('storage-profile-pick-select')?.value || 0);
+  if (!profileId) {
+    showInlineError('storage-profile-pick-error', 'Выберите профиль.');
+    return;
+  }
+  resolveStorageProfilePickModal(profileId);
+}
+
 let currentView = 'dashboard';
 const VIEW_TITLES = {
   dashboard: 'Панель',
@@ -459,7 +555,6 @@ const VIEW_TITLES = {
   files: 'Файлы',
   split: 'Нарезка',
   queue: 'Очередь',
-  videos: 'Видео',
   clips: 'Клипы',
   tags: 'Теги',
   'storage-profiles': 'Профили',
@@ -472,6 +567,7 @@ const VIEW_TITLES = {
 const uiState = {
   density: 'compact',
   sidebarCollapsed: false,
+  queueViewMode: 'table',
   videoViewMode: 'table',
   clipViewMode: 'table',
 };
@@ -480,9 +576,17 @@ let secsVal = 60;
 let splitMode = 'file';
 const skipList = [];
 let lastJobs = [];
+let lastQueueItems = [];
 let lastVideos = [];
 let selectedVideoIds = new Set();
 let pendingVideoDeleteIds = [];
+let queueQuickFilter = 'all';
+let queueKindFilter = 'all';
+let queueStatusFilter = 'all';
+let queueSourceStateFilter = 'all';
+let queueIncludeDeleted = false;
+let queueSearchQuery = '';
+let expandedQueueItemIds = new Set();
 let videoFilter = 'all';
 let lastClips = [];
 let queueSubView = 'overview';
@@ -500,8 +604,6 @@ let lastYoutubeProfiles = [];
 let lastPublishJobs = [];
 let lastPublishScheduleGroups = [];
 let lastReadyPublishClips = [];
-let editingOAuthProfileId = null;
-let oauthManualMode = 'json';
 let publishJobFilter = 'all';
 let publishScheduleFilter = 'untimed';
 let selectedPublishJobIds = new Set();
@@ -525,6 +627,7 @@ let editingPreviewJobId = null;
 let editingReactionId = null;
 let editingPoolId = null;
 let editingTemplateId = null;
+let editingTemplateSource = 'studio';
 let editingProfileId = null;
 let storageProfiles = [];
 let currentStorageProfileId = null;
@@ -641,11 +744,13 @@ function setSegmentedState(selector, activeValue, attr) {
 function initResponsiveShell() {
   uiState.density = readUiPreference('density', 'compact');
   uiState.sidebarCollapsed = readUiPreference('sidebarCollapsed', '0') === '1';
+  uiState.queueViewMode = readUiPreference('queueViewMode', 'table') === 'grid' ? 'grid' : 'table';
   uiState.videoViewMode = readUiPreference('videoViewMode', 'table') === 'grid' ? 'grid' : 'table';
   uiState.clipViewMode = readUiPreference('clipViewMode', 'table') === 'grid' ? 'grid' : 'table';
   applyDensity();
   applySidebarState();
   setTopbarTitle(currentView);
+  setSegmentedState('[data-queue-view]', uiState.queueViewMode, 'data-queue-view');
   setSegmentedState('[data-video-view]', uiState.videoViewMode, 'data-video-view');
   setSegmentedState('[data-clip-view]', uiState.clipViewMode, 'data-clip-view');
   try {
@@ -695,6 +800,10 @@ function activateView(id, btn) {
 
 function nav(id, btn) {
   if (id === 'clips') id = 'queue';
+  if (id === 'videos') {
+    openQueueSources();
+    return;
+  }
   activateView(id, btn);
   if (id === 'dashboard') loadDashboard();
   if (id === 'files') loadManagedFiles();
@@ -704,7 +813,6 @@ function nav(id, btn) {
     setQueueSubView('overview');
     loadJobs();
   }
-  if (id === 'videos') loadVideos();
   if (id === 'tags') loadTagsView();
   if (id === 'storage-profiles') {
     window.history.replaceState({}, '', storageProfileUrl(null));
@@ -1280,7 +1388,13 @@ function managedFilesUp() {
 
 async function createManagedFolder(kind = 'custom') {
   const labels = {custom:'папки', collection:'коллекции', project:'проекта'};
-  const name = prompt(`Название новой ${labels[kind] || 'папки'}:`);
+  const name = await openTextActionModal({
+    title: `Новая ${labels[kind] || 'папка'}`,
+    label: 'Название',
+    placeholder: 'Введите название',
+    confirmText: 'Создать',
+    validate: value => value ? '' : 'Введите название.',
+  });
   if (!name) return;
   try {
     await api.post('/api/files/folder', {
@@ -1296,7 +1410,13 @@ async function createManagedFolder(kind = 'custom') {
 }
 
 async function renameManagedItem(path, currentName) {
-  const name = prompt('Новое имя:', currentName || '');
+  const name = await openTextActionModal({
+    title: 'Переименовать',
+    label: 'Новое имя',
+    value: currentName || '',
+    confirmText: 'Переименовать',
+    validate: value => value ? '' : 'Введите новое имя.',
+  });
   if (!name || name === currentName) return;
   try {
     await api.patch('/api/files/rename', {path, new_name: name});
@@ -1429,7 +1549,6 @@ async function loadDashboard() {
     document.getElementById('st-jobs-sub').textContent = `${runningJobs} split в работе · ${queuedJobs} split в очереди · ${activePipelineRuns} конвейер`;
     document.getElementById('st-clips-sub').textContent = `${clips.done||0} готово · ${failedClips} ошибок`;
     document.getElementById('nav-jobs').textContent = runningJobs + queuedJobs + activePipelineRuns || '';
-    document.getElementById('nav-videos').textContent = data.videos_total || '';
     document.getElementById('job-pulse').classList.toggle('pulse', runningJobs > 0 || activePipelineRuns > 0);
 
     renderRunningBanner(data.latest_jobs || []);
@@ -1749,14 +1868,45 @@ async function deleteAllClipsForVideo(videoId, title = '') {
   }
   const label = title || lastVideos.find(item => Number(item.id) === id)?.title || `Видео #${id}`;
   if (!window.confirm(`Удалить все нарезки и клипы исходника «${label}»? Файлы будут удалены с диска, это нельзя отменить.`)) return;
+  const removeFromProfiles = window.confirm('Также удалить связанные видео из локальных профилей?');
   try {
-    const data = await api.post(`/api/videos/${id}/clips/delete`, {});
+    const data = await api.post(`/api/videos/${id}/clips/delete`, {remove_from_profiles: removeFromProfiles});
     await refreshWorkspaceFromDeleteResponse(data);
     const summary = data.summary || {};
-    showToast(`Клипы исходника удалены: ${summary.hidden || 0} · файлов: ${summary.deleted_files || 0} · ошибок: ${summary.errors || 0}`);
-    await Promise.allSettled([loadVideos(), loadDashboard(), loadJobs()]);
+    const profilePart = removeFromProfiles ? ` · из профилей: ${summary.profile_items_removed || 0}` : '';
+    showToast(`Клипы исходника удалены: ${summary.hidden || 0} · файлов: ${summary.deleted_files || 0} · ошибок: ${summary.errors || 0}${profilePart}`);
+    await Promise.allSettled([loadDashboard(), loadJobs()]);
   } catch (err) {
     showToast(err.message || 'Не удалось удалить клипы исходника', 'err');
+  }
+}
+
+async function restoreVideoSource(videoId) {
+  const id = Number(videoId || 0);
+  if (!id) return;
+  try {
+    await api.post(`/api/videos/${id}/restore`, {});
+    showToast('Исходник восстановлен в очереди');
+    await Promise.allSettled([loadJobs(), loadDashboard()]);
+  } catch (err) {
+    showToast(err.message || 'Не удалось восстановить исходник', 'err');
+  }
+}
+
+async function relinkVideoSource(videoId) {
+  const id = Number(videoId || 0);
+  if (!id) return;
+  const path = await pickLocalPath({
+    kind: 'file',
+    title: 'Укажите новый путь к исходному видео',
+  });
+  if (!path) return;
+  try {
+    await api.post(`/api/videos/${id}/relink-source`, {source_path: path});
+    showToast('Новый путь к исходнику сохранён');
+    await Promise.allSettled([loadJobs(), loadDashboard()]);
+  } catch (err) {
+    showToast(err.message || 'Не удалось указать новый путь', 'err');
   }
 }
 
@@ -1977,18 +2127,31 @@ function renderSplitResult(data) {
 
 async function loadJobs() {
   try {
-    const [data, pipelineData, healthData] = await Promise.all([
+    const params = new URLSearchParams();
+    if (queueKindFilter !== 'all') params.set('kind', queueKindFilter);
+    if (queueStatusFilter !== 'all') params.set('status', queueStatusFilter);
+    if (queueSourceStateFilter !== 'all') params.set('source_state', queueSourceStateFilter);
+    if (queueIncludeDeleted) params.set('include_deleted', 'true');
+    if (queueSearchQuery) params.set('q', queueSearchQuery);
+    const [data, queueData, pipelineData, healthData] = await Promise.all([
       api.get('/api/jobs'),
+      api.get(`/api/queue/items${params.toString() ? `?${params.toString()}` : ''}`),
       api.get('/api/shorts-pipeline/runs'),
       api.get('/api/shorts-pipeline/health'),
     ]);
     lastJobs = data.jobs || [];
+    lastQueueItems = queueData.items || [];
+    lastVideos = lastQueueItems
+      .filter(item => item.kind === 'source')
+      .map(queueVideoFromItem);
+    selectedVideoIds = new Set(Array.from(selectedVideoIds).filter(id => lastVideos.some(video => Number(video.id) === Number(id))));
     pipelineRuns = pipelineData.items || [];
     pipelineHealth = healthData || null;
     renderPipelineHealth('queue-pipeline-health');
     renderQueuePipelineRuns(pipelineRuns);
-    renderJobCounts(data.counts || {});
-    renderJobsTable('jobs-table', lastJobs, true);
+    renderQueueCounts(queueData.counts || {});
+    renderQueueItems('jobs-table', lastQueueItems);
+    renderQueueSourceBulkToolbar();
   } catch (err) {
     showError('jobs-table', err);
   }
@@ -2010,26 +2173,171 @@ function renderJobCounts(counts) {
     if (el) el.textContent = key === 'all' ? total : (counts[key] || '');
   }
 }
-function filterJobs(tab, status) {
-  tab.closest('.tabs').querySelectorAll('.tab').forEach(item => item.classList.remove('on'));
-  tab.classList.add('on');
-  const rows = status === 'all' ? lastJobs : lastJobs.filter(job => job.status === status);
-  renderJobsTable('jobs-table', rows, true);
+function renderQueueCounts(counts) {
+  for (const key of ['all','source','jobs','errors','missing','deleted']) {
+    const el = document.getElementById('queue-cnt-' + key);
+    if (el) el.textContent = counts[key] || '';
+  }
 }
-function renderJobsTable(targetId, rows, full) {
+function queueFilterConfig(name) {
+  const key = String(name || 'all');
+  if (key === 'source') return {kind: 'source', status: 'all', sourceState: 'all', includeDeleted: false};
+  if (key === 'jobs') return {kind: 'jobs', status: 'all', sourceState: 'all', includeDeleted: false};
+  if (key === 'errors') return {kind: 'all', status: 'failed', sourceState: 'all', includeDeleted: false};
+  if (key === 'missing') return {kind: 'source', status: 'all', sourceState: 'missing_or_moved', includeDeleted: false};
+  if (key === 'deleted') return {kind: 'source', status: 'all', sourceState: 'hidden_deleted', includeDeleted: true};
+  return {kind: 'all', status: 'all', sourceState: 'all', includeDeleted: false};
+}
+function setQueueQuickFilter(name) {
+  queueQuickFilter = String(name || 'all');
+  const config = queueFilterConfig(queueQuickFilter);
+  queueKindFilter = config.kind;
+  queueStatusFilter = config.status;
+  queueSourceStateFilter = config.sourceState;
+  queueIncludeDeleted = config.includeDeleted;
+  document.querySelectorAll('[data-queue-filter]').forEach(btn => {
+    btn.classList.toggle('on', btn.dataset.queueFilter === queueQuickFilter);
+  });
+  loadJobs();
+}
+function openQueueSources() {
+  activateView('queue', document.querySelector('[data-v="queue"]'));
+  setQueueSubView('overview');
+  setQueueQuickFilter('source');
+}
+function setQueueViewMode(mode) {
+  uiState.queueViewMode = mode === 'grid' ? 'grid' : 'table';
+  writeUiPreference('queueViewMode', uiState.queueViewMode);
+  setSegmentedState('[data-queue-view]', uiState.queueViewMode, 'data-queue-view');
+  renderQueueItems('jobs-table', lastQueueItems);
+}
+function onQueueSearchInput(value) {
+  queueSearchQuery = String(value || '');
+  loadJobs();
+}
+function filterJobs(tab, status) {
+  queueQuickFilter = status === 'failed' ? 'errors' : 'jobs';
+  queueKindFilter = 'jobs';
+  queueStatusFilter = status || 'all';
+  queueSourceStateFilter = 'all';
+  queueIncludeDeleted = false;
+  if (tab) {
+    tab.closest('.tabs')?.querySelectorAll('.tab').forEach(item => item.classList.remove('on'));
+    tab.classList.add('on');
+  }
+  loadJobs();
+}
+function queueVideoFromItem(item) {
+  return {
+    id: Number(item.video_id),
+    title: item.title || `Видео #${item.video_id}`,
+    source_path: item.source_path || '',
+    duration_sec: item.duration_sec,
+    duration_text: item.duration_text || '—',
+    review_status: item.status || 'inbox',
+    mark_count: Number(item.counts?.marks || 0),
+    clip_count: Number(item.counts?.clips || 0),
+    segment_count: Number(item.counts?.segments || 0),
+    output_dir: item.output_dir || '',
+    source_file_exists: Boolean(item.source_file_exists),
+    source_state: item.source_state || 'ok',
+    source_state_label: item.source_state_label || '',
+    source_missing: Boolean(item.source_missing),
+    source_deleted: Boolean(item.source_deleted),
+    source_hidden: Boolean(item.source_hidden),
+  };
+}
+function queueItemKindBadge(item) {
+  const cls = item.kind === 'source' ? 'b-inf' : item.kind === 'publish' ? 'b-ok' : item.kind === 'render' ? 'b-warn' : 'b-dim';
+  return `<span class="badge ${cls}">${esc(item.kind_label || item.kind)}</span>`;
+}
+function queueSourceStateBadge(item) {
+  if (!item.source_state || item.source_state === 'ok') return '<span class="badge b-ok">Файл на месте</span>';
+  if (item.source_state === 'hidden_deleted') return '<span class="badge b-dim">Удалённые/скрытые</span>';
+  if (item.source_state === 'source_deleted') return '<span class="badge b-warn">Исходник удалён</span>';
+  return '<span class="badge b-err">Missing/перемещён</span>';
+}
+function queueProgressBar(item) {
+  const value = Math.max(0, Math.min(100, Number(item.progress || 0)));
+  const cls = item.status === 'failed' ? 'pf-err' : value >= 100 ? 'pf-ok' : 'pf-info';
+  return `<div class="pbar-row"><span class="mono dim">${value}%</span></div><div class="pbar"><div class="pf ${cls}" style="width:${value}%"></div></div>`;
+}
+function queueItemActions(item) {
+  const actions = [];
+  if (item.kind === 'source') {
+    const videoId = Number(item.video_id);
+    if (item.source_file_exists) actions.push(webPlayerButton(item.source_path, 'Смотреть'));
+    actions.push(`<button class="btn-mini" onclick="event.stopPropagation();openQueueClipsForVideo(${videoId})">Показать клипы</button>`);
+    if (item.output_dir) actions.push(outputFolderButton(item.output_dir, 'Output'));
+    if (item.source_missing || item.source_deleted) actions.push(`<button class="btn-mini" onclick="event.stopPropagation();relinkVideoSource(${videoId})">Указать новый путь…</button>`);
+    if (item.source_hidden) actions.push(`<button class="btn-secondary" onclick="event.stopPropagation();restoreVideoSource(${videoId})">Восстановить</button>`);
+    actions.push(`<button class="btn-danger" onclick="event.stopPropagation();deleteAllClipsForVideo(${videoId}, this.dataset.title)" data-title="${esc(item.title || '')}">Удалить все клипы</button>`);
+    actions.push(`<button class="btn-danger" onclick="event.stopPropagation();openVideoDeleteDialog([${videoId}])">Удалить родительское видео</button>`);
+  } else {
+    if (item.video_id) actions.push(`<button class="btn-mini" onclick="event.stopPropagation();openQueueClipsForVideo(${Number(item.video_id)})">Клипы</button>`);
+    if (item.output_dir) actions.push(outputFolderButton(item.output_dir, 'Папка'));
+    if (item.source_path && item.source_file_exists) actions.push(mpvButton(item.source_path));
+  }
+  return `<div class="row-actions">${actions.join('')}</div>`;
+}
+function toggleQueueItemExpanded(itemId) {
+  if (expandedQueueItemIds.has(itemId)) expandedQueueItemIds.delete(itemId);
+  else expandedQueueItemIds.add(itemId);
+  renderQueueItems('jobs-table', lastQueueItems);
+}
+function queueItemDetails(item) {
+  const jobs = item.jobs || [];
+  const jobsHtml = jobs.length
+    ? `<div class="queue-linked-jobs">${jobs.map(job => `<span class="badge b-dim">split #${esc(job.id)} · ${esc(job.status)}</span>`).join('')}</div>`
+    : '<div class="mono dim">Связанных split-задач пока нет.</div>';
+  return `<div class="queue-item-details">
+    <div class="mono dim">Источник: ${esc(item.source_path || '—')}</div>
+    ${item.output_dir ? `<div class="mono dim">Output: ${esc(item.output_dir)}</div>` : ''}
+    ${item.error ? `<div class="err">Ошибка: ${esc(shortErrorText(item.error))}</div>` : ''}
+    ${item.kind === 'source' ? jobsHtml : ''}
+    ${queueItemActions(item)}
+  </div>`;
+}
+function renderQueueItems(targetId, rows) {
   const el = document.getElementById(targetId);
+  if (!el) return;
   if (!rows.length) {
-    el.innerHTML = full ? '<div class="empty">Задач пока нет. Запустите цикл в разделе «Конвейер» или импортируйте исходники.</div>' : '<div class="empty">Нет задач</div>';
+    el.innerHTML = '<div class="empty">Очередь пуста. Импортируйте исходники или запустите цикл в разделе «Конвейер».</div>';
     return;
   }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Тип</th><th>Статус</th><th>Прогресс</th><th>Файл</th>${full ? '<th>Ошибка</th><th>Старт</th>' : '<th>Создано</th>'}</tr></thead><tbody>${rows.map(job => {
-    const p = percent(job.done_items, job.total_items, job.status);
-    const fileCell = job.source_path
-      ? `<div class="video-name-cell">${videoThumb(job.source_path, job.current_file || 'video')}<div style="min-width:0;flex:1"><button class="link-video mono mid ov" title="Показать нарезки/клипы: ${esc(job.current_file || job.source_path)}" onclick="event.stopPropagation();openQueueClipsForJob(${Number(job.id)})">${esc(job.current_file || shortPath(job.source_path))}</button><div class="mono dim ov" title="${esc(job.output_dir || job.source_path)}">${job.output_dir ? `Сегменты: ${esc(shortPath(job.output_dir))}` : esc(shortPath(job.source_path))}</div></div><div class="row-actions">${mpvButton(job.source_path)}${outputFolderButton(job.output_dir)}</div></div>`
-      : `<span class="mono mid ov">${esc(job.current_file || '—')}</span>`;
-    const rowClick = full ? ` onclick="openQueueClipsForJob(${Number(job.id)})"` : '';
-    return `<tr data-s="${esc(job.status)}"${rowClick}><td class="mono dim">#${job.id}</td><td class="mono mid">${esc(job.type)}</td><td>${badge(job.status, job.status === 'running')}</td><td style="min-width:100px"><div class="pbar-row"><span class="mono dim">${job.done_items||0}/${job.total_items||'?'}</span><span class="mono dim">${p}%</span></div><div class="pbar"><div class="pf ${job.status==='failed'?'pf-err':job.status==='done'?'pf-ok':'pf-info'}" style="width:${p}%"></div></div></td><td>${fileCell}</td>${full ? `<td class="err ov" style="max-width:180px">${esc(job.error || '')}</td><td class="mono dim">${esc(job.started_at || job.created_at || '')}</td>` : `<td class="mono dim">${esc(job.created_at || '')}</td>`}</tr>`;
-  }).join('')}</tbody></table>`;
+  if (uiState.queueViewMode === 'grid') {
+    el.innerHTML = `<div class="queue-card-grid">${rows.map(item => {
+      const selected = item.kind === 'source' && selectedVideoIds.has(Number(item.video_id));
+      const expanded = expandedQueueItemIds.has(item.id);
+      const sourceCheck = item.kind === 'source'
+        ? `<label class="media-card-check" onclick="event.stopPropagation()"><input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleQueueSourceSelection(${Number(item.video_id)}, this.checked)"></label>`
+        : '';
+      return `<article class="queue-card ${expanded ? 'expanded' : ''} ${selected ? 'selected' : ''}" onclick="toggleQueueItemExpanded('${esc(item.id)}')">
+        <div class="queue-card-thumb">${sourceCheck}${videoThumb(item.source_path || '', item.title || item.id)}</div>
+        <div class="queue-card-body">
+          <div class="queue-card-top">${queueItemKindBadge(item)}${badge(item.status)}${queueSourceStateBadge(item)}</div>
+          <div class="queue-card-title" title="${esc(item.title || '')}">${esc(item.title || item.id)}</div>
+          <div class="mono dim ov">${esc(shortPath(item.source_path || item.output_dir || '—'))}</div>
+          ${queueProgressBar(item)}
+          ${expanded ? queueItemDetails(item) : `<div class="queue-card-actions">${queueItemActions(item)}</div>`}
+        </div>
+      </article>`;
+    }).join('')}</div>`;
+    renderQueueSourceBulkToolbar();
+    return;
+  }
+  el.innerHTML = `<div class="table-scroll"><table class="tbl queue-unified-table"><thead><tr><th></th><th>Элемент</th><th>Тип</th><th>Статус</th><th>Файл</th><th>Счётчики</th><th>Прогресс</th><th>Действия</th></tr></thead><tbody>${rows.map(item => {
+    const selected = item.kind === 'source' && selectedVideoIds.has(Number(item.video_id));
+    const expanded = expandedQueueItemIds.has(item.id);
+    const checkbox = item.kind === 'source'
+      ? `<input type="checkbox" ${selected ? 'checked' : ''} onclick="event.stopPropagation()" onchange="toggleQueueSourceSelection(${Number(item.video_id)}, this.checked)">`
+      : '';
+    const counts = item.kind === 'source'
+      ? `метки ${Number(item.counts?.marks || 0)} · сегм. ${Number(item.counts?.segments || 0)} · клипы ${Number(item.counts?.clips || 0)}`
+      : Object.entries(item.counts || {}).map(([key, value]) => `${esc(key)} ${esc(value)}`).join(' · ');
+    return `<tr class="queue-row ${expanded ? 'expanded' : ''}" data-kind="${esc(item.kind)}" onclick="toggleQueueItemExpanded('${esc(item.id)}')"><td>${checkbox}</td><td><div class="video-name-cell">${videoThumb(item.source_path || '', item.title || item.id)}<div style="min-width:0;flex:1"><div class="mono txt ov">${esc(item.title || item.id)}</div><div class="mono dim">#${esc(item.id)}</div></div></div></td><td>${queueItemKindBadge(item)}</td><td><div class="status-stack">${badge(item.status)}${queueSourceStateBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.source_path || item.output_dir || '')}">${esc(shortPath(item.source_path || item.output_dir || '—'))}</span>${item.output_dir ? `<div class="mono dim ov">Output: ${esc(shortPath(item.output_dir))}</div>` : ''}</td><td class="mono mid">${esc(counts || '—')}</td><td>${queueProgressBar(item)}</td><td>${queueItemActions(item)}</td></tr>${expanded ? `<tr class="queue-details-row"><td></td><td colspan="7">${queueItemDetails(item)}</td></tr>` : ''}`;
+  }).join('')}</tbody></table></div>`;
+  renderQueueSourceBulkToolbar();
 }
 
 async function loadVideos() {
@@ -2113,7 +2421,7 @@ function openVideoInspector(videoId) {
   });
 }
 function renderVideosBulkToolbar() {
-  const el = document.getElementById('videos-bulk-toolbar');
+  const el = document.getElementById('queue-sources-bulk-toolbar');
   if (!el) return;
   const visibleRows = getVisibleVideos();
   const selectedCount = selectedVideos().length;
@@ -2129,10 +2437,13 @@ function renderVideosBulkToolbar() {
   syncVideosSelectAllCheckbox();
   renderVideosActionBar();
 }
+function renderQueueSourceBulkToolbar() {
+  renderVideosBulkToolbar();
+}
 function renderVideosActionBar() {
   const count = selectedVideos().length;
-  if (currentView !== 'videos' || !count) {
-    if (currentView === 'videos') renderActionBar();
+  if (currentView !== 'queue' || !count) {
+    if (currentView === 'queue') renderActionBar();
     return;
   }
   renderActionBar(`Видео выбрано: ${count}`, `
@@ -2154,6 +2465,10 @@ function toggleVideoSelection(videoId, checked) {
   renderVideosBulkToolbar();
   syncVideosSelectAllCheckbox();
 }
+function toggleQueueSourceSelection(videoId, checked) {
+  toggleVideoSelection(videoId, checked);
+  renderQueueItems('jobs-table', lastQueueItems);
+}
 function toggleVisibleVideosSelection(checked) {
   setVisibleVideosSelected(Boolean(checked));
 }
@@ -2163,11 +2478,12 @@ function setVisibleVideosSelected(checked) {
     if (checked) selectedVideoIds.add(id);
     else selectedVideoIds.delete(id);
   });
-  renderVideosTable(getVisibleVideos());
+  renderQueueItems('jobs-table', lastQueueItems);
 }
 function clearVideoSelection() {
   selectedVideoIds.clear();
-  renderVideosTable(getVisibleVideos());
+  renderQueueItems('jobs-table', lastQueueItems);
+  renderQueueSourceBulkToolbar();
 }
 async function deleteSelectedVideos() {
   openVideoDeleteDialog(Array.from(selectedVideoIds));
@@ -2227,6 +2543,14 @@ function openVideoDeleteDialog(videoIds = null) {
         <input id="video-delete-child-clips" type="checkbox">
         <i aria-hidden="true"></i>
       </label>
+      <label class="android-switch-row">
+        <span>
+          <b>Удалить видео из локальных профилей</b>
+          <small>Если включено, связанные карточки исчезнут из профилей. Файлы удаляются только переключателями выше.</small>
+        </span>
+        <input id="video-delete-profile-items" type="checkbox">
+        <i aria-hidden="true"></i>
+      </label>
       <div class="row-actions end">
         <button class="btn-secondary" onclick="closeVideoDeleteDialog()">Отмена</button>
         <button class="btn-danger" onclick="confirmVideoDeleteDialog()">Удалить</button>
@@ -2244,8 +2568,9 @@ async function confirmVideoDeleteDialog() {
   const ids = pendingVideoDeleteIds.slice();
   const deleteSourceFiles = Boolean(document.getElementById('video-delete-source-files')?.checked);
   const deleteChildClips = Boolean(document.getElementById('video-delete-child-clips')?.checked);
+  const removeFromProfiles = Boolean(document.getElementById('video-delete-profile-items')?.checked);
   closeVideoDeleteDialog();
-  await performVideoDelete(ids, {deleteSourceFiles, deleteChildClips});
+  await performVideoDelete(ids, {deleteSourceFiles, deleteChildClips, removeFromProfiles});
 }
 async function performVideoDelete(ids, options = {}) {
   const normalized = (ids || []).map(value => Number(value)).filter(value => Number.isFinite(value) && value > 0);
@@ -2255,11 +2580,13 @@ async function performVideoDelete(ids, options = {}) {
   }
   const deleteSourceFiles = Boolean(options.deleteSourceFiles);
   const deleteChildClips = Boolean(options.deleteChildClips);
+  const removeFromProfiles = Boolean(options.removeFromProfiles);
   try {
     const data = await api.post('/api/videos/bulk-delete', {
       video_ids: normalized,
       delete_source_files: deleteSourceFiles,
       delete_child_clips: deleteChildClips,
+      remove_from_profiles: removeFromProfiles,
     });
     lastVideos = data.videos || [];
     normalized.forEach(id => selectedVideoIds.delete(id));
@@ -2268,9 +2595,11 @@ async function performVideoDelete(ids, options = {}) {
     const summary = data.summary || {};
     const source = summary.source_files || {};
     const child = summary.child_clips || {};
+    const profileItems = summary.profile_items || {};
     const filePart = deleteSourceFiles ? ` · исходников удалено: ${source.deleted || 0}` : '';
     const childPart = deleteChildClips ? ` · клипов удалено: ${child.hidden || 0}` : ' · клипы сохранены';
-    showToast(`Скрыто исходников: ${summary.deleted || 0}${childPart}${filePart}`);
+    const profilePart = removeFromProfiles ? ` · из профилей удалено: ${profileItems.removed || 0}` : '';
+    showToast(`Скрыто исходников: ${summary.deleted || 0}${childPart}${filePart}${profilePart}`);
     await Promise.allSettled([loadDashboard(), loadJobs(), loadClips()]);
     closeInspector();
   } catch (err) {
@@ -2605,7 +2934,13 @@ async function loadStorageProfiles(options = {}) {
   }
 }
 async function createStorageProfile() {
-  const name = prompt('Название локального профиля:');
+  const name = await openTextActionModal({
+    title: 'Создать локальный профиль',
+    label: 'Название профиля',
+    placeholder: 'Например: Anime Shorts',
+    confirmText: 'Создать профиль',
+    validate: value => value ? '' : 'Введите название профиля.',
+  });
   if (!name) return;
   try {
     const data = await api.post('/api/storage-profiles', {name});
@@ -2803,10 +3138,21 @@ function openGlobalTagsView() {
   nav('tags', document.querySelector('[data-v="tags"]'));
 }
 async function createGlobalCatalogTag() {
-  const name = prompt('Название нового тега:');
-  if (!name) return;
-  const color = prompt('Цвет тега в формате #RRGGBB:', '#64748b') || '#64748b';
-  await createCatalogTag({name, color});
+  if (currentView !== 'tags') {
+    openGlobalTagsView();
+  }
+  const focusCreate = () => {
+    const input = document.getElementById('tags-create-name');
+    if (!input) return;
+    if (input.value.trim()) {
+      createCatalogTagFromManager();
+      return;
+    }
+    input.focus();
+    input.scrollIntoView({block: 'center', behavior: 'smooth'});
+    showToast('Введите название тега и выберите цвет');
+  };
+  setTimeout(focusCreate, currentView === 'tags' ? 0 : 150);
 }
 async function loadTagsView(options = {}) {
   const {silent = false} = options;
@@ -2843,7 +3189,7 @@ function globalTagManagerTagRow(tag) {
   const locked = tag.locked || tag.kind === 'status' || tag.kind === 'channel';
   const actions = locked
     ? '<span class="mono dim">служебный</span>'
-    : `<input class="tag-color-input" type="color" value="${esc(tag.color || '#64748b')}" title="Цвет тега" onchange="updateCatalogTagColor(${Number(tag.id)}, this.value)">
+    : `<input class="tag-color-input" type="color" data-tag-color-id="${Number(tag.id)}" value="${esc(tag.color || '#64748b')}" title="Цвет тега" onchange="updateCatalogTagColor(${Number(tag.id)}, this.value)">
        <button class="btn-mini" onclick="renameCatalogTag(${Number(tag.id)})">Название</button>
        <button class="btn-danger" onclick="disableCatalogTag(${Number(tag.id)})">Отключить</button>`;
   return `<tr>
@@ -2955,7 +3301,13 @@ function catalogTagById(tagId) {
 async function renameCatalogTag(tagId) {
   const tag = catalogTagById(tagId);
   if (!tag || tag.locked) return;
-  const name = prompt('Новое название тега:', tag.name || '');
+  const name = await openTextActionModal({
+    title: 'Переименовать тег',
+    label: 'Название тега',
+    value: tag.name || '',
+    confirmText: 'Сохранить',
+    validate: value => value ? '' : 'Введите название тега.',
+  });
   if (!name) return;
   try {
     const data = await api.patch(`/api/tags/${Number(tagId)}`, {name});
@@ -2970,9 +3322,14 @@ async function renameCatalogTag(tagId) {
 async function recolorCatalogTag(tagId) {
   const tag = catalogTagById(tagId);
   if (!tag || tag.locked) return;
-  const color = prompt('Цвет тега в формате #RRGGBB:', tag.color || '#64748b');
-  if (!color) return;
-  await updateCatalogTagColor(tagId, color);
+  const input = document.querySelector(`[data-tag-color-id="${Number(tagId)}"]`);
+  if (input) {
+    input.focus();
+    input.click();
+    return;
+  }
+  openGlobalTagsView();
+  showToast('Измените цвет через цветной квадрат в таблице тегов');
 }
 async function updateCatalogTagColor(tagId, color) {
   const tag = catalogTagById(tagId);
@@ -3725,15 +4082,7 @@ async function pickStorageProfileIdForAdd() {
     return Number(currentStorageProfileId);
   }
   if (profiles.length === 1) return Number(profiles[0].id);
-  const text = profiles.map(profile => `${profile.id}: ${profile.name}`).join('\n');
-  const raw = prompt(`Введите ID профиля:\n${text}`, String(profiles[0].id));
-  if (!raw) return null;
-  const selected = profiles.find(profile => Number(profile.id) === Number(raw));
-  if (!selected) {
-    showToast('Профиль не найден', 'err');
-    return null;
-  }
-  return Number(selected.id);
+  return await openStorageProfilePickModal(profiles);
 }
 async function addWorkspacePathToStorageProfile(path) {
   try {
@@ -3847,8 +4196,9 @@ function renderWorkspaceEditingControls() {
   }
 
   const currentTemplate = templateSelect.value;
-  templateSelect.innerHTML = `<option value="">Из профиля канала</option>${(editingTemplates || []).filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
+  templateSelect.innerHTML = `<option value="">Из профиля канала</option>${activeStudioEditingTemplates().map(item => `<option value="${item.studio_template_id || item.id}">${esc(item.name)} · v${Number(item.version || 1)}</option>`).join('')}`;
   if (currentTemplate && Array.from(templateSelect.options).some(option => option.value === currentTemplate)) templateSelect.value = currentTemplate;
+  renderWorkspaceEditingTemplateParams();
 
   const currentReaction = reactionSelect.value;
   reactionSelect.innerHTML = `<option value="">Из пула реакций / без реакции</option>${(editingReactions || []).filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}${item.file_exists ? '' : ' · файл отсутствует'}</option>`).join('')}`;
@@ -3859,6 +4209,76 @@ function renderWorkspaceEditingControls() {
   stateEl.textContent = profiles.length
     ? `Выбрано элементов workspace: ${selectedCount}. Задача создаётся без запуска рендера.`
     : 'Создайте профиль канала в разделе «Монтаж».';
+}
+
+function resolveWorkspaceEditingTemplate() {
+  const explicitId = editingOptionalId(document.getElementById('workspace-editing-template')?.value);
+  if (explicitId) {
+    return activeStudioEditingTemplates().find(item => Number(item.studio_template_id || item.id) === Number(explicitId)) || null;
+  }
+  const profile = editingProfiles.find(item => Number(item.id) === Number(workspaceEditingState.selectedProfileId));
+  const defaultId = profile?.default_studio_template_id;
+  if (!defaultId) return null;
+  return activeStudioEditingTemplates().find(item => Number(item.studio_template_id || item.id) === Number(defaultId)) || null;
+}
+
+function renderWorkspaceEditingTemplateParams() {
+  const el = document.getElementById('workspace-editing-template-params');
+  if (!el) return;
+  const template = resolveWorkspaceEditingTemplate();
+  const params = template?.parameters || template?.definition?.parameters || {};
+  const entries = Object.entries(params);
+  if (!template || !entries.length) {
+    el.innerHTML = '';
+    return;
+  }
+  const label = key => ({
+    reaction_position: 'Позиция реакции',
+    reaction_height: 'Высота реакции',
+    pip_position: 'PIP позиция',
+    main_fit: 'Основное видео',
+    reaction_fit: 'Reaction fit',
+    background_color: 'Фон',
+    main_volume: 'Громкость видео',
+    reaction_volume: 'Громкость реакции',
+    mute_reaction: 'Заглушить реакцию',
+    top_text: 'Верхний текст',
+    bottom_text: 'Нижний текст',
+  })[key] || key;
+  const control = ([key, meta]) => {
+    const type = meta?.type || 'text';
+    const value = meta?.default ?? '';
+    const attrs = `data-workspace-template-param="${esc(key)}"`;
+    if (type === 'select') {
+      const options = (meta.values || []).map(item => `<option value="${esc(item)}"${String(item) === String(value) ? ' selected' : ''}>${esc(item)}</option>`).join('');
+      return `<label class="mini-field"><span class="field-lbl">${esc(label(key))}</span><select ${attrs}>${options}</select></label>`;
+    }
+    if (type === 'boolean') {
+      return `<label class="toggle-label workspace-youtube-toggle"><input type="checkbox" ${attrs} ${value ? 'checked' : ''}> ${esc(label(key))}</label>`;
+    }
+    if (type === 'color') {
+      return `<label class="mini-field"><span class="field-lbl">${esc(label(key))}</span><input type="color" ${attrs} value="${esc(value || '#000000')}"></label>`;
+    }
+    if (type === 'number') {
+      const min = meta.min !== undefined ? ` min="${esc(meta.min)}"` : '';
+      const max = meta.max !== undefined ? ` max="${esc(meta.max)}"` : '';
+      return `<label class="mini-field"><span class="field-lbl">${esc(label(key))}</span><input type="number" step="any"${min}${max} ${attrs} value="${esc(value)}"></label>`;
+    }
+    return `<label class="mini-field"><span class="field-lbl">${esc(label(key))}</span><input type="text" maxlength="${Number(meta.max_length || 200)}" ${attrs} value="${esc(value)}"></label>`;
+  };
+  el.innerHTML = `<details class="workspace-editing-param-details"><summary>Параметры Studio template · ${esc(template.name)}</summary><div class="workspace-editing-param-grid">${entries.map(control).join('')}</div></details>`;
+}
+
+function collectWorkspaceEditingParameterValues() {
+  const values = {};
+  document.querySelectorAll('[data-workspace-template-param]').forEach(field => {
+    const key = field.dataset.workspaceTemplateParam;
+    if (!key) return;
+    if (field.type === 'checkbox') values[key] = Boolean(field.checked);
+    else if (field.type === 'number') values[key] = field.value === '' ? null : Number(field.value);
+    else values[key] = field.value;
+  });
+  return values;
 }
 
 function workspaceEditingSummary(data) {
@@ -3882,8 +4302,9 @@ async function planSelectedWorkspaceEditing() {
     const data = await api.post('/api/editing/jobs/plan', {
       item_keys: itemKeys,
       channel_profile_id: Number(workspaceEditingState.selectedProfileId),
-      template_id: editingOptionalId(document.getElementById('workspace-editing-template')?.value),
+      studio_template_id: editingOptionalId(document.getElementById('workspace-editing-template')?.value),
       reaction_asset_id: editingOptionalId(document.getElementById('workspace-editing-reaction')?.value),
+      parameter_values: collectWorkspaceEditingParameterValues(),
       force_new: Boolean(document.getElementById('workspace-editing-force-new')?.checked),
     });
     showToast(workspaceEditingSummary(data));
@@ -4368,10 +4789,13 @@ async function deleteWorkspaceItem(key) {
     const ok = confirm('Удалить файл с диска? Это действие нельзя отменить.');
     if (!ok) return;
   }
+  const removeFromProfiles = confirm('Также удалить это видео из локальных профилей?');
   try {
-    const data = await api.del(`/api/workspace/clips/${encodeURIComponent(item.id)}`);
+    const suffix = removeFromProfiles ? '?remove_from_profiles=true' : '';
+    const data = await api.del(`/api/workspace/clips/${encodeURIComponent(item.id)}${suffix}`);
     await refreshWorkspaceFromDeleteResponse(data);
-    showToast(item.file_exists ? 'Файл удалён' : 'Запись убрана из списка');
+    const removed = data.result?.profile_items?.removed || 0;
+    showToast(`${item.file_exists ? 'Файл удалён' : 'Запись убрана из списка'}${removeFromProfiles ? ` · из профилей: ${removed}` : ''}`);
   } catch (err) {
     showToast(err.message || 'Не удалось удалить элемент', 'err');
   }
@@ -4386,10 +4810,15 @@ async function bulkDeleteWorkspaceItems(items = null) {
     .map(key => workspaceItemByKey(key))
     .some(item => item?.file_exists);
   if (hasExistingFiles && !confirm('Удалить выбранные файлы с диска? Это действие нельзя отменить.')) return;
+  const removeFromProfiles = confirm('Также удалить выбранные видео из локальных профилей?');
   try {
-    const data = await api.post('/api/workspace/clips/bulk-delete', {items: selected});
+    const data = await api.post('/api/workspace/clips/bulk-delete', {
+      items: selected,
+      remove_from_profiles: removeFromProfiles,
+    });
     await refreshWorkspaceFromDeleteResponse(data);
-    showToast(workspaceDeleteSummary(data.summary));
+    const profilePart = removeFromProfiles ? ` · из профилей: ${data.summary?.profile_items_removed || 0}` : '';
+    showToast(`${workspaceDeleteSummary(data.summary)}${profilePart}`);
   } catch (err) {
     showToast(err.message || 'Не удалось удалить выбранные элементы', 'err');
   }
@@ -4705,7 +5134,7 @@ function renderPublishStatePanel() {
   const selectedProfile = getSelectedProfile();
 
   if (!profiles.length) {
-    el.innerHTML = `<div class="setup-panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${badge('error')}<span class="mono txt">OAuth-клиент не настроен</span></div><p>Создайте OAuth-клиент в Google Cloud, затем импортируйте JSON в настройках. После этого можно подключить YouTube-канал.</p><div class="action-row"><button class="btn-secondary" onclick="openYouTubeSettings()">Открыть настройки YouTube OAuth</button></div></div>`;
+    el.innerHTML = `<div class="setup-panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${badge('error')}<span class="mono txt">OAuth-клиент не настроен</span></div><p>Создайте OAuth-клиент в Google Cloud, затем импортируйте JSON в разделе «Интеграции». После этого можно подключить YouTube-канал.</p><div class="action-row"><button class="btn-secondary" onclick="openYouTubeSettings()">Открыть Интеграции</button></div></div>`;
     return;
   }
 
@@ -5233,12 +5662,39 @@ function integrationAccountSearchText(account) {
   return [
     account.id,
     account.display_name,
+    account.local_alias,
     account.account_email,
     account.channel_id,
     account.channel_title,
+    account.official_channel_title,
+    account.channel_handle,
+    account.channel_custom_url,
+    account.channel_description,
+    account.uploads_playlist_id,
     account.profile_name,
     ...(integrationLinkedProfiles(account).map(profile => `${profile.name} ${profile.handle}`)),
   ].join(' ').toLowerCase();
+}
+function formatChannelNumber(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '—';
+  return new Intl.NumberFormat('ru-RU', {notation: 'compact', maximumFractionDigits: 1}).format(num);
+}
+function youtubeAccountAvatarHtml(account) {
+  const url = account.channel_avatar_url || '';
+  const title = account.channel_title || account.display_name || 'YT';
+  const initials = title.trim().slice(0, 2).toUpperCase() || 'YT';
+  return url
+    ? `<img class="youtube-account-avatar" src="${esc(url)}" alt="">`
+    : `<div class="youtube-account-avatar fallback">${esc(initials)}</div>`;
+}
+function youtubeAccountStatsHtml(account) {
+  const subscribers = account.hidden_subscriber_count ? 'скрыто' : formatChannelNumber(account.subscriber_count);
+  return `<div class="youtube-account-stats">
+    <span title="Подписчики">👥 ${esc(subscribers)}</span>
+    <span title="Просмотры">▶ ${esc(formatChannelNumber(account.view_count))}</span>
+    <span title="Видео">▦ ${esc(formatChannelNumber(account.video_count))}</span>
+  </div>`;
 }
 function renderIntegrationsOAuthSelect() {
   const select = document.getElementById('integrations-profile-select');
@@ -5304,16 +5760,51 @@ function renderIntegrationsAccountsPanel() {
     el.innerHTML = '<div class="empty">YouTube-аккаунты не найдены. Подключите канал или измените поиск.</div>';
     return;
   }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>YouTube канал</th><th>Google API auth</th><th>Локальные профили</th><th>Статус</th><th>Обновлён</th><th>Действие</th></tr></thead><tbody>${accounts.map(account => {
-    const displayName = account.channel_title || account.display_name || `YouTube #${account.id}`;
+  el.innerHTML = `<table class="tbl integrations-accounts-table"><thead><tr><th>#</th><th>YouTube канал</th><th>Google API auth</th><th>Профили</th><th>Sync</th><th>Действие</th></tr></thead><tbody>${accounts.map(account => {
+    const officialName = account.channel_title || account.official_channel_title || `YouTube #${account.id}`;
+    const alias = account.display_name || account.local_alias || '';
+    const handle = account.channel_handle || account.channel_custom_url || '';
     const oauth = account.oauth_profile?.name || account.profile_name || (account.oauth_profile_id ? `OAuth #${account.oauth_profile_id}` : 'не указан');
     const linked = integrationLinkedProfiles(account);
     const linkedHtml = linked.length
       ? linked.map(profile => `<button class="link-video mono" onclick="openStorageProfile(${Number(profile.id)})">${esc(profile.name || `Профиль #${profile.id}`)}</button>`).join('<span class="mono dim">, </span>')
       : '<span class="mono dim">не привязан</span>';
     const disabled = account.status === 'disconnected';
-    const error = account.error ? `<div class="mono err">${esc(shortErrorText(account.error))}</div>` : '';
-    return `<tr><td class="mono dim">#${account.id}</td><td><div class="mono txt">${esc(displayName)}</div><div class="mono dim">${esc(account.account_email || account.channel_id || '')}</div>${error}</td><td class="mono dim">${esc(oauth)}</td><td>${linkedHtml}</td><td>${badge(account.status || 'active')}</td><td class="mono dim">${esc(formatMtime(account.updated_at || account.created_at))}</td><td><button class="btn-danger" ${disabled ? 'disabled' : ''} onclick="disconnectYouTubeAccount(${Number(account.id)})">Отключить</button></td></tr>`;
+    const accountError = account.error ? `<div class="mono err">${esc(shortErrorText(account.error))}</div>` : '';
+    const syncError = account.metadata_sync_error ? `<div class="mono err" title="${esc(account.metadata_sync_error)}">${esc(shortErrorText(account.metadata_sync_error))}</div>` : '';
+    const description = account.channel_description ? `<div class="mono dim ov" title="${esc(account.channel_description)}">${esc(account.channel_description)}</div>` : '';
+    const published = account.channel_published_at ? `<span>создан: ${esc(formatMtime(account.channel_published_at))}</span>` : '';
+    const country = account.channel_country ? `<span>страна: ${esc(account.channel_country)}</span>` : '';
+    const syncMeta = [
+      account.metadata_synced_at ? `sync: ${formatMtime(account.metadata_synced_at)}` : 'sync: ещё не было',
+      account.uploads_playlist_id ? `uploads: ${shortPath(account.uploads_playlist_id)}` : '',
+    ].filter(Boolean).join(' · ');
+    return `<tr>
+      <td class="mono dim">#${account.id}</td>
+      <td>
+        <div class="youtube-account-cell">
+          ${youtubeAccountAvatarHtml(account)}
+          <div class="youtube-account-main">
+            <div class="mono txt">${esc(officialName)}</div>
+            ${alias && alias !== officialName ? `<div class="mono dim">alias: ${esc(alias)}</div>` : ''}
+            <div class="mono dim">${esc([account.account_email, account.channel_id].filter(Boolean).join(' · '))}</div>
+            ${handle ? `<div class="mono dim">${esc(handle)}</div>` : ''}
+            ${description}
+            <div class="youtube-account-meta">${[published, country].filter(Boolean).join(' · ')}</div>
+            ${youtubeAccountStatsHtml(account)}
+            ${accountError}
+          </div>
+        </div>
+      </td>
+      <td class="mono dim">${esc(oauth)}</td>
+      <td>${linkedHtml}</td>
+      <td><div>${badge(account.status || 'active')}</div><div class="mono dim">${esc(syncMeta)}</div>${syncError}</td>
+      <td><div class="row-actions">
+        <button class="btn-mini" onclick="syncYouTubeAccountMetadata(${Number(account.id)})">Обновить данные</button>
+        <button class="btn-mini" onclick="editYouTubeAccountAlias(${Number(account.id)})">Alias</button>
+        <button class="btn-danger" ${disabled ? 'disabled' : ''} onclick="disconnectYouTubeAccount(${Number(account.id)})">Отключить</button>
+      </div></td>
+    </tr>`;
   }).join('')}</tbody></table>`;
 }
 function renderIntegrationsView() {
@@ -5345,63 +5836,206 @@ function onIntegrationOAuthProfileChange(value) {
   publishState.selectedProfileId = value ? Number(value) : null;
   renderIntegrationsView();
 }
-async function createIntegrationOAuthProfile(mode = 'json') {
+
+const INTEGRATION_OAUTH_DEFAULT_REDIRECT_URI = 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback';
+let integrationOAuthFormMode = 'json';
+let integrationOAuthEditingProfileId = null;
+
+function setIntegrationOAuthFormError(message) {
+  if (message) {
+    showInlineError('integration-oauth-form-error', message);
+  } else {
+    hideInlineError('integration-oauth-form-error');
+  }
+}
+
+function setIntegrationOAuthFormMode(mode = 'json') {
+  integrationOAuthFormMode = mode === 'edit' ? 'edit' : (mode === 'manual' ? 'manual' : 'json');
+  const title = document.getElementById('integration-oauth-modal-title');
+  const jsonWrap = document.getElementById('integration-oauth-json-wrap');
+  const manualWrap = document.getElementById('integration-oauth-manual-wrap');
+  const saveBtn = document.getElementById('integration-oauth-save-btn');
+  const hint = document.querySelector('.integration-oauth-next-hint');
+  if (title) {
+    title.textContent = integrationOAuthFormMode === 'edit'
+      ? 'Редактировать Google API auth'
+      : integrationOAuthFormMode === 'manual'
+        ? 'Создать Google API auth вручную'
+        : 'Импортировать Google API auth из JSON';
+  }
+  if (jsonWrap) jsonWrap.style.display = integrationOAuthFormMode === 'json' ? 'block' : 'none';
+  if (manualWrap) manualWrap.style.display = integrationOAuthFormMode === 'manual' || integrationOAuthFormMode === 'edit' ? 'grid' : 'none';
+  if (saveBtn) {
+    saveBtn.textContent = integrationOAuthFormMode === 'edit'
+      ? 'Сохранить auth'
+      : integrationOAuthFormMode === 'manual'
+        ? 'Создать auth'
+        : 'Импортировать auth';
+  }
+  if (hint) {
+    hint.textContent = integrationOAuthFormMode === 'edit'
+      ? 'После сохранения список Google API auth и выбор подключения канала обновятся автоматически.'
+      : 'Теперь нажмите “Подключить канал”, чтобы привязать YouTube-канал к этому Google API auth.';
+  }
+}
+
+function resetIntegrationOAuthForm(mode = 'json') {
+  integrationOAuthEditingProfileId = null;
+  setIntegrationOAuthFormMode(mode);
+  setIntegrationOAuthFormError('');
+  const hasProfiles = Boolean((lastYoutubeProfiles || []).length);
+  const fields = {
+    'integration-oauth-name': mode === 'manual' ? 'YouTube OAuth' : 'Imported YouTube OAuth',
+    'integration-oauth-json': '',
+    'integration-oauth-client-id': '',
+    'integration-oauth-client-secret': '',
+    'integration-oauth-redirect-uri': INTEGRATION_OAUTH_DEFAULT_REDIRECT_URI,
+  };
+  Object.entries(fields).forEach(([id, value]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  });
+  const defaultEl = document.getElementById('integration-oauth-default');
+  if (defaultEl) {
+    defaultEl.checked = !hasProfiles;
+    defaultEl.disabled = false;
+  }
+  ['integration-oauth-client-id', 'integration-oauth-client-secret', 'integration-oauth-redirect-uri'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = false;
+  });
+  const secret = document.getElementById('integration-oauth-client-secret');
+  if (secret) secret.placeholder = 'client_secret';
+  const saveBtn = document.getElementById('integration-oauth-save-btn');
+  if (saveBtn) saveBtn.disabled = false;
+}
+
+function createIntegrationOAuthProfile(mode = 'json') {
   renderIntegrationsError('');
+  resetIntegrationOAuthForm(mode);
+  const modal = document.getElementById('integration-oauth-modal');
+  if (modal) modal.style.display = 'grid';
+  setTimeout(() => {
+    const focusId = integrationOAuthFormMode === 'manual' ? 'integration-oauth-client-id' : 'integration-oauth-json';
+    (document.getElementById(focusId) || document.getElementById('integration-oauth-name'))?.focus();
+  }, 0);
+}
+
+function closeIntegrationOAuthModal(event) {
+  if (event && event.target && event.target.id !== 'integration-oauth-modal') return;
+  const modal = document.getElementById('integration-oauth-modal');
+  if (modal) modal.style.display = 'none';
+  integrationOAuthEditingProfileId = null;
+  setIntegrationOAuthFormError('');
+}
+
+async function saveIntegrationOAuthProfile() {
+  const saveBtn = document.getElementById('integration-oauth-save-btn');
+  const name = (document.getElementById('integration-oauth-name')?.value || '').trim();
+  const isDefault = Boolean(document.getElementById('integration-oauth-default')?.checked);
+  setIntegrationOAuthFormError('');
   try {
+    if (saveBtn) saveBtn.disabled = true;
     let data;
-    if (mode === 'manual') {
-      const name = prompt('Название Google API auth:', 'YouTube OAuth');
-      if (!name) return;
-      const clientId = prompt('client_id:');
-      if (!clientId) return;
-      const clientSecret = prompt('client_secret:');
-      if (!clientSecret) return;
-      const redirectUri = prompt('Redirect URI:', 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback') || 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback';
+    if (integrationOAuthFormMode === 'edit') {
+      const profile = settingsProfileById(integrationOAuthEditingProfileId);
+      if (!profile) throw new Error('Google API auth не найден.');
+      const redirectUri = (document.getElementById('integration-oauth-redirect-uri')?.value || '').trim() || profile.redirect_uri || INTEGRATION_OAUTH_DEFAULT_REDIRECT_URI;
+      const payload = {
+        name: name || profile.name || `OAuth #${profile.id}`,
+        redirect_uri: redirectUri,
+        status: profile.status || 'active',
+      };
+      if (!isEnvOAuthProfile(profile)) {
+        const clientId = (document.getElementById('integration-oauth-client-id')?.value || '').trim();
+        const clientSecret = (document.getElementById('integration-oauth-client-secret')?.value || '').trim();
+        if (!clientId) throw new Error('Укажите client_id.');
+        payload.client_id = clientId;
+        if (clientSecret) payload.client_secret = clientSecret;
+      }
+      data = await api.patch(`/api/publish/youtube/oauth-profiles/${Number(profile.id)}`, payload);
+      const makeDefault = Boolean(document.getElementById('integration-oauth-default')?.checked);
+      if (makeDefault && !profile.is_default) {
+        data = await api.post(`/api/publish/youtube/oauth-profiles/${Number(profile.id)}/set-default`, {});
+      }
+    } else if (integrationOAuthFormMode === 'manual') {
+      const clientId = (document.getElementById('integration-oauth-client-id')?.value || '').trim();
+      const clientSecret = (document.getElementById('integration-oauth-client-secret')?.value || '').trim();
+      const redirectUri = (document.getElementById('integration-oauth-redirect-uri')?.value || '').trim() || INTEGRATION_OAUTH_DEFAULT_REDIRECT_URI;
+      if (!clientId || !clientSecret) {
+        throw new Error('Укажите client_id и client_secret.');
+      }
       data = await api.post('/api/publish/youtube/oauth-profiles', {
-        name,
+        name: name || 'YouTube OAuth',
         client_id: clientId,
         client_secret: clientSecret,
         redirect_uri: redirectUri,
-        is_default: !(lastYoutubeProfiles || []).length,
+        is_default: isDefault,
       });
     } else {
-      const name = prompt('Название Google API auth:', 'Imported YouTube OAuth') || '';
-      const jsonText = prompt('Вставьте OAuth Client JSON:');
-      if (!jsonText) return;
+      const jsonText = (document.getElementById('integration-oauth-json')?.value || '').trim();
+      if (!jsonText) {
+        throw new Error('Вставьте OAuth Client JSON.');
+      }
       data = await api.post('/api/publish/youtube/oauth-profiles/import-client-json', {
         name,
         json_text: jsonText,
-        is_default: !(lastYoutubeProfiles || []).length,
+        is_default: isDefault,
       });
     }
     if (data?.profile?.id) publishState.selectedProfileId = Number(data.profile.id);
-    showToast('Google API auth сохранён');
+    closeIntegrationOAuthModal();
+    showToast(integrationOAuthFormMode === 'edit' ? 'Google API auth обновлён' : 'Google API auth сохранён');
     await loadIntegrationsView({silent: true});
   } catch (err) {
-    renderIntegrationsError(err.message || 'Не удалось сохранить Google API auth');
+    const message = err.message || 'Не удалось сохранить Google API auth';
+    setIntegrationOAuthFormError(message);
+    renderIntegrationsError(message);
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
   }
 }
-async function editIntegrationOAuthProfile(profileId) {
+function editIntegrationOAuthProfile(profileId) {
   const profile = settingsProfileById(profileId);
   if (!profile) return;
-  const name = prompt('Название Google API auth:', profile.name || '');
-  if (!name) return;
-  const redirectUri = prompt('Redirect URI:', profile.redirect_uri || 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback') || profile.redirect_uri;
-  const payload = {name, redirect_uri: redirectUri, status: profile.status || 'active'};
-  if (!isEnvOAuthProfile(profile)) {
-    const clientId = prompt('client_id:', profile.client_id || '');
-    if (!clientId) return;
-    const clientSecret = prompt('client_secret (оставьте пустым, чтобы не менять):', '');
-    payload.client_id = clientId;
-    if (clientSecret) payload.client_secret = clientSecret;
+  renderIntegrationsError('');
+  integrationOAuthEditingProfileId = Number(profile.id);
+  setIntegrationOAuthFormMode('edit');
+  setIntegrationOAuthFormError('');
+  const fields = {
+    'integration-oauth-name': profile.name || '',
+    'integration-oauth-json': '',
+    'integration-oauth-client-id': profile.client_id || '',
+    'integration-oauth-client-secret': '',
+    'integration-oauth-redirect-uri': profile.redirect_uri || INTEGRATION_OAUTH_DEFAULT_REDIRECT_URI,
+  };
+  Object.entries(fields).forEach(([id, value]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+  });
+  const canEditCredentials = !isEnvOAuthProfile(profile);
+  ['integration-oauth-client-id', 'integration-oauth-client-secret'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !canEditCredentials;
+  });
+  const redirect = document.getElementById('integration-oauth-redirect-uri');
+  if (redirect) redirect.disabled = false;
+  const secret = document.getElementById('integration-oauth-client-secret');
+  if (secret) {
+    secret.placeholder = canEditCredentials
+      ? 'Оставьте пустым, чтобы не менять'
+      : 'ENV Google API auth нельзя менять здесь';
   }
-  try {
-    await api.patch(`/api/publish/youtube/oauth-profiles/${Number(profileId)}`, payload);
-    showToast('Google API auth обновлён');
-    await loadIntegrationsView({silent: true});
-  } catch (err) {
-    renderIntegrationsError(err.message || 'Не удалось обновить Google API auth');
+  const defaultEl = document.getElementById('integration-oauth-default');
+  if (defaultEl) {
+    defaultEl.checked = Boolean(profile.is_default);
+    defaultEl.disabled = Boolean(profile.is_default);
   }
+  const saveBtn = document.getElementById('integration-oauth-save-btn');
+  if (saveBtn) saveBtn.disabled = false;
+  const modal = document.getElementById('integration-oauth-modal');
+  if (modal) modal.style.display = 'grid';
+  setTimeout(() => document.getElementById('integration-oauth-name')?.focus(), 0);
 }
 async function setIntegrationDefaultOAuthProfile(profileId) {
   try {
@@ -5534,6 +6168,66 @@ async function disconnectYouTubeAccount(accountId) {
   }
 }
 
+async function syncYouTubeAccountMetadata(accountId) {
+  if (!accountId) return;
+  renderIntegrationsError('');
+  try {
+    const data = await api.post(`/api/publish/youtube/accounts/${Number(accountId)}/sync-metadata`, {});
+    if (data.status === 'failed') {
+      renderIntegrationsError(data.error || 'Не удалось обновить данные канала');
+      showToast('Данные канала не обновлены', 'err');
+    } else {
+      showToast('Данные YouTube-канала обновлены');
+    }
+    await loadIntegrationsView({silent: true});
+  } catch (err) {
+    const message = err.message || 'Не удалось обновить данные канала';
+    renderIntegrationsError(message);
+    showToast(message, 'err');
+  }
+}
+
+async function syncAllYouTubeAccountsMetadata() {
+  renderIntegrationsError('');
+  try {
+    const data = await api.post('/api/publish/youtube/accounts/sync-metadata', {});
+    const summary = data.summary || {};
+    const failed = Number(summary.failed || 0);
+    showToast(`Обновлено каналов: ${summary.ok || 0} · ошибок: ${failed}`, failed ? 'err' : 'ok');
+    await loadIntegrationsView({silent: true});
+  } catch (err) {
+    const message = err.message || 'Не удалось обновить данные каналов';
+    renderIntegrationsError(message);
+    showToast(message, 'err');
+  }
+}
+
+async function editYouTubeAccountAlias(accountId) {
+  const account = (lastYoutubeAccounts || []).find(item => Number(item.id) === Number(accountId));
+  if (!account) return;
+  const alias = await openTextActionModal({
+    title: 'Локальное название YouTube-канала',
+    label: 'Alias в ShortsFarm',
+    value: account.display_name || account.local_alias || account.channel_title || '',
+    placeholder: account.channel_title || 'Например: anime shorts',
+    hint: 'Это локальное имя для удобства. Официальное название YouTube-канала не меняется.',
+    confirmText: 'Сохранить alias',
+    maxLength: 160,
+    validate: value => value.length > 160 ? 'Alias слишком длинный.' : '',
+  });
+  if (alias === null) return;
+  renderIntegrationsError('');
+  try {
+    await api.patch(`/api/publish/youtube/accounts/${Number(accountId)}`, {local_alias: alias});
+    showToast('Локальный alias сохранён');
+    await loadIntegrationsView({silent: true});
+  } catch (err) {
+    const message = err.message || 'Не удалось сохранить alias';
+    renderIntegrationsError(message);
+    showToast(message, 'err');
+  }
+}
+
 function setSettingsTab(id, btn) {
   document.querySelectorAll('[data-settings-tab]').forEach(item => item.classList.remove('on'));
   if (btn) btn.classList.add('on');
@@ -5653,175 +6347,11 @@ async function resetDatabaseFromSettings() {
   }
 }
 
-function setOAuthManualMode(mode) {
-  oauthManualMode = mode === 'manual' ? 'manual' : 'json';
-  const jsonWrap = document.getElementById('settings-oauth-json-wrap');
-  const manualWrap = document.getElementById('settings-oauth-manual-wrap');
-  const title = document.getElementById('settings-oauth-form-title');
-  const saveBtn = document.getElementById('settings-oauth-save-btn');
-  if (jsonWrap) jsonWrap.style.display = oauthManualMode === 'json' ? 'block' : 'none';
-  if (manualWrap) manualWrap.style.display = oauthManualMode === 'manual' ? 'block' : 'none';
-  if (title) title.textContent = editingOAuthProfileId ? 'Редактирование OAuth профиля' : (oauthManualMode === 'json' ? 'Импорт JSON OAuth-клиента' : 'Ручной OAuth-клиент');
-  if (saveBtn) saveBtn.textContent = editingOAuthProfileId ? 'Сохранить OAuth профиль' : 'Сохранить OAuth-клиент';
-}
-
-function startNewOAuthProfile() {
-  editingOAuthProfileId = null;
-  ['settings-oauth-name', 'settings-oauth-json', 'settings-oauth-client-id', 'settings-oauth-client-secret'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) {
-      el.value = '';
-      el.disabled = false;
-    }
-  });
-  const redirect = document.getElementById('settings-oauth-redirect-uri');
-  if (redirect) {
-    redirect.value = 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback';
-    redirect.disabled = false;
-  }
-  const isDefault = document.getElementById('settings-oauth-default');
-  if (isDefault) {
-    isDefault.checked = true;
-    isDefault.disabled = false;
-  }
-  const deleteBtn = document.getElementById('settings-oauth-delete-btn');
-  if (deleteBtn) deleteBtn.style.display = 'none';
-  const status = document.getElementById('settings-oauth-status');
-  if (status) status.textContent = '';
-  setOAuthManualMode('json');
-}
-
-function editOAuthProfile(profileId) {
-  const profile = settingsProfileById(profileId);
-  if (!profile) return;
-  editingOAuthProfileId = Number(profile.id);
-  setOAuthManualMode('manual');
-  const canEditCredentials = !isEnvOAuthProfile(profile);
-  const fields = {
-    'settings-oauth-name': profile.name || '',
-    'settings-oauth-client-id': profile.client_id || '',
-    'settings-oauth-client-secret': '',
-    'settings-oauth-redirect-uri': profile.redirect_uri || 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback',
-  };
-  Object.entries(fields).forEach(([id, value]) => {
-    const el = document.getElementById(id);
-    if (el) el.value = value;
-  });
-  ['settings-oauth-client-id', 'settings-oauth-client-secret', 'settings-oauth-redirect-uri'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.disabled = !canEditCredentials;
-  });
-  const isDefault = document.getElementById('settings-oauth-default');
-  if (isDefault) isDefault.checked = Boolean(profile.is_default);
-  const deleteBtn = document.getElementById('settings-oauth-delete-btn');
-  if (deleteBtn) deleteBtn.style.display = isEnvOAuthProfile(profile) ? 'none' : 'inline-flex';
-  const status = document.getElementById('settings-oauth-status');
-  if (status) {
-    const secret = profile.client_secret_set ? 'client_secret сохранён' : 'client_secret не задан';
-    status.textContent = `${oauthProfileSourceLabel(profile)} · ${secret}`;
-  }
-}
-
-function renderOAuthProfilesSettings() {
-  const el = document.getElementById('settings-oauth-profiles');
-  if (!el) return;
-  const rows = lastYoutubeProfiles || [];
-  if (!rows.length) {
-    el.innerHTML = '<div class="empty">OAuth профилей пока нет. Импортируйте JSON OAuth-клиента или заполните client_id/client_secret вручную.</div>';
-    return;
-  }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Название</th><th>Источник</th><th>Redirect URI</th><th>Статус</th><th>Действие</th></tr></thead><tbody>${rows.map(profile => {
-    const secret = profile.client_secret_set ? 'client_secret сохранён' : 'client_secret не задан';
-    const mode = `${oauthProfileSourceLabel(profile)}${profile.is_default ? ' · по умолчанию' : ''}`;
-    const actions = [
-      `<button class="btn-mini" onclick="editOAuthProfile(${Number(profile.id)})">Редактировать</button>`,
-      profile.is_default ? '' : `<button class="btn-mini" onclick="setDefaultOAuthProfile(${Number(profile.id)})">По умолчанию</button>`,
-      isEnvOAuthProfile(profile) ? '' : `<button class="btn-danger" onclick="deleteOAuthProfile(${Number(profile.id)})">Удалить</button>`,
-    ].filter(Boolean).join('');
-    return `<tr><td class="mono dim">#${profile.id}</td><td><div class="mono txt">${esc(profile.name || `Профиль #${profile.id}`)}</div><div class="mono dim">${esc(profile.client_id || '')}</div></td><td class="mono dim">${esc(mode)} · ${esc(secret)}</td><td class="mono dim ov">${esc(profile.redirect_uri || '—')}</td><td>${badge(profile.status || 'active')}</td><td><div class="row-actions">${actions}</div></td></tr>`;
-  }).join('')}</tbody></table>`;
-}
-
 async function loadSettingsView(options = {}) {
   const {silent = false} = options;
   if (!silent) showSettingsError('');
   await loadWorkspaceSettings({silent: true});
   return null;
-}
-
-async function saveOAuthProfile() {
-  showSettingsError('');
-  showSettingsOk('');
-  const name = document.getElementById('settings-oauth-name')?.value.trim() || '';
-  const isDefault = Boolean(document.getElementById('settings-oauth-default')?.checked);
-  const redirectUri = document.getElementById('settings-oauth-redirect-uri')?.value.trim() || 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback';
-  try {
-    let data;
-    if (editingOAuthProfileId) {
-      const profile = settingsProfileById(editingOAuthProfileId);
-      const payload = {
-        name: name || profile?.name || `Профиль #${editingOAuthProfileId}`,
-        redirect_uri: redirectUri,
-        status: profile?.status || 'active',
-      };
-      if (!isEnvOAuthProfile(profile)) {
-        payload.client_id = document.getElementById('settings-oauth-client-id')?.value.trim() || profile?.client_id || '';
-        const secret = document.getElementById('settings-oauth-client-secret')?.value.trim() || null;
-        if (secret) payload.client_secret = secret;
-      }
-      data = await api.patch(`/api/publish/youtube/oauth-profiles/${Number(editingOAuthProfileId)}`, payload);
-      if (isDefault) {
-        data = await api.post(`/api/publish/youtube/oauth-profiles/${Number(editingOAuthProfileId)}/set-default`, {});
-      }
-    } else if (oauthManualMode === 'json') {
-      const jsonText = document.getElementById('settings-oauth-json')?.value || '';
-      data = await api.post('/api/publish/youtube/oauth-profiles/import-client-json', {
-        name,
-        json_text: jsonText,
-        is_default: isDefault,
-      });
-    } else {
-      data = await api.post('/api/publish/youtube/oauth-profiles', {
-        name: name || 'YouTube OAuth',
-        client_id: document.getElementById('settings-oauth-client-id')?.value.trim() || '',
-        client_secret: document.getElementById('settings-oauth-client-secret')?.value.trim() || '',
-        redirect_uri: redirectUri,
-        is_default: isDefault,
-      });
-    }
-    const profile = data?.profile;
-    showSettingsOk(`OAuth профиль сохранён${profile?.id ? `: #${profile.id}` : ''}`);
-    editingOAuthProfileId = profile?.id ? Number(profile.id) : editingOAuthProfileId;
-    await loadSettingsView({silent: true});
-    if (editingOAuthProfileId) editOAuthProfile(editingOAuthProfileId);
-  } catch (err) {
-    showSettingsError(err.message || 'Не удалось сохранить OAuth профиль');
-  }
-}
-
-async function setDefaultOAuthProfile(profileId) {
-  showSettingsError('');
-  try {
-    await api.post(`/api/publish/youtube/oauth-profiles/${Number(profileId)}/set-default`, {});
-    showSettingsOk(`OAuth профиль #${profileId} выбран по умолчанию`);
-    await loadSettingsView({silent: true});
-  } catch (err) {
-    showSettingsError(err.message || 'Не удалось назначить OAuth профиль по умолчанию');
-  }
-}
-
-async function deleteOAuthProfile(profileId = editingOAuthProfileId) {
-  if (!profileId) return;
-  if (!confirm(`Удалить OAuth профиль #${profileId}?`)) return;
-  showSettingsError('');
-  try {
-    await api.del(`/api/publish/youtube/oauth-profiles/${Number(profileId)}`);
-    showSettingsOk(`OAuth профиль #${profileId} удалён`);
-    if (Number(editingOAuthProfileId) === Number(profileId)) startNewOAuthProfile();
-    await loadSettingsView({silent: true});
-  } catch (err) {
-    showSettingsError(err.message || 'Не удалось удалить OAuth профиль');
-  }
 }
 
 function onPublishProfileChange(value) {
@@ -5998,6 +6528,19 @@ function editingOptionalId(value) {
   return value ? Number(value) : null;
 }
 
+function studioEditingTemplates({includeDeleted = false, includeArchived = false} = {}) {
+  return (editingTemplates || []).filter(item => {
+    if ((item.source || 'legacy') !== 'studio') return false;
+    if (!includeDeleted && item.deleted_at) return false;
+    if (!includeArchived && item.status === 'archived') return false;
+    return true;
+  });
+}
+
+function activeStudioEditingTemplates() {
+  return studioEditingTemplates().filter(item => item.enabled);
+}
+
 function setEditingTab(id, btn) {
   currentEditingTab = id;
   document.querySelectorAll('[data-editing-tab]').forEach(item => item.classList.remove('on'));
@@ -6014,7 +6557,7 @@ async function loadEditingView(options = {}) {
     const [reactionsData, poolsData, templatesData, profilesData, accountsData, jobsData] = await Promise.all([
       api.get('/api/editing/reactions'),
       api.get('/api/editing/reaction-pools'),
-      api.get('/api/editing/templates'),
+      api.get('/api/editing/templates?include_deleted=true'),
       api.get('/api/editing/channel-profiles'),
       api.get('/api/publish/youtube/accounts'),
       api.get('/api/editing/jobs?limit=200'),
@@ -6027,7 +6570,16 @@ async function loadEditingView(options = {}) {
     editingJobs = jobsData.items || [];
     if (editingReactionId && !editingReactions.some(item => Number(item.id) === Number(editingReactionId))) editingReactionId = null;
     if (editingPoolId && !editingPools.some(item => Number(item.id) === Number(editingPoolId))) editingPoolId = null;
-    if (editingTemplateId && !editingTemplates.some(item => Number(item.id) === Number(editingTemplateId))) editingTemplateId = null;
+    if (
+      editingTemplateId
+      && !editingTemplates.some(item =>
+        Number(item.id) === Number(editingTemplateId)
+        && (item.source || 'legacy') === editingTemplateSource
+      )
+    ) {
+      editingTemplateId = null;
+      editingTemplateSource = 'studio';
+    }
     if (editingProfileId && !editingProfiles.some(item => Number(item.id) === Number(editingProfileId))) editingProfileId = null;
     if (!editingPoolId && editingPools.length) editingPoolId = Number(editingPools[0].id);
     if (editingPoolId) await loadEditingPoolItems(editingPoolId, true);
@@ -6240,7 +6792,7 @@ function renderEditingSelects() {
   const accountSelect = document.getElementById('editing-profile-account');
   if (accountSelect) accountSelect.innerHTML = `<option value="">Без YouTube аккаунта</option>${editingAccounts.filter(item => item.status === 'active').map(item => `<option value="${item.id}">${esc(item.channel_title || item.display_name || `Аккаунт #${item.id}`)}</option>`).join('')}`;
   const templateSelect = document.getElementById('editing-profile-template');
-  if (templateSelect) templateSelect.innerHTML = `<option value="">Без шаблона по умолчанию</option>${editingTemplates.map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
+  if (templateSelect) templateSelect.innerHTML = `<option value="">Без Studio template по умолчанию</option>${activeStudioEditingTemplates().map(item => `<option value="${item.studio_template_id || item.id}">${esc(item.name)} · ${esc(item.key)} v${Number(item.version || 1)}</option>`).join('')}`;
   const poolSelect = document.getElementById('editing-profile-pool');
   if (poolSelect) poolSelect.innerHTML = `<option value="">Без пула реакций</option>${editingPools.map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
 }
@@ -6299,14 +6851,30 @@ function renderEditingTemplates() {
     el.innerHTML = '<div class="empty">Шаблонов пока нет. Создайте стандартные шаблоны.</div>';
     return;
   }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Key / название</th><th>Renderer</th><th>Статус</th></tr></thead><tbody>${editingTemplates.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingTemplateId) ? 'active' : ''}" onclick="selectEditingTemplate(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.key)}</div></td><td class="mono txt">${esc(item.renderer)}</td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
+  const rows = editingTemplates.map(item => {
+    const source = item.source || 'legacy';
+    const active = Number(item.id) === Number(editingTemplateId) && source === editingTemplateSource;
+    const sourceBadge = source === 'studio'
+      ? `<span class="badge b-ok">Studio</span>`
+      : `<span class="badge b-dim">legacy readonly</span>`;
+    const status = item.deleted_at
+      ? `<span class="badge b-warn">скрыт</span>`
+      : badge(item.enabled ? 'active' : 'disabled');
+    return `<tr class="editing-list-row ${active ? 'active' : ''}" onclick="selectEditingTemplate(${Number(item.id)}, '${source}')"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.key)}${item.version ? ` · v${Number(item.version)}` : ''}</div></td><td>${sourceBadge}<div class="mono dim">${esc(item.renderer)}</div></td><td>${status}</td></tr>`;
+  }).join('');
+  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Key / название</th><th>Источник</th><th>Статус</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-function selectEditingTemplate(templateId) {
-  const item = editingTemplates.find(row => Number(row.id) === Number(templateId));
+function selectEditingTemplate(templateId, source = 'studio') {
+  const item = editingTemplates.find(row =>
+    Number(row.id) === Number(templateId)
+    && (row.source || 'legacy') === source
+  ) || editingTemplates.find(row => Number(row.id) === Number(templateId));
   if (!item) return;
   editingTemplateId = Number(item.id);
-  document.getElementById('editing-template-title').textContent = `${item.name} · ${item.key}`;
+  editingTemplateSource = item.source || 'legacy';
+  const isStudio = editingTemplateSource === 'studio';
+  document.getElementById('editing-template-title').textContent = `${item.name} · ${item.key}${isStudio ? ' · Studio template' : ' · legacy readonly'}`;
   document.getElementById('editing-template-name').value = item.name || '';
   document.getElementById('editing-template-description').value = item.description || '';
   document.getElementById('editing-template-renderer').value = item.renderer || 'ffmpeg';
@@ -6314,7 +6882,19 @@ function selectEditingTemplate(templateId) {
   let recipe = item.recipe_json || '';
   try { recipe = JSON.stringify(JSON.parse(recipe), null, 2); } catch {}
   document.getElementById('editing-template-recipe').value = recipe;
-  document.getElementById('editing-template-save').disabled = false;
+  ['editing-template-name','editing-template-description','editing-template-renderer','editing-template-enabled','editing-template-recipe'].forEach(id => {
+    const field = document.getElementById(id);
+    if (field) field.disabled = isStudio || Boolean(item.readonly);
+  });
+  document.getElementById('editing-template-save').disabled = isStudio || Boolean(item.readonly);
+  const editBtn = document.getElementById('editing-template-edit-studio');
+  const versionBtn = document.getElementById('editing-template-version');
+  const deleteBtn = document.getElementById('editing-template-delete');
+  const restoreBtn = document.getElementById('editing-template-restore');
+  if (editBtn) editBtn.style.display = isStudio ? 'inline-flex' : 'none';
+  if (versionBtn) versionBtn.style.display = isStudio ? 'inline-flex' : 'none';
+  if (deleteBtn) deleteBtn.style.display = isStudio && !item.deleted_at ? 'inline-flex' : 'none';
+  if (restoreBtn) restoreBtn.style.display = isStudio && item.deleted_at ? 'inline-flex' : 'none';
   renderEditingTemplates();
 }
 
@@ -6343,6 +6923,10 @@ async function saveEditingTemplate() {
     return;
   }
   try {
+    if (editingTemplateSource === 'studio') {
+      editingError('Studio templates редактируются в Template Studio. Нажмите «Редактировать в Studio».');
+      return;
+    }
     await api.patch(`/api/editing/templates/${editingTemplateId}`, {
       name: document.getElementById('editing-template-name')?.value.trim() || '',
       description: document.getElementById('editing-template-description')?.value || null,
@@ -6358,6 +6942,79 @@ async function saveEditingTemplate() {
   }
 }
 
+function openSelectedEditingTemplateInStudio() {
+  if (!editingTemplateId || editingTemplateSource !== 'studio') {
+    editingError('Выберите Studio template.');
+    return;
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set('template', String(editingTemplateId));
+  window.history.replaceState({}, '', url);
+  nav('studio', document.querySelector('[data-v="studio"]'));
+}
+
+async function createSelectedEditingTemplateVersion() {
+  const item = editingTemplates.find(row =>
+    Number(row.id) === Number(editingTemplateId)
+    && (row.source || 'legacy') === 'studio'
+  );
+  if (!item) {
+    editingError('Выберите Studio template.');
+    return;
+  }
+  try {
+    const definition = item.definition || JSON.parse(item.recipe_json || '{}');
+    const data = await api.post(`/api/studio/templates/${Number(item.id)}/versions`, {
+      name: item.name,
+      status: 'draft',
+      definition,
+    });
+    showToast('Создана новая draft-версия шаблона');
+    await loadEditingView({silent: true});
+    selectEditingTemplate(Number(data.item.id), 'studio');
+  } catch (err) {
+    editingError(err.message || 'Не удалось создать версию шаблона');
+  }
+}
+
+async function deleteSelectedEditingTemplate() {
+  const item = editingTemplates.find(row =>
+    Number(row.id) === Number(editingTemplateId)
+    && (row.source || 'legacy') === 'studio'
+  );
+  if (!item) {
+    editingError('Выберите Studio template.');
+    return;
+  }
+  if (!confirm(`Скрыть/удалить шаблон «${item.name}»? Используемые шаблоны будут архивированы безопасно.`)) return;
+  try {
+    await api.del(`/api/studio/templates/${Number(item.id)}`);
+    showToast('Шаблон скрыт или удалён');
+    await loadEditingView({silent: true});
+  } catch (err) {
+    editingError(err.message || 'Не удалось удалить шаблон');
+  }
+}
+
+async function restoreSelectedEditingTemplate() {
+  const item = editingTemplates.find(row =>
+    Number(row.id) === Number(editingTemplateId)
+    && (row.source || 'legacy') === 'studio'
+  );
+  if (!item) {
+    editingError('Выберите Studio template.');
+    return;
+  }
+  try {
+    const data = await api.post(`/api/studio/templates/${Number(item.id)}/restore`, {});
+    showToast('Шаблон восстановлен');
+    await loadEditingView({silent: true});
+    selectEditingTemplate(Number(data.item.id), 'studio');
+  } catch (err) {
+    editingError(err.message || 'Не удалось восстановить шаблон');
+  }
+}
+
 function renderEditingProfiles() {
   const el = document.getElementById('editing-profiles-list');
   if (!el) return;
@@ -6365,7 +7022,7 @@ function renderEditingProfiles() {
     el.innerHTML = '<div class="empty">Профилей каналов пока нет.</div>';
     return;
   }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Профиль / канал</th><th>Шаблон / пул</th><th>Статус</th></tr></thead><tbody>${editingProfiles.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingProfileId) ? 'active' : ''}" onclick="selectEditingProfile(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.youtube_channel_title || item.youtube_display_name || 'без YouTube аккаунта')}</div></td><td><div class="mono dim">${esc(item.default_template_name || 'без шаблона')}</div><div class="mono dim">${esc(item.reaction_pool_name || 'без пула')}</div></td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
+  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Профиль / канал</th><th>Studio template / пул</th><th>Статус</th></tr></thead><tbody>${editingProfiles.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingProfileId) ? 'active' : ''}" onclick="selectEditingProfile(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.youtube_channel_title || item.youtube_display_name || 'без YouTube аккаунта')}</div></td><td><div class="mono dim">${esc(item.default_studio_template_name || item.default_template_name || 'без шаблона')}</div><div class="mono dim">${esc(item.reaction_pool_name || 'без пула')}</div></td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
 }
 
 function newEditingProfile() {
@@ -6391,7 +7048,7 @@ function selectEditingProfile(profileId) {
   document.getElementById('editing-profile-title').textContent = `Профиль #${item.id}`;
   document.getElementById('editing-profile-name').value = item.name || '';
   document.getElementById('editing-profile-account').value = item.youtube_account_id || '';
-  document.getElementById('editing-profile-template').value = item.default_template_id || '';
+  document.getElementById('editing-profile-template').value = item.default_studio_template_id || '';
   document.getElementById('editing-profile-pool').value = item.reaction_pool_id || '';
   document.getElementById('editing-profile-title-template').value = item.title_template || '';
   document.getElementById('editing-profile-description-template').value = item.description_template || '';
@@ -6409,7 +7066,7 @@ async function saveEditingProfile() {
   const body = {
     name: document.getElementById('editing-profile-name')?.value.trim() || '',
     youtube_account_id: editingOptionalId(document.getElementById('editing-profile-account')?.value),
-    default_template_id: editingOptionalId(document.getElementById('editing-profile-template')?.value),
+    default_studio_template_id: editingOptionalId(document.getElementById('editing-profile-template')?.value),
     reaction_pool_id: editingOptionalId(document.getElementById('editing-profile-pool')?.value),
     title_template: document.getElementById('editing-profile-title-template')?.value || null,
     description_template: document.getElementById('editing-profile-description-template')?.value || null,
@@ -6726,9 +7383,29 @@ Object.assign(window, {
   toggleDensity,
   setVideoViewMode,
   setClipViewMode,
+  closeTextActionModal,
+  confirmTextActionModal,
+  closeStorageProfilePickModal,
+  confirmStorageProfilePickModal,
   openInspector,
   closeInspector,
   renderActionBar,
+  loadIntegrationsView,
+  renderIntegrationsAccountsPanel,
+  onIntegrationOAuthProfileChange,
+  createIntegrationOAuthProfile,
+  closeIntegrationOAuthModal,
+  saveIntegrationOAuthProfile,
+  editIntegrationOAuthProfile,
+  setIntegrationDefaultOAuthProfile,
+  deleteIntegrationOAuthProfile,
+  startYouTubeConnect,
+  disconnectYouTubeAccount,
+  syncYouTubeAccountMetadata,
+  syncAllYouTubeAccountsMetadata,
+  editYouTubeAccountAlias,
+  openYouTubeSettings,
+  openStorageProfile,
 });
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -6737,7 +7414,6 @@ window.addEventListener('DOMContentLoaded', () => {
   setMode('file');
   loadDashboard();
   loadJobs();
-  loadVideos();
   loadClips();
   loadOutputs();
   initFsBrowser();

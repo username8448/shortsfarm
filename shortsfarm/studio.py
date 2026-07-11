@@ -79,6 +79,28 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
         raise ValueError("Studio recipe поддерживает только renderer=remotion.")
     renderer_adapter = str(template.get("renderer_adapter") or "").strip()
     composition_id = str(template.get("composition_id") or "").strip()
+    raw_studio_template_id = template.get("studio_template_id")
+    studio_template_id: int | None
+    if raw_studio_template_id in {None, ""}:
+        studio_template_id = None
+    else:
+        try:
+            studio_template_id = int(raw_studio_template_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("recipe.template.studio_template_id должен быть integer.") from exc
+        if studio_template_id <= 0:
+            raise ValueError("recipe.template.studio_template_id должен быть положительным integer.")
+    raw_template_version = template.get("version")
+    template_version: int | None
+    if raw_template_version in {None, ""}:
+        template_version = None
+    else:
+        try:
+            template_version = int(raw_template_version)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("recipe.template.version должен быть integer.") from exc
+        if template_version <= 0:
+            raise ValueError("recipe.template.version должен быть положительным integer.")
 
     width = int(canvas.get("width", 1080))
     height = int(canvas.get("height", 1920))
@@ -131,6 +153,8 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
         "template": {
             "key": template_key,
             "renderer": renderer,
+            **({"studio_template_id": studio_template_id} if studio_template_id else {}),
+            **({"version": template_version} if template_version else {}),
             **({"renderer_adapter": renderer_adapter} if renderer_adapter else {}),
             **({"composition_id": composition_id} if composition_id else {}),
         },
@@ -401,6 +425,8 @@ def parameterized_recipe_from_template(
     main_workspace_path: str,
     reaction_asset_id: int | None,
     parameter_values: dict[str, Any] | None = None,
+    studio_template_id: int | None = None,
+    template_version: int | None = None,
 ) -> dict[str, Any]:
     params = definition.get("parameters") or {}
     overrides = parameter_values or {}
@@ -420,6 +446,8 @@ def parameterized_recipe_from_template(
         "template": {
             "key": str(definition["key"]),
             "renderer": str(definition["engine"]),
+            **({"studio_template_id": int(studio_template_id)} if studio_template_id else {}),
+            **({"version": int(template_version)} if template_version else {}),
             "renderer_adapter": adapter.key,
             "composition_id": composition_id,
         },

@@ -25,7 +25,6 @@
       <button class="nb" data-v="pipeline" onclick="nav('pipeline', this)"><i class="ti ti-route"></i><span>Конвейер</span></button>
       <button class="nb" data-v="files" onclick="nav('files', this)"><i class="ti ti-folders"></i><span>Файлы</span></button>
       <button class="nb" data-v="queue" onclick="nav('queue', this)"><i class="ti ti-list"></i><span>Очередь</span><span id="nav-jobs" class="badge-pill" style="background:var(--acc-bg);color:var(--acc);"></span></button>
-      <button class="nb" data-v="videos" onclick="nav('videos', this)"><i class="ti ti-video"></i><span>Видео</span><span id="nav-videos" class="badge-pill" style="background:var(--s2);color:var(--mid);"></span></button>
       <button class="nb" data-v="tags" onclick="nav('tags', this)"><i class="ti ti-tags"></i><span>Теги</span></button>
       <button class="nb" data-v="storage-profiles" onclick="nav('storage-profiles', this)"><i class="ti ti-user-square-rounded"></i><span>Профили</span></button>
       <button class="nb" data-v="integrations" onclick="nav('integrations', this)"><i class="ti ti-plug-connected"></i><span>Интеграции</span></button>
@@ -58,7 +57,7 @@
     <div id="v-dashboard" class="v on">
       <div class="ph"><h1>Панель</h1><p>локальная панель ShortsFarm — нарезка, очередь, видео и клипы</p></div>
       <div class="stats">
-        <div class="scard"><div class="sl">Видео</div><div class="sv" id="st-videos">—</div><div class="sh" id="st-videos-sub">—</div></div>
+        <div class="scard clickable" onclick="openQueueSources()"><div class="sl">Видео</div><div class="sv" id="st-videos">—</div><div class="sh" id="st-videos-sub">—</div></div>
         <div class="scard"><div class="sl">Сегменты</div><div class="sv" id="st-segments">—</div><div class="sh">всего создано</div></div>
         <div class="scard"><div class="sl">Задачи <span id="job-pulse" class="dot" style="background:var(--acc);"></span></div><div class="sv inf" id="st-jobs">—</div><div class="sh" id="st-jobs-sub">—</div></div>
         <div class="scard"><div class="sl">Клипы в очереди</div><div class="sv warn" id="st-clips">—</div><div class="sh" id="st-clips-sub">—</div></div>
@@ -181,10 +180,28 @@
       </div>
       <div class="box">
         <div class="box-head">
-          <span>Нарезка · split-задачи</span>
-          <button class="btn-secondary" onclick="showAllQueueClips()">Показать все нарезки/клипы</button>
+          <span>Единая очередь · источники и задачи</span>
+          <div class="row-actions">
+            <button class="btn-mini" onclick="loadJobs()">Обновить</button>
+            <button class="btn-secondary" onclick="showAllQueueClips()">Показать все нарезки/клипы</button>
+          </div>
         </div>
-        <div class="tabs"><button class="tab on" onclick="filterJobs(this,'all')">Все<span class="cnt" id="jobs-cnt-all"></span></button><button class="tab" onclick="filterJobs(this,'queued')">В очереди<span class="cnt" id="jobs-cnt-queued"></span></button><button class="tab" onclick="filterJobs(this,'running')">В работе<span class="cnt" id="jobs-cnt-running"></span></button><button class="tab" onclick="filterJobs(this,'done')">Готово<span class="cnt" id="jobs-cnt-done"></span></button><button class="tab" onclick="filterJobs(this,'failed')">Ошибки<span class="cnt" id="jobs-cnt-failed"></span></button></div>
+        <div class="queue-unified-toolbar">
+          <div class="tabs queue-filter-tabs">
+            <button class="tab on" data-queue-filter="all" onclick="setQueueQuickFilter('all')">Все<span class="cnt" id="queue-cnt-all"></span></button>
+            <button class="tab" data-queue-filter="source" onclick="setQueueQuickFilter('source')">Источники<span class="cnt" id="queue-cnt-source"></span></button>
+            <button class="tab" data-queue-filter="jobs" onclick="setQueueQuickFilter('jobs')">Задачи<span class="cnt" id="queue-cnt-jobs"></span></button>
+            <button class="tab" data-queue-filter="errors" onclick="setQueueQuickFilter('errors')">Ошибки<span class="cnt" id="queue-cnt-errors"></span></button>
+            <button class="tab" data-queue-filter="missing" onclick="setQueueQuickFilter('missing')">Missing/перемещённые<span class="cnt" id="queue-cnt-missing"></span></button>
+            <button class="tab" data-queue-filter="deleted" onclick="setQueueQuickFilter('deleted')">Удалённые/скрытые<span class="cnt" id="queue-cnt-deleted"></span></button>
+          </div>
+          <div class="segmented-control" aria-label="Режим отображения очереди">
+            <button class="seg on" data-queue-view="table" onclick="setQueueViewMode('table')"><i class="ti ti-table"></i> Таблица</button>
+            <button class="seg" data-queue-view="grid" onclick="setQueueViewMode('grid')"><i class="ti ti-layout-grid"></i> Карточки</button>
+          </div>
+          <input id="queue-search-input" class="queue-search-input" type="text" placeholder="Поиск по источнику, задаче, пути или ошибке…" oninput="onQueueSearchInput(this.value)">
+        </div>
+        <div id="queue-sources-bulk-toolbar" class="workspace-toolbar compact"></div>
         <div id="jobs-table"></div>
       </div>
       </div>
@@ -271,13 +288,14 @@
                 </div>
                 <div class="field mini-field">
                   <label class="field-lbl">Переопределить шаблон</label>
-                  <select id="workspace-editing-template"></select>
+                  <select id="workspace-editing-template" onchange="renderWorkspaceEditingTemplateParams()"></select>
                 </div>
                 <div class="field mini-field">
                   <label class="field-lbl">Переопределить реакцию</label>
                   <select id="workspace-editing-reaction"></select>
                 </div>
                 <label class="toggle-label workspace-youtube-toggle"><input id="workspace-editing-force-new" type="checkbox"> Создать заново</label>
+                <div id="workspace-editing-template-params" class="workspace-editing-params"></div>
                 <button class="btn-secondary" id="workspace-editing-plan-btn" onclick="planSelectedWorkspaceEditing()">Добавить в очередь монтажа</button>
                 <div id="workspace-editing-state" class="mono dim workspace-youtube-state"></div>
               </div>
@@ -300,21 +318,6 @@
           </aside>
         </div>
       </section>
-    </div>
-
-    <div id="v-videos" class="v">
-      <div class="ph"><h1>Видео</h1><p>источники и статусы review: inbox → reviewing → reviewed / skipped</p></div>
-      <div class="pro-toolbar">
-        <div class="tabs"><button class="tab on" onclick="filterVideos(this,'all')">Все<span class="cnt" id="vid-cnt-all"></span></button><button class="tab" onclick="filterVideos(this,'inbox')">Входящие<span class="cnt" id="vid-cnt-inbox"></span></button><button class="tab" onclick="filterVideos(this,'reviewing')">На просмотре<span class="cnt" id="vid-cnt-reviewing"></span></button><button class="tab" onclick="filterVideos(this,'reviewed')">Просмотрено<span class="cnt" id="vid-cnt-reviewed"></span></button><button class="tab" onclick="filterVideos(this,'skipped')">Пропущено<span class="cnt" id="vid-cnt-skipped"></span></button></div>
-        <div class="segmented-control" aria-label="Режим отображения видео">
-          <button class="seg on" data-video-view="table" onclick="setVideoViewMode('table')"><i class="ti ti-table"></i> Таблица</button>
-          <button class="seg" data-video-view="grid" onclick="setVideoViewMode('grid')"><i class="ti ti-layout-grid"></i> Карточки</button>
-        </div>
-      </div>
-      <div class="box">
-        <div id="videos-bulk-toolbar" class="workspace-toolbar compact"></div>
-        <div id="videos-table"></div>
-      </div>
     </div>
 
     <div id="v-tags" class="v">
@@ -441,6 +444,7 @@
           <span>YouTube-аккаунты</span>
           <div class="row-actions">
             <input id="integrations-search" class="compact-input" type="text" placeholder="Поиск канала, OAuth или профиля…" oninput="renderIntegrationsAccountsPanel()">
+            <button class="btn-mini" onclick="syncAllYouTubeAccountsMetadata()">Обновить данные каналов</button>
             <button class="btn-mini" onclick="loadIntegrationsView()">Обновить</button>
           </div>
         </div>
@@ -538,12 +542,19 @@
           <div class="box">
             <div class="box-head"><span id="editing-template-title">Выберите шаблон</span></div>
             <div class="form-body editing-wide-form">
+              <div class="hint-line">Template Studio — основной реестр шаблонов. legacy-шаблоны ниже доступны только для старых задач.</div>
               <div class="field"><label class="field-lbl">Название</label><input id="editing-template-name" type="text"></div>
               <div class="field"><label class="field-lbl">Описание</label><textarea id="editing-template-description" rows="3"></textarea></div>
               <div class="field"><label class="field-lbl">Renderer</label><input id="editing-template-renderer" type="text" value="ffmpeg"></div>
               <div class="toggles"><label class="toggle-label"><input id="editing-template-enabled" type="checkbox"> Активен</label></div>
-              <div class="field"><label class="field-lbl">recipe_json</label><textarea id="editing-template-recipe" class="recipe-editor" spellcheck="false"></textarea></div>
-              <button class="btn-primary" id="editing-template-save" onclick="saveEditingTemplate()">Сохранить шаблон</button>
+              <div class="field"><label class="field-lbl">Template Definition / legacy recipe_json</label><textarea id="editing-template-recipe" class="recipe-editor" spellcheck="false"></textarea></div>
+              <div class="action-row">
+                <button class="btn-primary" id="editing-template-save" onclick="saveEditingTemplate()">Сохранить legacy</button>
+                <button class="btn-secondary" id="editing-template-edit-studio" style="display:none" onclick="openSelectedEditingTemplateInStudio()">Редактировать в Studio</button>
+                <button class="btn-secondary" id="editing-template-version" style="display:none" onclick="createSelectedEditingTemplateVersion()">Создать версию</button>
+                <button class="btn-danger" id="editing-template-delete" style="display:none" onclick="deleteSelectedEditingTemplate()">Удалить / скрыть</button>
+                <button class="btn-secondary" id="editing-template-restore" style="display:none" onclick="restoreSelectedEditingTemplate()">Восстановить</button>
+              </div>
             </div>
           </div>
         </div>
@@ -715,6 +726,94 @@ npm --prefix frontend run build</pre>
 </aside>
 
 <div id="global-action-bar" class="global-action-bar"></div>
+
+<div id="ui-text-modal" class="modal-backdrop" style="display:none" onclick="closeTextActionModal(event)">
+  <section class="schedule-modal compact-form-modal" onclick="event.stopPropagation()">
+    <div class="box-head">
+      <span id="ui-text-modal-title">Действие</span>
+      <button class="btn-mini" onclick="closeTextActionModal()">Закрыть</button>
+    </div>
+    <div class="schedule-modal-body">
+      <div id="ui-text-modal-error" class="err-line" style="display:none;margin-bottom:12px"></div>
+      <div class="field">
+        <label class="field-lbl" id="ui-text-modal-label">Название</label>
+        <input id="ui-text-modal-input" type="text" placeholder="" onkeydown="if(event.key==='Enter'){event.preventDefault();confirmTextActionModal()}">
+        <div class="settings-meta" id="ui-text-modal-hint"></div>
+      </div>
+      <div class="row-actions end">
+        <button class="btn-secondary" onclick="closeTextActionModal()">Отмена</button>
+        <button class="btn-primary" id="ui-text-modal-confirm" onclick="confirmTextActionModal()">Сохранить</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div id="storage-profile-pick-modal" class="modal-backdrop" style="display:none" onclick="closeStorageProfilePickModal(event)">
+  <section class="schedule-modal compact-form-modal" onclick="event.stopPropagation()">
+    <div class="box-head">
+      <span>Добавить видео в профиль</span>
+      <button class="btn-mini" onclick="closeStorageProfilePickModal()">Закрыть</button>
+    </div>
+    <div class="schedule-modal-body">
+      <div id="storage-profile-pick-error" class="err-line" style="display:none;margin-bottom:12px"></div>
+      <div class="field">
+        <label class="field-lbl">Локальный профиль</label>
+        <select id="storage-profile-pick-select"></select>
+        <div class="settings-meta">Выберите профиль, в который нужно добавить это видео.</div>
+      </div>
+      <div class="row-actions end">
+        <button class="btn-secondary" onclick="closeStorageProfilePickModal()">Отмена</button>
+        <button class="btn-primary" onclick="confirmStorageProfilePickModal()">Добавить</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div id="integration-oauth-modal" class="modal-backdrop" style="display:none" onclick="closeIntegrationOAuthModal(event)">
+  <section class="schedule-modal integration-oauth-modal" onclick="event.stopPropagation()">
+    <div class="box-head">
+      <span id="integration-oauth-modal-title">Google API auth</span>
+      <button class="btn-mini" onclick="closeIntegrationOAuthModal()">Закрыть</button>
+    </div>
+    <div class="schedule-modal-body">
+      <div id="integration-oauth-form-error" class="err-line" style="display:none;margin-bottom:12px"></div>
+      <div class="field">
+        <label class="field-lbl">Название</label>
+        <input id="integration-oauth-name" type="text" placeholder="YouTube OAuth">
+      </div>
+      <div id="integration-oauth-json-wrap" class="field">
+        <label class="field-lbl">OAuth Client JSON</label>
+        <textarea id="integration-oauth-json" spellcheck="false" placeholder='{"web":{"client_id":"...","client_secret":"...","redirect_uris":["http://127.0.0.1:8000/api/publish/youtube/oauth/callback"]}}'></textarea>
+        <div class="settings-meta">Скопируйте JSON OAuth Client из Google Cloud. Поддерживаются web и installed форматы.</div>
+      </div>
+      <div id="integration-oauth-manual-wrap" class="integration-oauth-manual-grid">
+        <div class="field">
+          <label class="field-lbl">client_id</label>
+          <input id="integration-oauth-client-id" type="text" placeholder="client_id.apps.googleusercontent.com">
+        </div>
+        <div class="field">
+          <label class="field-lbl">client_secret</label>
+          <input id="integration-oauth-client-secret" type="password" placeholder="client_secret">
+        </div>
+        <div class="field span-2">
+          <label class="field-lbl">redirect_uri</label>
+          <input id="integration-oauth-redirect-uri" type="text" placeholder="http://127.0.0.1:8000/api/publish/youtube/oauth/callback">
+        </div>
+      </div>
+      <label class="toggle-label" style="margin-top:8px">
+        <input id="integration-oauth-default" type="checkbox">
+        Сделать Google API auth по умолчанию
+      </label>
+      <div class="setup-panel integration-oauth-next-hint">
+        Теперь нажмите “Подключить канал”, чтобы привязать YouTube-канал к этому Google API auth.
+      </div>
+      <div class="row-actions end">
+        <button class="btn-secondary" onclick="closeIntegrationOAuthModal()">Отмена</button>
+        <button class="btn-primary" id="integration-oauth-save-btn" onclick="saveIntegrationOAuthProfile()">Сохранить</button>
+      </div>
+    </div>
+  </section>
+</div>
 
 <div id="publish-schedule-modal" class="modal-backdrop" style="display:none" onclick="closePublishScheduleEditor(event)">
   <section class="schedule-modal" onclick="event.stopPropagation()">

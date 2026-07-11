@@ -44,11 +44,16 @@ from ..local_dialogs import (
     pick_file_dialog,
 )
 from ..mpv_session import require_mpv
+from ..remotion_renderer import start_remotion_render_queue
+from ..studio_templates import ensure_default_studio_templates, template_row_payload
 from ..publish_youtube import (
     fetch_youtube_channel_videos,
+    fetch_youtube_channel_metadata_items,
     parse_tags,
     run_publish_job_now,
     run_publish_queue_once,
+    save_youtube_channel_metadata,
+    sync_youtube_account_metadata,
     update_youtube_video_metadata,
     upload_clip_to_youtube,
     validate_publish_job,
@@ -121,7 +126,9 @@ from .schemas import (
     SplitRequest,
     TagCreateRequest,
     TagUpdateRequest,
+    VideoChildClipsDeleteRequest,
     VideoBulkDeleteRequest,
+    VideoRelinkSourceRequest,
     WorkspaceBulkDeleteRequest,
     WorkspaceBulkPrepareRequest,
     WorkspaceBulkStatusRequest,
@@ -130,6 +137,7 @@ from .schemas import (
     WorkspaceRootRequest,
     WorkspaceYouTubeEnqueueRequest,
     YouTubeMetadataUpdateRequest,
+    YouTubeAccountUpdateRequest,
     YouTubeClientJsonImportRequest,
     YouTubeConnectStartRequest,
     YouTubeOAuthProfileCreateRequest,
@@ -269,6 +277,7 @@ def _job_dict(row: Any) -> dict[str, Any]:
 
 def _video_dict(row: Any) -> dict[str, Any]:
     video_id = int(row["id"])
+    source_state = _video_source_state(row)
     return {
         "id": video_id,
         "title": row["title"],
@@ -281,7 +290,45 @@ def _video_dict(row: Any) -> dict[str, Any]:
         "segment_count": int(_row(row, "segment_count", db.count_segments(video_id))),
         "deleted_at": _row(row, "deleted_at"),
         "source_file_deleted_at": _row(row, "source_file_deleted_at"),
+        "created_at": _row(row, "created_at"),
+        **source_state,
         "output_dir": _latest_output_dir(video_id),
+    }
+
+
+def _video_source_state(row: Any) -> dict[str, Any]:
+    deleted_at = _row(row, "deleted_at")
+    source_file_deleted_at = _row(row, "source_file_deleted_at")
+    source_path = str(_row(row, "source_path", "") or "")
+    exists = False
+    missing = True
+    if source_path:
+        try:
+            candidate = Path(source_path).expanduser()
+            exists = candidate.exists() and candidate.is_file()
+            missing = not exists
+        except OSError:
+            exists = False
+            missing = True
+    if deleted_at is not None:
+        state = "hidden_deleted"
+        label = "Удалено из списка"
+    elif source_file_deleted_at is not None:
+        state = "source_deleted"
+        label = "Исходник удалён"
+    elif missing:
+        state = "missing_or_moved"
+        label = "Отсутствует/перемещён"
+    else:
+        state = "ok"
+        label = "Файл на месте"
+    return {
+        "source_file_exists": exists,
+        "source_state": state,
+        "source_state_label": label,
+        "source_missing": missing,
+        "source_deleted": source_file_deleted_at is not None,
+        "source_hidden": deleted_at is not None,
     }
 
 
@@ -364,8 +411,37 @@ def _edit_template_dict(row: Any) -> dict[str, Any]:
         "renderer": _row(row, "renderer", "ffmpeg") or "ffmpeg",
         "recipe_json": _row(row, "recipe_json", "") or "",
         "enabled": bool(_row(row, "enabled", 1)),
+        "studio_template_id": _row(row, "studio_template_id"),
+        "source": "legacy",
+        "legacy": True,
+        "readonly": True,
         "created_at": _row(row, "created_at"),
         "updated_at": _row(row, "updated_at"),
+    }
+
+
+def _studio_template_edit_dict(row: Any) -> dict[str, Any]:
+    payload = template_row_payload(row)
+    definition = payload.get("definition") or {}
+    return {
+        "id": int(row["id"]),
+        "studio_template_id": int(row["id"]),
+        "key": str(row["template_key"]),
+        "name": str(row["name"]),
+        "description": str(definition.get("description") or ""),
+        "renderer": str(row["engine"]),
+        "recipe_json": json.dumps(definition, ensure_ascii=False),
+        "definition": definition,
+        "parameters": definition.get("parameters") or {},
+        "enabled": row["deleted_at"] is None and str(row["status"]) != "archived",
+        "status": str(row["status"]),
+        "version": int(row["version"]),
+        "deleted_at": row["deleted_at"],
+        "source": "studio",
+        "legacy": False,
+        "readonly": False,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
     }
 
 
@@ -378,6 +454,11 @@ def _channel_profile_dict(row: Any) -> dict[str, Any]:
         "youtube_display_name": _row(row, "youtube_display_name", "") or "",
         "default_template_id": _row(row, "default_template_id"),
         "default_template_name": _row(row, "default_template_name", "") or "",
+        "default_template_key": _row(row, "default_template_key", "") or "",
+        "default_studio_template_id": _row(row, "default_studio_template_id"),
+        "default_studio_template_name": _row(row, "default_studio_template_name", "") or "",
+        "default_studio_template_key": _row(row, "default_studio_template_key", "") or "",
+        "default_studio_template_version": _row(row, "default_studio_template_version"),
         "reaction_pool_id": _row(row, "reaction_pool_id"),
         "reaction_pool_name": _row(row, "reaction_pool_name", "") or "",
         "title_template": _row(row, "title_template"),
@@ -392,29 +473,55 @@ def _channel_profile_dict(row: Any) -> dict[str, Any]:
 
 
 def _edit_job_dict(row: Any) -> dict[str, Any]:
+    remotion_status = _row(row, "remotion_status")
+    status = remotion_status or _row(row, "status", "queued") or "queued"
+    remotion_output = _row(row, "remotion_output_path")
+    remotion_error = _row(row, "remotion_error")
+    template_name = (
+        _row(row, "studio_template_name")
+        or _row(row, "template_name", "")
+        or ""
+    )
+    template_key = (
+        _row(row, "studio_template_key")
+        or _row(row, "template_key", "")
+        or ""
+    )
     return {
         "id": int(row["id"]),
-        "status": _row(row, "status", "queued") or "queued",
+        "status": status,
+        "edit_status": _row(row, "status", "queued") or "queued",
+        "remotion_status": remotion_status,
+        "remotion_render_job_id": _row(row, "remotion_render_job_id"),
+        "studio_project_id": _row(row, "studio_project_id"),
+        "studio_template_id": _row(row, "studio_template_id"),
+        "remotion_progress_percent": _row(row, "remotion_progress_percent"),
+        "remotion_progress_stage": _row(row, "remotion_progress_stage"),
+        "remotion_progress_message": _row(row, "remotion_progress_message"),
         "workspace_item_key": _row(row, "workspace_item_key", "") or "",
         "channel_profile_id": _row(row, "channel_profile_id"),
         "channel_profile_name": _row(row, "channel_profile_name", "") or "",
         "template_id": _row(row, "template_id"),
-        "template_name": _row(row, "template_name", "") or "",
-        "template_key": _row(row, "template_key", "") or "",
+        "template_name": template_name,
+        "template_key": template_key,
         "reaction_asset_id": _row(row, "reaction_asset_id"),
         "reaction_asset_name": _row(row, "reaction_asset_name", "") or "",
         "input_path": _row(row, "input_path"),
-        "output_path": _row(row, "output_path"),
-        "edited_path": _row(row, "edited_path"),
+        "output_path": remotion_output or _row(row, "output_path"),
+        "edited_path": (
+            remotion_output
+            if status == "done"
+            else _row(row, "edited_path")
+        ),
         "renderer": _row(row, "renderer", "ffmpeg") or "ffmpeg",
         "recipe_json": _row(row, "recipe_json"),
-        "error": _row(row, "error"),
+        "error": remotion_error or _row(row, "error"),
         "review_status": _row(row, "review_status", "pending") or "pending",
         "reviewed_at": _row(row, "reviewed_at"),
         "review_note": _row(row, "review_note"),
         "created_at": _row(row, "created_at"),
-        "started_at": _row(row, "started_at"),
-        "finished_at": _row(row, "finished_at"),
+        "started_at": _row(row, "remotion_started_at") or _row(row, "started_at"),
+        "finished_at": _row(row, "remotion_finished_at") or _row(row, "finished_at"),
     }
 
 
@@ -923,11 +1030,79 @@ def _safe_workspace_delete_path(item: dict[str, Any]) -> Path:
     return resolved
 
 
-def _delete_workspace_item(item_key: str) -> dict[str, Any]:
+def _workspace_relative_path_from_file_path(path: str | Path | None) -> str | None:
+    if not path:
+        return None
+    root = get_workspace_root()
+    if root is None:
+        return None
+    try:
+        resolved_root = root.resolve()
+        resolved_path = Path(path).expanduser().resolve()
+        return resolved_path.relative_to(resolved_root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _workspace_paths_from_items(items: list[dict[str, Any]]) -> list[str]:
+    paths: set[str] = set()
+    for item in items:
+        for key in ("path", "prepared_path"):
+            relative = _workspace_relative_path_from_file_path(item.get(key))
+            if relative:
+                paths.add(relative)
+    return sorted(paths)
+
+
+def _profile_cleanup_summary(workspace_paths: list[str], *, remove_from_profiles: bool) -> dict[str, Any]:
+    normalized_paths = sorted({str(path).strip() for path in workspace_paths if str(path).strip()})
+    if not remove_from_profiles:
+        return {
+            "requested": False,
+            "requested_paths": len(normalized_paths),
+            "matched_items": 0,
+            "removed": 0,
+            "affected_profiles": 0,
+            "paths": normalized_paths,
+        }
+    result = db.remove_local_storage_profile_items_by_workspace_paths(normalized_paths)
+    return {
+        "requested": True,
+        **result,
+    }
+
+
+def _profile_workspace_paths_for_video(video_id: int) -> list[str]:
+    paths: set[str] = set()
+    video = db.get_video(video_id)
+    if video is not None:
+        source_relative = _workspace_relative_path_from_file_path(_row(video, "source_path", ""))
+        if source_relative:
+            paths.add(source_relative)
+    items = [
+        item
+        for item in db.list_workspace_items(limit=10000, include_hidden=True)
+        if int(item.get("video_id") or 0) == int(video_id)
+    ]
+    paths.update(_workspace_paths_from_items(items))
+    for _ in range(3):
+        before = len(paths)
+        for row in db.list_shorts_pipeline_run_items_matching_workspace_paths(sorted(paths)):
+            for key in ("source_workspace_path", "segment_workspace_path", "output_workspace_path"):
+                value = str(_row(row, key, "") or "").strip()
+                if value:
+                    paths.add(value)
+        if len(paths) == before:
+            break
+    return sorted(paths)
+
+
+def _delete_workspace_item(item_key: str, *, remove_from_profiles: bool = False) -> dict[str, Any]:
     item_type, item_id = _parse_workspace_key(item_key)
     item = db.get_workspace_item(item_type, item_id)
     if item is None:
         raise FileNotFoundError("Элемент рабочего пространства не найден.")
+    profile_paths = _workspace_paths_from_items([item])
 
     result = {
         "id": item["id"],
@@ -937,6 +1112,7 @@ def _delete_workspace_item(item_key: str) -> dict[str, Any]:
         "already_missing": False,
         "hidden": False,
         "message": "",
+        "profile_items": _profile_cleanup_summary(profile_paths, remove_from_profiles=False),
     }
 
     if item.get("file_exists"):
@@ -953,27 +1129,38 @@ def _delete_workspace_item(item_key: str) -> dict[str, Any]:
         item_id,
         missing_confirmed=bool(result["already_missing"]),
     )
+    result["profile_items"] = _profile_cleanup_summary(
+        profile_paths,
+        remove_from_profiles=remove_from_profiles,
+    )
     return result
 
 
-def _delete_workspace_items(item_keys: list[str]) -> dict[str, Any]:
+def _delete_workspace_items(item_keys: list[str], *, remove_from_profiles: bool = False) -> dict[str, Any]:
     summary = {
         "requested": len(item_keys),
         "deleted_files": 0,
         "already_missing": 0,
         "hidden": 0,
         "errors": 0,
+        "profile_items_removed": 0,
+        "profile_items_matched": 0,
+        "profile_paths": 0,
     }
     results: list[dict[str, Any]] = []
     for item_key in item_keys:
         try:
-            result = _delete_workspace_item(item_key)
+            result = _delete_workspace_item(item_key, remove_from_profiles=remove_from_profiles)
             if result["file_deleted"]:
                 summary["deleted_files"] += 1
             if result["already_missing"]:
                 summary["already_missing"] += 1
             if result["hidden"]:
                 summary["hidden"] += 1
+            profile_items = result.get("profile_items") or {}
+            summary["profile_items_removed"] += int(profile_items.get("removed") or 0)
+            summary["profile_items_matched"] += int(profile_items.get("matched_items") or 0)
+            summary["profile_paths"] += int(profile_items.get("requested_paths") or 0)
             results.append(result)
         except Exception as exc:
             summary["errors"] += 1
@@ -987,18 +1174,35 @@ def _delete_workspace_items(item_keys: list[str]) -> dict[str, Any]:
     return {"summary": summary, "results": results}
 
 
-def _delete_workspace_items_for_video(video_id: int) -> dict[str, Any]:
+def _delete_workspace_items_for_video(video_id: int, *, remove_from_profiles: bool = False) -> dict[str, Any]:
     item_keys = db.list_workspace_item_keys_for_video(video_id)
-    result = _delete_workspace_items(item_keys)
+    profile_paths = _profile_workspace_paths_for_video(video_id)
+    result = _delete_workspace_items(item_keys, remove_from_profiles=False)
+    profile_cleanup = _profile_cleanup_summary(profile_paths, remove_from_profiles=remove_from_profiles)
     result["summary"] = dict(result["summary"])
     result["video_id"] = int(video_id)
     result["summary"]["video_id"] = int(video_id)
     result["summary"]["found"] = result["summary"].pop("requested", len(item_keys))
+    result["summary"]["profile_items_removed"] = int(profile_cleanup.get("removed") or 0)
+    result["summary"]["profile_items_matched"] = int(profile_cleanup.get("matched_items") or 0)
+    result["summary"]["profile_paths"] = int(profile_cleanup.get("requested_paths") or 0)
+    result["profile_items"] = profile_cleanup
     return result
 
 
 def _social_account_dict(row: Any, *, include_profile_links: bool = False) -> dict[str, Any]:
     oauth_profile_id = _row(row, "oauth_profile_id")
+    def _json_field(key: str) -> Any:
+        value = _row(row, key)
+        if not value:
+            return {} if key.endswith("_json") else None
+        try:
+            return json.loads(str(value))
+        except Exception:
+            return {}
+
+    local_alias = _row(row, "display_name", "") or ""
+    official_title = _row(row, "channel_title", "") or ""
     data = {
         "id": int(row["id"]),
         "platform": row["platform"],
@@ -1012,10 +1216,27 @@ def _social_account_dict(row: Any, *, include_profile_links: bool = False) -> di
             if oauth_profile_id is not None
             else None
         ),
-        "display_name": _row(row, "display_name", "") or "",
+        "display_name": local_alias,
+        "local_alias": local_alias,
         "account_email": _row(row, "account_email", "") or "",
         "channel_id": _row(row, "channel_id", "") or "",
-        "channel_title": _row(row, "channel_title", "") or "",
+        "channel_title": official_title,
+        "official_channel_title": official_title,
+        "channel_description": _row(row, "channel_description", "") or "",
+        "channel_custom_url": _row(row, "channel_custom_url", "") or "",
+        "channel_handle": _row(row, "channel_handle", "") or "",
+        "channel_country": _row(row, "channel_country", "") or "",
+        "channel_published_at": _row(row, "channel_published_at"),
+        "channel_avatar_url": _row(row, "channel_avatar_url", "") or "",
+        "channel_thumbnails": _json_field("channel_thumbnails_json"),
+        "subscriber_count": _row(row, "subscriber_count"),
+        "view_count": _row(row, "view_count"),
+        "video_count": _row(row, "video_count"),
+        "hidden_subscriber_count": bool(_row(row, "hidden_subscriber_count", 0) or 0),
+        "uploads_playlist_id": _row(row, "uploads_playlist_id", "") or "",
+        "channel_status": _json_field("channel_status_json"),
+        "metadata_synced_at": _row(row, "metadata_synced_at"),
+        "metadata_sync_error": _row(row, "metadata_sync_error"),
         "scopes": _row(row, "scopes", "") or "",
         "status": _row(row, "status", "active") or "active",
         "created_at": _row(row, "created_at"),
@@ -2199,6 +2420,96 @@ def youtube_accounts() -> dict[str, Any]:
         raise _fail(exc)
 
 
+@router.patch("/publish/youtube/accounts/{account_id}")
+def youtube_account_update(account_id: int, req: YouTubeAccountUpdateRequest) -> dict[str, Any]:
+    try:
+        _init()
+        account = db.get_social_account(account_id)
+        if account is None or str(account["platform"] or "") != "youtube":
+            raise FileNotFoundError("YouTube аккаунт не найден.")
+        alias = req.local_alias if req.local_alias is not None else req.display_name
+        if alias is None:
+            raise ValueError("Укажите локальное название аккаунта.")
+        if len(str(alias).strip()) > 160:
+            raise ValueError("Локальное название слишком длинное.")
+        db.update_social_account_alias(account_id, str(alias).strip() or None)
+        updated = db.get_social_account(account_id)
+        assert updated is not None
+        return {"account": _social_account_dict(updated, include_profile_links=True)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/publish/youtube/accounts/sync-metadata")
+def youtube_accounts_sync_metadata() -> dict[str, Any]:
+    try:
+        _init()
+        summary = {"ok": 0, "failed": 0, "skipped": 0}
+        items: list[dict[str, Any]] = []
+        for account in db.list_social_accounts(platform="youtube"):
+            account_id = int(account["id"])
+            if str(account["status"] or "") != "active":
+                summary["skipped"] += 1
+                items.append({
+                    "account_id": account_id,
+                    "status": "skipped",
+                    "reason": "Аккаунт не активен.",
+                })
+                continue
+            try:
+                updated = sync_youtube_account_metadata(account)
+                summary["ok"] += 1
+                items.append({
+                    "account_id": account_id,
+                    "status": "ok",
+                    "account": _social_account_dict(updated, include_profile_links=True),
+                })
+            except Exception as sync_exc:
+                message = str(sync_exc) or sync_exc.__class__.__name__
+                db.set_social_account_metadata_sync_error(account_id, message)
+                updated = db.get_social_account(account_id)
+                summary["failed"] += 1
+                items.append({
+                    "account_id": account_id,
+                    "status": "failed",
+                    "error": message,
+                    "account": _social_account_dict(updated, include_profile_links=True) if updated else None,
+                })
+        return {"status": "ok", "summary": summary, "items": items}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/publish/youtube/accounts/{account_id}/sync-metadata")
+def youtube_account_sync_metadata(account_id: int) -> dict[str, Any]:
+    try:
+        _init()
+        account = db.get_social_account(account_id)
+        if account is None or str(account["platform"] or "") != "youtube":
+            raise FileNotFoundError("YouTube аккаунт не найден.")
+        try:
+            updated = sync_youtube_account_metadata(account)
+            return {
+                "status": "ok",
+                "account": _social_account_dict(updated, include_profile_links=True),
+            }
+        except Exception as sync_exc:
+            message = str(sync_exc) or sync_exc.__class__.__name__
+            db.set_social_account_metadata_sync_error(account_id, message)
+            updated = db.get_social_account(account_id)
+            return {
+                "status": "failed",
+                "error": message,
+                "account": _social_account_dict(updated, include_profile_links=True) if updated else None,
+            }
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
 @router.post("/publish/youtube/connect/start")
 def youtube_connect_start(req: YouTubeConnectStartRequest | None = None) -> dict[str, Any]:
     try:
@@ -2276,18 +2587,27 @@ def youtube_oauth_callback(
         account_email = _fetch_google_account_email(credentials)
 
         youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
-        response = youtube.channels().list(part="snippet", mine=True).execute()
-        items = response.get("items") or []
+        items = fetch_youtube_channel_metadata_items(youtube, mine=True)
         if not items:
             message = "YouTube канал для этого аккаунта не найден."
-            expires_at = credentials.expiry.isoformat() if credentials.expiry else None
-            scopes = " ".join(credentials.scopes or YOUTUBE_SCOPES)
+            return _oauth_page("Ошибка YouTube OAuth", message, ok=False)
+
+        expires_at = credentials.expiry.isoformat() if credentials.expiry else None
+        scopes = " ".join(credentials.scopes or YOUTUBE_SCOPES)
+        saved_ids: list[int] = []
+
+        for channel in items:
+            snippet = channel.get("snippet") or {}
+            channel_id = str(channel.get("id") or "").strip()
+            if not channel_id:
+                continue
+            channel_title = str(snippet.get("title") or "").strip() or "YouTube канал"
             # TODO: encrypt tokens before production use.
-            db.save_social_account(
+            account_id = db.save_social_account(
                 platform="youtube",
-                display_name="YouTube аккаунт",
-                channel_id=None,
-                channel_title=None,
+                display_name=channel_title,
+                channel_id=channel_id,
+                channel_title=channel_title,
                 access_token=credentials.token,
                 refresh_token=credentials.refresh_token,
                 token_expires_at=expires_at,
@@ -2295,37 +2615,26 @@ def youtube_oauth_callback(
                 oauth_profile_id=int(profile["id"]),
                 account_email=account_email,
                 last_connected_at=db.now_utc(),
-                status="error",
-                error=message,
+                status="active",
+                error=None,
+                preserve_display_name=True,
             )
+            try:
+                save_youtube_channel_metadata(account_id, channel)
+            except Exception as sync_exc:
+                db.set_social_account_metadata_sync_error(
+                    account_id,
+                    str(sync_exc) or sync_exc.__class__.__name__,
+                )
+            saved_ids.append(account_id)
+
+        if not saved_ids:
+            message = "YouTube канал для этого аккаунта не найден."
             return _oauth_page("Ошибка YouTube OAuth", message, ok=False)
-
-        channel = items[0]
-        snippet = channel.get("snippet") or {}
-        channel_id = channel.get("id") or ""
-        channel_title = snippet.get("title") or "YouTube канал"
-        expires_at = credentials.expiry.isoformat() if credentials.expiry else None
-        scopes = " ".join(credentials.scopes or YOUTUBE_SCOPES)
-
-        # TODO: encrypt tokens before production use.
-        account_id = db.save_social_account(
-            platform="youtube",
-            display_name=channel_title,
-            channel_id=channel_id,
-            channel_title=channel_title,
-            access_token=credentials.token,
-            refresh_token=credentials.refresh_token,
-            token_expires_at=expires_at,
-            scopes=scopes,
-            oauth_profile_id=int(profile["id"]),
-            account_email=account_email,
-            last_connected_at=db.now_utc(),
-            status="active",
-            error=None,
-        )
+        channel_word = "канал" if len(saved_ids) == 1 else "каналов"
         return _oauth_page(
             "YouTube аккаунт подключён",
-            "Можно закрыть эту вкладку и вернуться в ShortsFarm. Затем нажмите «Обновить» в разделе «Публикация».",
+            f"Импортировано YouTube {channel_word}: {len(saved_ids)}. Можно закрыть эту вкладку и вернуться в ShortsFarm → Интеграции.",
             ok=True,
         )
     except Exception as exc:
@@ -2970,10 +3279,31 @@ def editing_reaction_pool_item_delete(
 
 
 @router.get("/editing/templates")
-def editing_templates(enabled: bool | None = None) -> dict[str, Any]:
+def editing_templates(
+    enabled: bool | None = None,
+    include_deleted: bool = False,
+    status: str | None = None,
+    legacy: bool = True,
+) -> dict[str, Any]:
     try:
         _init()
-        items = [_edit_template_dict(row) for row in db.list_edit_templates(enabled=enabled)]
+        ensure_default_studio_templates()
+        db.ensure_default_edit_templates()
+        db.link_legacy_edit_templates_to_studio()
+        studio_rows = db.list_studio_templates(
+            include_deleted=include_deleted,
+            status=status if status and status != "all" else None,
+        )
+        studio_items = [_studio_template_edit_dict(row) for row in studio_rows]
+        if enabled is True:
+            studio_items = [item for item in studio_items if item["enabled"]]
+        elif enabled is False:
+            studio_items = [item for item in studio_items if not item["enabled"]]
+        items = studio_items
+        if legacy:
+            legacy_rows = db.list_edit_templates(enabled=enabled)
+            legacy_items = [_edit_template_dict(row) for row in legacy_rows]
+            items.extend(legacy_items)
         return {"items": items, "count": len(items)}
     except Exception as exc:
         raise _fail(exc)
@@ -2983,8 +3313,11 @@ def editing_templates(enabled: bool | None = None) -> dict[str, Any]:
 def editing_templates_ensure_defaults() -> dict[str, Any]:
     try:
         _init()
+        ensure_default_studio_templates()
         item = db.ensure_default_edit_templates()
-        return {"item": _edit_template_dict(item)}
+        db.link_legacy_edit_templates_to_studio()
+        linked = db.get_edit_template(int(item["id"]))
+        return {"item": _edit_template_dict(linked or item)}
     except Exception as exc:
         raise _fail(exc)
 
@@ -3017,6 +3350,9 @@ def editing_template_update(
 def editing_channel_profiles(enabled: bool | None = None) -> dict[str, Any]:
     try:
         _init()
+        ensure_default_studio_templates()
+        db.ensure_default_edit_templates()
+        db.link_legacy_edit_templates_to_studio()
         items = [
             _channel_profile_dict(row)
             for row in db.list_channel_profiles_with_details(enabled=enabled)
@@ -3037,6 +3373,7 @@ def editing_channel_profile_create(req: ChannelProfileCreateRequest) -> dict[str
             name=name,
             youtube_account_id=req.youtube_account_id,
             default_template_id=req.default_template_id,
+            default_studio_template_id=req.default_studio_template_id,
             reaction_pool_id=req.reaction_pool_id,
             title_template=req.title_template,
             description_template=req.description_template,
@@ -3067,7 +3404,8 @@ def editing_channel_profile_update(
             req,
             (
                 "name", "youtube_account_id", "default_template_id",
-                "reaction_pool_id", "title_template", "description_template",
+                "default_studio_template_id", "reaction_pool_id",
+                "title_template", "description_template",
                 "tags_template", "default_privacy", "default_category_id", "enabled",
             ),
         )
@@ -3116,6 +3454,13 @@ def editing_jobs_plan(req: EditJobsPlanRequest) -> dict[str, Any]:
             req.channel_profile_id,
             reaction_asset_id=req.reaction_asset_id,
             template_id=req.template_id,
+            studio_template_id=req.studio_template_id,
+            parameter_values=req.parameter_values,
+            renderer_engine=req.renderer_engine,
+            render_profile=req.render_profile,
+            duration_limit_sec=req.duration_limit_sec,
+            start_offset_sec=req.start_offset_sec,
+            full_length=req.full_length,
             force_new=req.force_new,
         )
     except Exception as exc:
@@ -3281,6 +3626,33 @@ def editing_jobs_bulk_render(req: EditJobsBulkRenderRequest) -> dict[str, Any]:
                 current = db.get_edit_job(job_id)
                 if current is None:
                     raise FileNotFoundError(f"Edit job {job_id} не найден.")
+                if current["remotion_render_job_id"] is not None:
+                    render_job_id = int(current["remotion_render_job_id"])
+                    render_row = db.get_remotion_render_job(render_job_id)
+                    if render_row is None:
+                        raise FileNotFoundError(f"Remotion render job {render_job_id} не найден.")
+                    render_status = str(render_row["status"])
+                    if render_status in {"failed", "cancelled"} and req.force:
+                        db.retry_remotion_render_job(render_job_id)
+                        render_status = "queued"
+                    if render_status != "queued":
+                        summary["skipped"] += 1
+                        results.append({
+                            "job_id": job_id,
+                            "status": "skipped",
+                            "reason": f"Remotion job со status={render_status} не запускается bulk-render.",
+                        })
+                        continue
+                    start_remotion_render_queue("")
+                    summary["processed"] += 1
+                    db.sync_edit_job_from_remotion_render_job(render_job_id)
+                    updated = db.get_edit_job(job_id)
+                    results.append({
+                        "job_id": job_id,
+                        "status": "queued",
+                        "job": _edit_job_dict(updated),
+                    })
+                    continue
                 current_status = str(current["status"])
                 runnable = (
                     current_status == "queued"
@@ -3346,6 +3718,37 @@ def editing_job_render(
 ) -> dict[str, Any]:
     try:
         _init()
+        current = db.get_edit_job(job_id)
+        if current is None:
+            raise FileNotFoundError("Edit job не найден.")
+        if current["remotion_render_job_id"] is not None:
+            render_job_id = int(current["remotion_render_job_id"])
+            render_row = db.get_remotion_render_job(render_job_id)
+            if render_row is None:
+                raise FileNotFoundError("Remotion render job не найден.")
+            render_status = str(render_row["status"])
+            force = bool(req.force) if req else False
+            if render_status == "done" and not force:
+                return {"status": "ok", "job": _edit_job_dict(current)}
+            if render_status in {"failed", "cancelled"} and force:
+                db.retry_remotion_render_job(render_job_id)
+                render_status = "queued"
+            elif render_status in {"failed", "cancelled"}:
+                raise ValueError(
+                    f"Remotion job со status={render_status} можно повторить только с force=true."
+                )
+            elif render_status == "done" and force:
+                raise ValueError("Готовый Remotion render нельзя перезаписать этим действием; создайте задачу заново.")
+            if render_status != "queued":
+                raise ValueError(f"Remotion job со status={render_status} уже не queued.")
+            started = start_remotion_render_queue("")
+            db.sync_edit_job_from_remotion_render_job(render_job_id)
+            updated = db.get_edit_job(job_id)
+            return {
+                "status": "queued",
+                "queue": started,
+                "job": _edit_job_dict(updated or current),
+            }
         rendered = render_edit_job(job_id, force=bool(req.force) if req else False)
         return {"status": "ok", "job": _edit_job_dict(rendered)}
     except FileNotFoundError as exc:
@@ -3361,6 +3764,14 @@ def editing_job_cancel(job_id: int) -> dict[str, Any]:
         job = db.get_edit_job(job_id)
         if job is None:
             raise FileNotFoundError("Edit job не найден.")
+        if job["remotion_render_job_id"] is not None:
+            if not db.cancel_remotion_render_job(int(job["remotion_render_job_id"])):
+                raise ValueError("Отменить можно только queued Remotion job.")
+            row = next(
+                row for row in db.list_edit_jobs_with_details(limit=10000)
+                if int(row["id"]) == job_id
+            )
+            return {"item": _edit_job_dict(row)}
         if str(job["status"]) == "rendering":
             raise ValueError("Нельзя отменить rendering job в этом этапе.")
         if not db.cancel_edit_job(job_id):
@@ -3380,8 +3791,17 @@ def editing_job_cancel(job_id: int) -> dict[str, Any]:
 def editing_job_retry(job_id: int) -> dict[str, Any]:
     try:
         _init()
-        if db.get_edit_job(job_id) is None:
+        job = db.get_edit_job(job_id)
+        if job is None:
             raise FileNotFoundError("Edit job не найден.")
+        if job["remotion_render_job_id"] is not None:
+            if not db.retry_remotion_render_job(int(job["remotion_render_job_id"])):
+                raise ValueError("Повторить можно только failed или cancelled Remotion job.")
+            row = next(
+                row for row in db.list_edit_jobs_with_details(limit=10000)
+                if int(row["id"]) == job_id
+            )
+            return {"item": _edit_job_dict(row)}
         if not db.retry_edit_job(job_id):
             raise ValueError("Повторить можно только failed или cancelled edit job.")
         row = next(
@@ -3438,6 +3858,246 @@ def jobs(limit: int = 100) -> dict[str, Any]:
         _init()
         rows = [_job_dict(row) for row in db.list_jobs(limit=limit)]
         return {"jobs": rows, "counts": dict(Counter(row["status"] for row in rows))}
+    except Exception as exc:
+        raise _fail(exc)
+
+
+def _queue_progress_for_status(status: str) -> int:
+    status = str(status or "")
+    if status in {"done", "reviewed", "uploaded", "published"}:
+        return 100
+    if status in {"failed", "cancelled", "skipped"}:
+        return 100
+    if status in {"running", "rendering", "uploading"}:
+        return 50
+    return 0
+
+
+def _queue_source_item(video: dict[str, Any], linked_jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    latest_job = linked_jobs[0] if linked_jobs else None
+    return {
+        "kind": "source",
+        "kind_label": "Источник",
+        "id": f"source:{video['id']}",
+        "video_id": video["id"],
+        "title": video["title"],
+        "status": video["review_status"],
+        "status_label": video["review_status"],
+        "progress": latest_job["progress"] if latest_job else _queue_progress_for_status(video["review_status"]),
+        "source_path": video["source_path"],
+        "output_dir": video["output_dir"],
+        "source_state": video["source_state"],
+        "source_state_label": video["source_state_label"],
+        "source_file_exists": video["source_file_exists"],
+        "source_missing": video["source_missing"],
+        "source_deleted": video["source_deleted"],
+        "source_hidden": video["source_hidden"],
+        "counts": {
+            "marks": video["mark_count"],
+            "clips": video["clip_count"],
+            "segments": video["segment_count"],
+            "jobs": len(linked_jobs),
+        },
+        "duration_sec": video["duration_sec"],
+        "duration_text": video["duration_text"],
+        "created_at": video.get("created_at"),
+        "updated_at": video.get("deleted_at") or video.get("created_at"),
+        "jobs": linked_jobs[:8],
+        "actions": {
+            "watch": bool(video["source_file_exists"]),
+            "show_clips": True,
+            "open_output": bool(video["output_dir"]),
+            "delete": True,
+            "delete_child_clips": True,
+            "relink_source": bool(video["source_missing"] or video["source_deleted"]),
+            "restore": bool(video["source_hidden"]),
+        },
+    }
+
+
+def _queue_split_item(job: dict[str, Any], source: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "kind": "split",
+        "kind_label": "Split",
+        "id": f"split:{job['id']}",
+        "job_id": job["id"],
+        "video_id": job.get("video_id"),
+        "title": job.get("current_file") or (source or {}).get("title") or f"Split #{job['id']}",
+        "status": job.get("status") or "",
+        "status_label": job.get("status") or "",
+        "progress": job.get("progress", 0),
+        "source_path": job.get("source_path") or (source or {}).get("source_path", ""),
+        "output_dir": job.get("output_dir") or "",
+        "source_state": (source or {}).get("source_state", "ok"),
+        "source_state_label": (source or {}).get("source_state_label", ""),
+        "source_file_exists": (source or {}).get("source_file_exists", bool(job.get("source_path"))),
+        "source_missing": (source or {}).get("source_missing", False),
+        "source_deleted": (source or {}).get("source_deleted", False),
+        "source_hidden": (source or {}).get("source_hidden", False),
+        "counts": {
+            "done_items": job.get("done_items") or 0,
+            "total_items": job.get("total_items") or 0,
+        },
+        "error": job.get("error") or "",
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "actions": {
+            "watch": bool(job.get("source_path")),
+            "show_clips": bool(job.get("video_id")),
+            "open_output": bool(job.get("output_dir")),
+        },
+    }
+
+
+def _queue_render_item(row: Any, workspace_items: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    item_key = str(_row(row, "workspace_item_key", "") or "")
+    workspace_item = workspace_items.get(item_key) or {}
+    video_id = workspace_item.get("video_id")
+    title = _row(row, "template_name", "") or _row(row, "template_key", "") or f"Render #{int(row['id'])}"
+    return {
+        "kind": "render",
+        "kind_label": "Render",
+        "id": f"render:{int(row['id'])}",
+        "job_id": int(row["id"]),
+        "video_id": video_id,
+        "title": title,
+        "status": _row(row, "status", "") or "",
+        "status_label": _row(row, "status", "") or "",
+        "progress": _queue_progress_for_status(_row(row, "status", "")),
+        "source_path": workspace_item.get("source_path", ""),
+        "output_dir": str(Path(str(_row(row, "output_path", "") or "")).parent) if _row(row, "output_path", "") else "",
+        "source_state": "ok",
+        "source_state_label": "",
+        "source_file_exists": bool(workspace_item.get("file_exists", False)),
+        "source_missing": bool(workspace_item.get("missing", False)),
+        "source_deleted": bool(workspace_item.get("source_deleted", False)),
+        "source_hidden": False,
+        "counts": {},
+        "error": _row(row, "error", "") or "",
+        "created_at": _row(row, "created_at"),
+        "started_at": _row(row, "started_at"),
+        "finished_at": _row(row, "finished_at"),
+        "actions": {
+            "show_clips": video_id is not None,
+            "open_output": bool(_row(row, "output_path", "")),
+        },
+    }
+
+
+def _queue_publish_item(job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "publish",
+        "kind_label": "Publish",
+        "id": f"publish:{job['id']}",
+        "job_id": job["id"],
+        "video_id": job.get("clip_video_id"),
+        "title": job.get("title") or job.get("video_title") or f"Publish #{job['id']}",
+        "status": job.get("status") or "",
+        "status_label": job.get("status") or "",
+        "progress": _queue_progress_for_status(job.get("status") or ""),
+        "source_path": job.get("video_source_path") or "",
+        "output_dir": str(Path(str(job.get("clip_output_path") or "")).parent) if job.get("clip_output_path") else "",
+        "source_state": "ok",
+        "source_state_label": "",
+        "source_file_exists": bool(job.get("clip_output_path")),
+        "source_missing": False,
+        "source_deleted": False,
+        "source_hidden": False,
+        "counts": {"attempts": job.get("attempt_count") or 0},
+        "error": job.get("error") or "",
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "actions": {
+            "show_clips": job.get("clip_video_id") is not None,
+            "open_output": bool(job.get("clip_output_path")),
+        },
+    }
+
+
+def _queue_item_matches(item: dict[str, Any], *, q: str) -> bool:
+    query = str(q or "").strip().lower()
+    if not query:
+        return True
+    haystack = " ".join(
+        str(item.get(key) or "")
+        for key in ("id", "kind_label", "title", "status", "source_path", "output_dir", "source_state_label", "error")
+    ).lower()
+    return all(part in haystack for part in query.split())
+
+
+@router.get("/queue/items")
+def queue_items(
+    kind: str | None = None,
+    status: str | None = None,
+    source_state: str | None = None,
+    q: str = "",
+    include_deleted: bool = False,
+    limit: int = 300,
+) -> dict[str, Any]:
+    try:
+        _init()
+        normalized_kind = str(kind or "all").strip().lower()
+        source_rows = [_video_dict(row) for row in db.list_videos_with_counts(include_deleted=include_deleted)]
+        sources_by_id = {int(row["id"]): row for row in source_rows}
+        jobs = [_job_dict(row) for row in db.list_jobs(limit=1000)]
+        jobs_by_video: dict[int, list[dict[str, Any]]] = {}
+        for job in jobs:
+            video_id = job.get("video_id")
+            if video_id is not None:
+                jobs_by_video.setdefault(int(video_id), []).append(job)
+        for rows in jobs_by_video.values():
+            rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+        workspace_items = {
+            str(item["id"]): item
+            for item in db.list_workspace_items(limit=10000, include_hidden=True)
+        }
+
+        items: list[dict[str, Any]] = []
+        if normalized_kind in {"all", "source", "sources"}:
+            items.extend(
+                _queue_source_item(video, jobs_by_video.get(int(video["id"]), []))
+                for video in source_rows
+            )
+        if normalized_kind in {"all", "job", "jobs", "split"}:
+            for job in jobs:
+                source = sources_by_id.get(int(job["video_id"])) if job.get("video_id") is not None else None
+                if source is None and not include_deleted:
+                    continue
+                if source and source.get("source_hidden") and not include_deleted:
+                    continue
+                items.append(_queue_split_item(job, source))
+        if normalized_kind in {"all", "job", "jobs", "render"}:
+            items.extend(
+                _queue_render_item(row, workspace_items)
+                for row in db.list_edit_jobs_with_details(limit=200)
+            )
+        if normalized_kind in {"all", "job", "jobs", "publish"}:
+            items.extend(
+                _queue_publish_item(_publish_job_dict(row))
+                for row in db.list_publish_jobs(platform=None, limit=200)
+            )
+
+        if status and status != "all":
+            items = [item for item in items if str(item.get("status") or "") == status]
+        if source_state and source_state != "all":
+            items = [item for item in items if str(item.get("source_state") or "") == source_state]
+        items = [item for item in items if _queue_item_matches(item, q=q)]
+        items.sort(key=lambda item: str(item.get("created_at") or item.get("started_at") or ""), reverse=True)
+        limited = items[: max(1, min(int(limit), 1000))]
+        return {
+            "items": limited,
+            "counts": {
+                "all": len(items),
+                "source": sum(1 for item in items if item["kind"] == "source"),
+                "jobs": sum(1 for item in items if item["kind"] != "source"),
+                "errors": sum(1 for item in items if item.get("status") == "failed" or item.get("error")),
+                "missing": sum(1 for item in items if item.get("source_state") == "missing_or_moved"),
+                "deleted": sum(1 for item in items if item.get("source_state") == "hidden_deleted"),
+            },
+        }
     except Exception as exc:
         raise _fail(exc)
 
@@ -3508,8 +4168,31 @@ def _deleted_or_missing_source_video_ids(
     ]
 
 
-def _delete_video_child_workspace_items(video_id: int) -> dict[str, Any]:
-    return _delete_workspace_items_for_video(video_id)
+def _delete_video_child_workspace_items(video_id: int, *, remove_from_profiles: bool = False) -> dict[str, Any]:
+    return _delete_workspace_items_for_video(video_id, remove_from_profiles=remove_from_profiles)
+
+
+def _validate_relink_source_path(value: str) -> Path:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("Путь к новому исходнику не задан.")
+    path = Path(text).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"Файл не найден: {path}")
+    if path.is_symlink():
+        raise PermissionError("Symlink запрещён.")
+    if not path.is_file():
+        raise ValueError("Новый исходник должен быть обычным файлом.")
+    if path.suffix.lower() not in VIDEO_EXTENSIONS:
+        raise ValueError("Новый исходник должен быть поддерживаемым video file.")
+    return path.resolve()
+
+
+def _video_payload_by_id(video_id: int, *, include_deleted: bool = True) -> dict[str, Any] | None:
+    for row in db.list_videos_with_counts(include_deleted=include_deleted):
+        if int(row["id"]) == int(video_id):
+            return _video_dict(row)
+    return None
 
 
 @router.post("/videos/bulk-delete")
@@ -3529,12 +4212,20 @@ def videos_bulk_delete(req: VideoBulkDeleteRequest) -> dict[str, Any]:
         }
         if req.delete_child_clips:
             for video_id in video_ids:
-                child_result = _delete_video_child_workspace_items(video_id)
+                child_result = _delete_video_child_workspace_items(video_id, remove_from_profiles=False)
                 child_results.append(child_result)
                 summary = child_result["summary"]
                 for key in child_summary:
                     child_summary[key] += int(summary.get(key) or 0)
+        profile_paths: set[str] = set()
+        if req.remove_from_profiles:
+            for video_id in video_ids:
+                profile_paths.update(_profile_workspace_paths_for_video(video_id))
         result = db.soft_delete_videos(video_ids)
+        profile_cleanup = _profile_cleanup_summary(
+            sorted(profile_paths),
+            remove_from_profiles=bool(req.remove_from_profiles),
+        )
         source_files = (
             _delete_source_files(result.get("source_paths") or [])
             if req.delete_source_files
@@ -3556,11 +4247,14 @@ def videos_bulk_delete(req: VideoBulkDeleteRequest) -> dict[str, Any]:
                 "missing": len(result["missing_ids"]),
                 "delete_source_files": bool(req.delete_source_files),
                 "delete_child_clips": bool(req.delete_child_clips),
+                "remove_from_profiles": bool(req.remove_from_profiles),
                 "source_files": source_files["summary"],
                 "child_clips": child_summary,
+                "profile_items": profile_cleanup,
             },
             "result": result,
             "child_clip_results": child_results,
+            "profile_item_result": profile_cleanup,
             "source_file_results": source_files["results"],
             "videos": rows,
             "counts": dict(Counter(row["review_status"] for row in rows)),
@@ -3571,13 +4265,54 @@ def videos_bulk_delete(req: VideoBulkDeleteRequest) -> dict[str, Any]:
         raise _fail(exc)
 
 
-@router.post("/videos/{video_id}/clips/delete")
-def video_child_clips_delete(video_id: int) -> dict[str, Any]:
+@router.post("/videos/{video_id}/restore")
+def video_restore(video_id: int) -> dict[str, Any]:
     try:
         _init()
         if db.get_video(video_id) is None:
             raise FileNotFoundError("Родительское видео не найдено.")
-        result = _delete_video_child_workspace_items(video_id)
+        db.restore_video(video_id)
+        video = _video_payload_by_id(video_id, include_deleted=True)
+        return {"status": "ok", "video": video}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/videos/{video_id}/relink-source")
+def video_relink_source(video_id: int, req: VideoRelinkSourceRequest) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_video(video_id) is None:
+            raise FileNotFoundError("Родительское видео не найдено.")
+        path = _validate_relink_source_path(req.source_path)
+        db.relink_video_source(video_id, path)
+        video = _video_payload_by_id(video_id, include_deleted=True)
+        return {"status": "ok", "video": video}
+    except FileNotFoundError as exc:
+        raise _fail(exc, status_code=404)
+    except PermissionError as exc:
+        raise _fail(exc, status_code=403)
+    except ValueError as exc:
+        raise _fail(exc, status_code=400)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/videos/{video_id}/clips/delete")
+def video_child_clips_delete(
+    video_id: int,
+    req: VideoChildClipsDeleteRequest | None = None,
+) -> dict[str, Any]:
+    try:
+        _init()
+        if db.get_video(video_id) is None:
+            raise FileNotFoundError("Родительское видео не найдено.")
+        result = _delete_video_child_workspace_items(
+            video_id,
+            remove_from_profiles=bool(req and req.remove_from_profiles),
+        )
         items = db.list_workspace_items(limit=1000)
         return {"status": "ok", **result, **_workspace_items_response(items)}
     except FileNotFoundError as exc:
@@ -3629,10 +4364,10 @@ def workspace_clip_detail(item_key: str) -> dict[str, Any]:
 
 
 @router.delete("/workspace/clips/{item_key}")
-def workspace_clip_delete(item_key: str) -> dict[str, Any]:
+def workspace_clip_delete(item_key: str, remove_from_profiles: bool = False) -> dict[str, Any]:
     try:
         _init()
-        result = _delete_workspace_item(item_key)
+        result = _delete_workspace_item(item_key, remove_from_profiles=remove_from_profiles)
         items = db.list_workspace_items(limit=1000)
         return {"status": "ok", "result": result, **_workspace_items_response(items)}
     except FileNotFoundError as exc:
@@ -3729,7 +4464,10 @@ def workspace_clips_bulk_prepare(req: WorkspaceBulkPrepareRequest) -> dict[str, 
 def workspace_clips_bulk_delete(req: WorkspaceBulkDeleteRequest) -> dict[str, Any]:
     try:
         _init()
-        delete_result = _delete_workspace_items(list(req.items or []))
+        delete_result = _delete_workspace_items(
+            list(req.items or []),
+            remove_from_profiles=bool(req.remove_from_profiles),
+        )
         items = db.list_workspace_items(limit=1000)
         return {
             "status": "ok",

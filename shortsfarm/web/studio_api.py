@@ -52,6 +52,13 @@ from ..workspace_fs import get_workspace_root
 
 
 router = APIRouter()
+SEEDED_STUDIO_TEMPLATE_KEYS = {
+    "reaction_top_25",
+    "reaction_top_33",
+    "reaction_top_50",
+    "reaction_bottom_25",
+    "reaction_pip_corner",
+}
 
 
 class StudioProjectRequest(BaseModel):
@@ -257,6 +264,10 @@ def _template_for_apply(template_id: int) -> Any:
     row = db.get_studio_template(int(template_id))
     if row is None:
         raise FileNotFoundError("Studio template не найден.")
+    if row["deleted_at"] is not None:
+        raise ValueError("Studio template удалён/скрыт и не может использоваться.")
+    if str(row["status"] or "").lower() == "archived":
+        raise ValueError("Studio template архивирован и не может использоваться.")
     definition = normalize_template_definition(json.loads(str(row["definition_json"])))
     require_remotion_adapter(definition)
     return row, definition
@@ -323,6 +334,8 @@ def _create_apply_batch(
             main_workspace_path=main_workspace_path,
             reaction_asset_id=reaction_asset_id,
             parameter_values=req.parameter_values,
+            studio_template_id=int(template["id"]),
+            template_version=int(template["version"]),
         )
         resolved_studio_recipe(
             recipe,
@@ -566,13 +579,21 @@ def studio_render_profiles() -> dict[str, Any]:
 
 
 @router.get("/templates")
-def studio_templates() -> dict[str, Any]:
+def studio_templates(
+    include_deleted: bool = False,
+    status: str | None = None,
+    legacy: bool = False,
+) -> dict[str, Any]:
     db.init_db()
     ensure_default_studio_templates()
+    resolved_status = status if status and status != "all" else None
     return {
         "items": [
             template_row_payload(row)
-            for row in db.list_studio_templates()
+            for row in db.list_studio_templates(
+                include_deleted=include_deleted,
+                status=resolved_status,
+            )
         ]
     }
 
@@ -683,6 +704,45 @@ def studio_template_create_version(
         created = db.get_studio_template(new_id)
         assert created is not None
         return {"item": template_row_payload(created)}
+    except FileNotFoundError as exc:
+        raise _fail(exc, 404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.delete("/templates/{template_id}")
+def studio_template_delete(template_id: int) -> dict[str, Any]:
+    try:
+        db.init_db()
+        result = db.delete_studio_template_safe(
+            template_id,
+            seeded_keys=SEEDED_STUDIO_TEMPLATE_KEYS,
+        )
+        row = db.get_studio_template(template_id)
+        return {
+            "status": "ok",
+            **result,
+            "item": template_row_payload(row) if row is not None else None,
+        }
+    except FileNotFoundError as exc:
+        raise _fail(exc, 404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/templates/{template_id}/restore")
+def studio_template_restore(template_id: int) -> dict[str, Any]:
+    try:
+        db.init_db()
+        if not db.restore_studio_template(template_id):
+            raise FileNotFoundError("Studio template не найден.")
+        row = db.get_studio_template(template_id)
+        assert row is not None
+        return {
+            "status": "ok",
+            "item": template_row_payload(row),
+            "usage": db.studio_template_usage_counts(template_id),
+        }
     except FileNotFoundError as exc:
         raise _fail(exc, 404)
     except Exception as exc:

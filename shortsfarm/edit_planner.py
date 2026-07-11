@@ -8,8 +8,18 @@ from typing import Any
 
 from . import db
 from .config import output_dir
+from .render_profiles import DEFAULT_RENDER_ENGINE, DEFAULT_RENDER_PROFILE
 from .services import safe_filename
-from .workspace_fs import build_edit_output_path, workspace_source_relative_path
+from .studio import (
+    build_batch_remotion_output_paths,
+    parameterized_recipe_from_template,
+)
+from .studio_templates import normalize_template_definition
+from .workspace_fs import (
+    build_edit_output_path,
+    get_workspace_root,
+    workspace_source_relative_path,
+)
 
 
 def parse_workspace_item_key(item_key: str) -> tuple[str, int]:
@@ -71,6 +81,24 @@ def _resolve_template(profile: Any, template_id: int | None) -> Any:
     return template
 
 
+def _resolve_studio_template(profile: Any, studio_template_id: int | None) -> Any | None:
+    resolved_id = (
+        studio_template_id
+        if studio_template_id is not None
+        else profile["default_studio_template_id"]
+    )
+    if resolved_id is None:
+        return None
+    template = db.get_studio_template(int(resolved_id))
+    if template is None:
+        raise ValueError("Studio template не найден.")
+    if template["deleted_at"] is not None:
+        raise ValueError("Studio template удалён/скрыт и не может использоваться для новых задач.")
+    if str(template["status"] or "").lower() == "archived":
+        raise ValueError("Studio template архивирован и не может использоваться для новых задач.")
+    return template
+
+
 def _resolve_reaction(profile: Any, reaction_asset_id: int | None) -> Any | None:
     if reaction_asset_id is not None:
         asset = db.get_reaction_asset(int(reaction_asset_id))
@@ -119,6 +147,18 @@ def _resolve_workspace_item(item_key: str) -> tuple[str, int, dict[str, Any], Pa
     return item_type, item_id, item, input_path.resolve()
 
 
+def _workspace_relative_path(path: Path) -> str:
+    root = get_workspace_root()
+    if root is None:
+        raise ValueError("workspace_root не настроен.")
+    resolved = path.expanduser().resolve()
+    try:
+        relative = resolved.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError("Studio template требует файл внутри workspace.") from exc
+    return relative.as_posix()
+
+
 def _job_dict(row: Any) -> dict[str, Any]:
     return {key: row[key] for key in row.keys()}
 
@@ -129,12 +169,122 @@ def plan_edit_job_for_workspace_item(
     *,
     reaction_asset_id: int | None = None,
     template_id: int | None = None,
+    studio_template_id: int | None = None,
+    parameter_values: dict[str, Any] | None = None,
+    renderer_engine: str = DEFAULT_RENDER_ENGINE,
+    render_profile: str = DEFAULT_RENDER_PROFILE,
+    duration_limit_sec: float | None = None,
+    start_offset_sec: float = 0,
+    full_length: bool = False,
     force_new: bool = False,
 ) -> dict[str, Any]:
     profile = _resolve_profile(channel_profile_id)
-    template = _resolve_template(profile, template_id)
     parsed_type, parsed_id = parse_workspace_item_key(item_key)
     normalized_item_key = f"{parsed_type}:{parsed_id}"
+
+    studio_template = _resolve_studio_template(profile, studio_template_id)
+    if studio_template is not None:
+        existing = db.find_existing_studio_edit_job(
+            normalized_item_key,
+            int(profile["id"]),
+            int(studio_template["id"]),
+            include_done=not force_new,
+        )
+        if existing is not None:
+            return {
+                "item_key": normalized_item_key,
+                "status": "existing",
+                "job": _job_dict(existing),
+            }
+
+        item_type, item_id, item, input_path = _resolve_workspace_item(normalized_item_key)
+        reaction = _resolve_reaction(profile, reaction_asset_id)
+        main_workspace_path = _workspace_relative_path(input_path)
+        try:
+            definition = normalize_template_definition(
+                json.loads(str(studio_template["definition_json"]))
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Studio template definition_json invalid: {exc.msg}") from exc
+        recipe = parameterized_recipe_from_template(
+            definition,
+            main_workspace_path=main_workspace_path,
+            reaction_asset_id=int(reaction["id"]) if reaction is not None else None,
+            parameter_values=parameter_values or {},
+            studio_template_id=int(studio_template["id"]),
+            template_version=int(studio_template["version"]),
+        )
+        source_path = str(item.get("source_path") or "")
+        project_id = db.create_studio_project(
+            workspace_item_key=normalized_item_key,
+            main_workspace_path=main_workspace_path,
+            template_key=str(studio_template["template_key"]),
+            reaction_asset_id=int(reaction["id"]) if reaction is not None else None,
+            reaction_pool_id=profile["reaction_pool_id"],
+            studio_template_id=int(studio_template["id"]),
+            recipe_json=recipe,
+        )
+        render_job_id = db.create_remotion_render_job(
+            project_id,
+            output_path=None,
+            renderer_engine=renderer_engine,
+            render_profile=render_profile,
+            duration_limit_sec=duration_limit_sec,
+            start_offset_sec=start_offset_sec,
+            full_length=full_length,
+        )
+        _tmp_path, output_path = build_batch_remotion_output_paths(
+            main_workspace_path,
+            str(studio_template["template_key"]),
+            render_job_id,
+        )
+        db.update_remotion_render_job_output(render_job_id, str(output_path))
+        job_id = db.create_edit_job(
+            workspace_item_key=normalized_item_key,
+            channel_profile_id=int(profile["id"]),
+            template_id=None,
+            studio_template_id=int(studio_template["id"]),
+            studio_project_id=project_id,
+            remotion_render_job_id=render_job_id,
+            reaction_asset_id=int(reaction["id"]) if reaction is not None else None,
+            input_path=str(input_path),
+            output_path=str(output_path),
+            renderer="remotion",
+            recipe_json={
+                **recipe,
+                "workspace": {
+                    "item_key": normalized_item_key,
+                    "item_type": item_type,
+                    "item_id": item_id,
+                    "main_input_path": str(input_path),
+                    "source_path": source_path,
+                },
+                "channel_profile": {
+                    "id": int(profile["id"]),
+                    "name": str(profile["name"]),
+                },
+                "output": {"path": str(output_path)},
+                "remotion": {
+                    "studio_project_id": project_id,
+                    "render_job_id": render_job_id,
+                    "renderer_engine": renderer_engine,
+                    "render_profile": render_profile,
+                    "duration_limit_sec": duration_limit_sec,
+                    "start_offset_sec": start_offset_sec,
+                    "full_length": bool(full_length),
+                },
+            },
+        )
+        job = db.get_edit_job(job_id)
+        if job is None:
+            raise RuntimeError("Edit job создан, но не найден.")
+        return {
+            "item_key": normalized_item_key,
+            "status": "created",
+            "job": _job_dict(job),
+        }
+
+    template = _resolve_template(profile, template_id)
 
     existing = db.find_existing_edit_job(
         normalized_item_key,
@@ -242,6 +392,13 @@ def plan_edit_jobs_for_workspace_items(
     *,
     reaction_asset_id: int | None = None,
     template_id: int | None = None,
+    studio_template_id: int | None = None,
+    parameter_values: dict[str, Any] | None = None,
+    renderer_engine: str = DEFAULT_RENDER_ENGINE,
+    render_profile: str = DEFAULT_RENDER_PROFILE,
+    duration_limit_sec: float | None = None,
+    start_offset_sec: float = 0,
+    full_length: bool = False,
     force_new: bool = False,
 ) -> dict[str, Any]:
     summary = {"created": 0, "existing": 0, "skipped": 0, "errors": 0}
@@ -258,6 +415,13 @@ def plan_edit_jobs_for_workspace_items(
                 channel_profile_id,
                 reaction_asset_id=reaction_asset_id,
                 template_id=template_id,
+                studio_template_id=studio_template_id,
+                parameter_values=parameter_values,
+                renderer_engine=renderer_engine,
+                render_profile=render_profile,
+                duration_limit_sec=duration_limit_sec,
+                start_offset_sec=start_offset_sec,
+                full_length=full_length,
                 force_new=force_new,
             )
             summary[result["status"]] += 1
