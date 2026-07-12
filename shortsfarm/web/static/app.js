@@ -615,7 +615,7 @@ let editingPublishScheduleInitial = null;
 let currentEditingTab = 'reactions';
 let editingReactions = [];
 let editingPools = [];
-let editingTemplates = [];
+let editingStudioTemplates = [];
 let editingProfiles = [];
 let editingPoolItems = [];
 let editingAccounts = [];
@@ -626,8 +626,6 @@ let selectedEditingJobIds = new Set();
 let editingPreviewJobId = null;
 let editingReactionId = null;
 let editingPoolId = null;
-let editingTemplateId = null;
-let editingTemplateSource = 'studio';
 let editingProfileId = null;
 let storageProfiles = [];
 let currentStorageProfileId = null;
@@ -2749,13 +2747,13 @@ async function loadClips() {
     const [data, profilesData, templatesData, reactionsData] = await Promise.all([
       api.get('/api/workspace/clips'),
       api.get('/api/editing/channel-profiles?enabled=true'),
-      api.get('/api/editing/templates?enabled=true'),
+      api.get('/api/studio/templates?status=active'),
       api.get('/api/editing/reactions?enabled=true'),
       loadCatalogTags().catch(() => null),
     ]);
     lastClips = data.items || [];
     editingProfiles = profilesData.items || editingProfiles || [];
-    editingTemplates = templatesData.items || editingTemplates || [];
+    editingStudioTemplates = studioTemplateOptions(templatesData.items || editingStudioTemplates || []);
     editingReactions = reactionsData.items || editingReactions || [];
     syncWorkspaceEditingSelection();
     if (currentWorkspaceItemKey && !workspaceItemByKey(currentWorkspaceItemKey)) {
@@ -6939,17 +6937,15 @@ function editingOptionalId(value) {
   return value ? Number(value) : null;
 }
 
-function studioEditingTemplates({includeDeleted = false, includeArchived = false} = {}) {
-  return (editingTemplates || []).filter(item => {
-    if ((item.source || 'studio') !== 'studio') return false;
-    if (!includeDeleted && item.deleted_at) return false;
-    if (!includeArchived && item.status === 'archived') return false;
-    return true;
-  });
+function studioTemplateOptions(items) {
+  return (items || []).filter(item =>
+    !item.deleted_at
+    && (item.status || 'active') === 'active'
+  );
 }
 
 function activeStudioEditingTemplates() {
-  return studioEditingTemplates().filter(item => item.enabled);
+  return studioTemplateOptions(editingStudioTemplates);
 }
 
 function setEditingTab(id, btn) {
@@ -6968,29 +6964,19 @@ async function loadEditingView(options = {}) {
     const [reactionsData, poolsData, templatesData, profilesData, accountsData, jobsData] = await Promise.all([
       api.get('/api/editing/reactions'),
       api.get('/api/editing/reaction-pools'),
-      api.get('/api/editing/templates?include_deleted=true'),
+      api.get('/api/studio/templates?status=active'),
       api.get('/api/editing/channel-profiles'),
       api.get('/api/publish/youtube/accounts'),
       api.get('/api/editing/jobs?limit=200'),
     ]);
     editingReactions = reactionsData.items || [];
     editingPools = poolsData.items || [];
-    editingTemplates = templatesData.items || [];
+    editingStudioTemplates = studioTemplateOptions(templatesData.items || []);
     editingProfiles = profilesData.items || [];
     editingAccounts = accountsData.accounts || [];
     editingJobs = jobsData.items || [];
     if (editingReactionId && !editingReactions.some(item => Number(item.id) === Number(editingReactionId))) editingReactionId = null;
     if (editingPoolId && !editingPools.some(item => Number(item.id) === Number(editingPoolId))) editingPoolId = null;
-    if (
-      editingTemplateId
-      && !editingTemplates.some(item =>
-        Number(item.id) === Number(editingTemplateId)
-        && (item.source || 'studio') === editingTemplateSource
-      )
-    ) {
-      editingTemplateId = null;
-      editingTemplateSource = 'studio';
-    }
     if (editingProfileId && !editingProfiles.some(item => Number(item.id) === Number(editingProfileId))) editingProfileId = null;
     if (!editingPoolId && editingPools.length) editingPoolId = Number(editingPools[0].id);
     if (editingPoolId) await loadEditingPoolItems(editingPoolId, true);
@@ -7005,7 +6991,6 @@ function renderEditingView() {
   renderEditingReactions();
   renderEditingPools();
   renderEditingPoolItems();
-  renderEditingTemplates();
   renderEditingProfiles();
   renderEditingJobs();
   renderEditingSelects();
@@ -7252,175 +7237,6 @@ async function removeEditingPoolItem(assetId) {
     await loadEditingView({silent: true});
   } catch (err) {
     editingError(err.message || 'Не удалось удалить реакцию из пула');
-  }
-}
-
-function renderEditingTemplates() {
-  const el = document.getElementById('editing-templates-list');
-  if (!el) return;
-  if (!editingTemplates.length) {
-    el.innerHTML = '<div class="empty">Шаблонов пока нет. Создайте стандартные шаблоны.</div>';
-    return;
-  }
-  const rows = editingTemplates.map(item => {
-    const source = item.source || 'studio';
-    const active = Number(item.id) === Number(editingTemplateId) && source === editingTemplateSource;
-    const sourceBadge = `<span class="badge b-ok">Studio</span>`;
-    const status = item.deleted_at
-      ? `<span class="badge b-warn">скрыт</span>`
-      : badge(item.enabled ? 'active' : 'disabled');
-    return `<tr class="editing-list-row ${active ? 'active' : ''}" onclick="selectEditingTemplate(${Number(item.id)}, '${source}')"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.key)}${item.version ? ` · v${Number(item.version)}` : ''}</div></td><td>${sourceBadge}<div class="mono dim">${esc(item.renderer)}</div></td><td>${status}</td></tr>`;
-  }).join('');
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Key / название</th><th>Источник</th><th>Статус</th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-function selectEditingTemplate(templateId, source = 'studio') {
-  const item = editingTemplates.find(row =>
-    Number(row.id) === Number(templateId)
-    && (row.source || 'studio') === source
-  ) || editingTemplates.find(row => Number(row.id) === Number(templateId));
-  if (!item) return;
-  editingTemplateId = Number(item.id);
-  editingTemplateSource = item.source || 'studio';
-  const isStudio = editingTemplateSource === 'studio';
-  document.getElementById('editing-template-title').textContent = `${item.name} · ${item.key} · Studio template`;
-  document.getElementById('editing-template-name').value = item.name || '';
-  document.getElementById('editing-template-description').value = item.description || '';
-  document.getElementById('editing-template-renderer').value = item.renderer || 'ffmpeg';
-  document.getElementById('editing-template-enabled').checked = Boolean(item.enabled);
-  let recipe = item.recipe_json || '';
-  try { recipe = JSON.stringify(JSON.parse(recipe), null, 2); } catch {}
-  document.getElementById('editing-template-recipe').value = recipe;
-  ['editing-template-name','editing-template-description','editing-template-renderer','editing-template-enabled','editing-template-recipe'].forEach(id => {
-    const field = document.getElementById(id);
-    if (field) field.disabled = isStudio || Boolean(item.readonly);
-  });
-  document.getElementById('editing-template-save').disabled = isStudio || Boolean(item.readonly);
-  const editBtn = document.getElementById('editing-template-edit-studio');
-  const versionBtn = document.getElementById('editing-template-version');
-  const deleteBtn = document.getElementById('editing-template-delete');
-  const restoreBtn = document.getElementById('editing-template-restore');
-  if (editBtn) editBtn.style.display = isStudio ? 'inline-flex' : 'none';
-  if (versionBtn) versionBtn.style.display = isStudio ? 'inline-flex' : 'none';
-  if (deleteBtn) deleteBtn.style.display = isStudio && !item.deleted_at ? 'inline-flex' : 'none';
-  if (restoreBtn) restoreBtn.style.display = isStudio && item.deleted_at ? 'inline-flex' : 'none';
-  renderEditingTemplates();
-}
-
-async function ensureEditingTemplates() {
-  try {
-    const data = await api.post('/api/editing/templates/ensure-defaults', {});
-    editingTemplateId = Number(data.item.id);
-    showToast('Стандартные шаблоны готовы');
-    await loadEditingView({silent: true});
-    selectEditingTemplate(editingTemplateId);
-  } catch (err) {
-    editingError(err.message || 'Не удалось создать стандартные шаблоны');
-  }
-}
-
-async function saveEditingTemplate() {
-  if (!editingTemplateId) {
-    editingError('Сначала выберите шаблон.');
-    return;
-  }
-  const rawRecipe = document.getElementById('editing-template-recipe')?.value || '';
-  try {
-    JSON.parse(rawRecipe);
-  } catch (err) {
-    editingError(`Некорректный JSON: ${err.message}`);
-    return;
-  }
-  try {
-    if (editingTemplateSource === 'studio') {
-      editingError('Studio templates редактируются в Template Studio. Нажмите «Редактировать в Studio».');
-      return;
-    }
-    await api.patch(`/api/editing/templates/${editingTemplateId}`, {
-      name: document.getElementById('editing-template-name')?.value.trim() || '',
-      description: document.getElementById('editing-template-description')?.value || null,
-      renderer: document.getElementById('editing-template-renderer')?.value.trim() || '',
-      recipe_json: rawRecipe,
-      enabled: Boolean(document.getElementById('editing-template-enabled')?.checked),
-    });
-    showToast('Сохранено');
-    await loadEditingView({silent: true});
-    selectEditingTemplate(editingTemplateId);
-  } catch (err) {
-    editingError(err.message || 'Не удалось сохранить шаблон');
-  }
-}
-
-function openSelectedEditingTemplateInStudio() {
-  if (!editingTemplateId || editingTemplateSource !== 'studio') {
-    editingError('Выберите Studio template.');
-    return;
-  }
-  const url = new URL(window.location.href);
-  url.searchParams.set('template', String(editingTemplateId));
-  window.history.replaceState({}, '', url);
-  nav('studio', document.querySelector('[data-v="studio"]'));
-}
-
-async function createSelectedEditingTemplateVersion() {
-  const item = editingTemplates.find(row =>
-    Number(row.id) === Number(editingTemplateId)
-    && (row.source || 'studio') === 'studio'
-  );
-  if (!item) {
-    editingError('Выберите Studio template.');
-    return;
-  }
-  try {
-    const definition = item.definition || JSON.parse(item.recipe_json || '{}');
-    const data = await api.post(`/api/studio/templates/${Number(item.id)}/versions`, {
-      name: item.name,
-      status: 'draft',
-      definition,
-    });
-    showToast('Создана новая draft-версия шаблона');
-    await loadEditingView({silent: true});
-    selectEditingTemplate(Number(data.item.id), 'studio');
-  } catch (err) {
-    editingError(err.message || 'Не удалось создать версию шаблона');
-  }
-}
-
-async function deleteSelectedEditingTemplate() {
-  const item = editingTemplates.find(row =>
-    Number(row.id) === Number(editingTemplateId)
-    && (row.source || 'studio') === 'studio'
-  );
-  if (!item) {
-    editingError('Выберите Studio template.');
-    return;
-  }
-  if (!confirm(`Скрыть/удалить шаблон «${item.name}»? Используемые шаблоны будут архивированы безопасно.`)) return;
-  try {
-    await api.del(`/api/studio/templates/${Number(item.id)}`);
-    showToast('Шаблон скрыт или удалён');
-    await loadEditingView({silent: true});
-  } catch (err) {
-    editingError(err.message || 'Не удалось удалить шаблон');
-  }
-}
-
-async function restoreSelectedEditingTemplate() {
-  const item = editingTemplates.find(row =>
-    Number(row.id) === Number(editingTemplateId)
-    && (row.source || 'studio') === 'studio'
-  );
-  if (!item) {
-    editingError('Выберите Studio template.');
-    return;
-  }
-  try {
-    const data = await api.post(`/api/studio/templates/${Number(item.id)}/restore`, {});
-    showToast('Шаблон восстановлен');
-    await loadEditingView({silent: true});
-    selectEditingTemplate(Number(data.item.id), 'studio');
-  } catch (err) {
-    editingError(err.message || 'Не удалось восстановить шаблон');
   }
 }
 

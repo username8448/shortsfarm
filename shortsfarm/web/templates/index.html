@@ -455,13 +455,16 @@
     </div>
 
     <div id="v-editing" class="v">
-      <div class="ph"><h1>Монтаж</h1><p>реакции, пулы, JSON-шаблоны и профили каналов — без запуска рендера</p></div>
+      <div class="ph"><h1>Монтаж</h1><p>реакции, пулы, профили каналов и очередь монтажа — шаблоны редактируются в Template Studio</p></div>
       <div class="tabs">
         <button class="tab on" data-editing-tab="reactions" onclick="setEditingTab('reactions', this)">Реакции</button>
         <button class="tab" data-editing-tab="pools" onclick="setEditingTab('pools', this)">Пулы реакций</button>
-        <button class="tab" data-editing-tab="templates" onclick="setEditingTab('templates', this)">Шаблоны</button>
         <button class="tab" data-editing-tab="profiles" onclick="setEditingTab('profiles', this)">Профили каналов</button>
         <button class="tab" data-editing-tab="jobs" onclick="setEditingTab('jobs', this)">Очередь монтажа</button>
+      </div>
+      <div class="action-row" style="margin-bottom:12px">
+        <button class="btn-secondary" onclick="nav('studio', document.querySelector('[data-v=&quot;studio&quot;]'))">Открыть Template Studio</button>
+        <span class="settings-meta">Template Studio — единый реестр и редактор шаблонов для Apply Template, Монтажа и Конвейера.</span>
       </div>
       <div id="editing-error" class="err-line" style="display:none;margin-bottom:10px"></div>
 
@@ -530,33 +533,6 @@
                 <button class="btn-secondary" id="editing-pool-add-item" onclick="addEditingPoolItem()">Добавить / обновить</button>
               </div>
               <div id="editing-pool-items"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div id="editing-templates" class="editing-tab">
-        <div class="editing-layout">
-          <div class="box">
-            <div class="box-head"><span>Шаблоны монтажа</span><button class="btn-secondary" onclick="ensureEditingTemplates()">Создать стандартные шаблоны</button></div>
-            <div id="editing-templates-list"></div>
-          </div>
-          <div class="box">
-            <div class="box-head"><span id="editing-template-title">Выберите шаблон</span></div>
-            <div class="form-body editing-wide-form">
-              <div class="hint-line">Template Studio — основной реестр шаблонов. legacy-шаблоны ниже доступны только для старых задач.</div>
-              <div class="field"><label class="field-lbl">Название</label><input id="editing-template-name" type="text"></div>
-              <div class="field"><label class="field-lbl">Описание</label><textarea id="editing-template-description" rows="3"></textarea></div>
-              <div class="field"><label class="field-lbl">Renderer</label><input id="editing-template-renderer" type="text" value="ffmpeg"></div>
-              <div class="toggles"><label class="toggle-label"><input id="editing-template-enabled" type="checkbox"> Активен</label></div>
-              <div class="field"><label class="field-lbl">Template Definition / legacy recipe_json</label><textarea id="editing-template-recipe" class="recipe-editor" spellcheck="false"></textarea></div>
-              <div class="action-row">
-                <button class="btn-primary" id="editing-template-save" onclick="saveEditingTemplate()">Сохранить legacy</button>
-                <button class="btn-secondary" id="editing-template-edit-studio" style="display:none" onclick="openSelectedEditingTemplateInStudio()">Редактировать в Studio</button>
-                <button class="btn-secondary" id="editing-template-version" style="display:none" onclick="createSelectedEditingTemplateVersion()">Создать версию</button>
-                <button class="btn-danger" id="editing-template-delete" style="display:none" onclick="deleteSelectedEditingTemplate()">Удалить / скрыть</button>
-                <button class="btn-secondary" id="editing-template-restore" style="display:none" onclick="restoreSelectedEditingTemplate()">Восстановить</button>
-              </div>
             </div>
           </div>
         </div>

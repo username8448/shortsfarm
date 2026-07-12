@@ -1157,6 +1157,57 @@ def test_main_panel_embeds_template_studio_without_legacy_word():
     assert "Legacy" not in template
 
 
+def test_editing_does_not_embed_duplicate_templates_tab():
+    root = Path(__file__).resolve().parents[1]
+    template = (
+        root
+        / "shortsfarm"
+        / "web"
+        / "templates"
+        / "index.html"
+    ).read_text(encoding="utf-8")
+    legacy_js = (
+        root
+        / "shortsfarm"
+        / "web"
+        / "static"
+        / "app.js"
+    ).read_text(encoding="utf-8")
+
+    assert 'data-editing-tab="templates"' not in template
+    assert 'id="editing-templates"' not in template
+    assert "Сохранить legacy" not in template
+    assert "Открыть Template Studio" in template
+    assert "saveEditingTemplate" not in legacy_js
+    assert "ensureEditingTemplates" not in legacy_js
+    assert "/api/editing/templates" not in legacy_js
+    assert "/api/studio/templates" in legacy_js
+    assert "editing-profile-template" in legacy_js
+
+
+def test_template_studio_templates_page_remains_available():
+    root = Path(__file__).resolve().parents[1]
+    studio_page = (
+        root
+        / "frontend"
+        / "src"
+        / "studio"
+        / "StudioPage.tsx"
+    ).read_text(encoding="utf-8")
+    templates_page = (
+        root
+        / "frontend"
+        / "src"
+        / "studio"
+        / "TemplatesPage.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "TemplatesPage" in studio_page
+    assert "mode === 'templates'" in studio_page
+    assert "setMode('templates')" in studio_page
+    assert "export const TemplatesPage" in templates_page
+
+
 def test_studio_frontend_uses_preview_registry_and_embedded_batch_open():
     root = Path(__file__).resolve().parents[1]
     preview = (
