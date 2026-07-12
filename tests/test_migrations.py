@@ -49,6 +49,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "046_studio_only_runtime_cutover" in versions
     assert "047_studio_only_verification" in versions
     assert "048_studio_migration_repair" in versions
+    assert "049_studio_only_final_repair" in versions
 
 
 def test_studio_only_cutover_records_settings_and_report(tmp_data_dir):
@@ -240,6 +241,171 @@ def test_studio_migration_repair_creates_correct_version_for_previously_wrong_li
     payload = json.loads(str(report["report_json"]))
     assert payload["version_created"]
     assert payload["relinked_profiles"]
+
+
+def test_studio_only_final_repair_is_safe_and_idempotent(tmp_data_dir):
+    from shortsfarm import db
+    from shortsfarm.migrations import _run_049_studio_only_final_repair
+    from shortsfarm.studio_templates import ensure_default_studio_templates
+
+    ensure_default_studio_templates()
+    fallback = db.get_latest_studio_template_by_key(
+        "reaction_top_25",
+        include_deleted=False,
+    )
+    assert fallback is not None
+    fallback_id = int(fallback["id"])
+    shared_id = db.create_studio_template(
+        template_key="shared_wrong",
+        name="Shared Wrong",
+        engine="remotion",
+        version=1,
+        status="active",
+        definition_json={
+            "schema_version": 2,
+            "key": "shared_wrong",
+            "name": "Shared Wrong",
+            "adapter": "main_only",
+            "supported_renderers": ["ffmpeg_fast"],
+            "default_renderer": "ffmpeg_fast",
+            "canvas": {"width": 1080, "height": 1920, "fps": 30},
+            "slots": {"main": {"type": "video", "required": True}},
+            "parameters": {},
+            "rules": {},
+        },
+    )
+    supported_legacy_id = db.create_edit_template(
+        key="shared_wrong",
+        name="Shared Wrong",
+        recipe_json={
+            "version": 1,
+            "slots": {
+                "reaction": {"x": 0, "y": 0, "w": 1080, "h": 480},
+                "main": {"x": 0, "y": 480, "w": 1080, "h": 1440},
+            },
+        },
+        studio_template_id=shared_id,
+    )
+    unsupported_legacy_id = db.create_edit_template(
+        key="unsupported_legacy",
+        name="Unsupported Legacy",
+        recipe_json="[]",
+        studio_template_id=shared_id,
+    )
+    explicit_profile_id = db.create_channel_profile(
+        name="Explicit legacy profile",
+        default_studio_template_id=shared_id,
+    )
+    unsupported_profile_id = db.create_channel_profile(
+        name="Unsupported legacy profile",
+        default_studio_template_id=shared_id,
+    )
+    ambiguous_profile_id = db.create_channel_profile(
+        name="Studio-only ambiguous profile",
+        default_studio_template_id=shared_id,
+    )
+    with db.connect() as con:
+        con.execute(
+            "UPDATE channel_profiles SET default_template_id=? WHERE id=?",
+            (supported_legacy_id, explicit_profile_id),
+        )
+        con.execute(
+            "UPDATE channel_profiles SET default_template_id=? WHERE id=?",
+            (unsupported_legacy_id, unsupported_profile_id),
+        )
+        _run_049_studio_only_final_repair(con)
+        first_report_row = con.execute(
+            """
+            SELECT report_json
+            FROM migration_reports
+            WHERE migration_key='049_studio_only_final_repair'
+            """
+        ).fetchone()
+        first_counts = {
+            row["template_key"]: row["count"]
+            for row in con.execute(
+                """
+                SELECT template_key, COUNT(*) AS count
+                FROM studio_templates
+                GROUP BY template_key
+                """
+            ).fetchall()
+        }
+        _run_049_studio_only_final_repair(con)
+        second_counts = {
+            row["template_key"]: row["count"]
+            for row in con.execute(
+                """
+                SELECT template_key, COUNT(*) AS count
+                FROM studio_templates
+                GROUP BY template_key
+                """
+            ).fetchall()
+        }
+        shared = con.execute(
+            "SELECT status, deleted_at FROM studio_templates WHERE id=?",
+            (shared_id,),
+        ).fetchone()
+        supported_legacy = con.execute(
+            "SELECT studio_template_id FROM edit_templates WHERE id=?",
+            (supported_legacy_id,),
+        ).fetchone()
+        unsupported_legacy = con.execute(
+            "SELECT studio_template_id FROM edit_templates WHERE id=?",
+            (unsupported_legacy_id,),
+        ).fetchone()
+        supported_profile = con.execute(
+            "SELECT default_studio_template_id FROM channel_profiles WHERE id=?",
+            (explicit_profile_id,),
+        ).fetchone()
+        unsupported_profile = con.execute(
+            "SELECT default_studio_template_id FROM channel_profiles WHERE id=?",
+            (unsupported_profile_id,),
+        ).fetchone()
+        ambiguous_profile = con.execute(
+            "SELECT default_studio_template_id FROM channel_profiles WHERE id=?",
+            (ambiguous_profile_id,),
+        ).fetchone()
+        archived = con.execute(
+            "SELECT status FROM studio_templates WHERE id=?",
+            (int(unsupported_legacy["studio_template_id"]),),
+        ).fetchone()
+        report_row = first_report_row or con.execute(
+            """
+            SELECT report_json
+            FROM migration_reports
+            WHERE migration_key='049_studio_only_final_repair'
+            """
+        ).fetchone()
+        verification_row = con.execute(
+            """
+            SELECT report_json
+            FROM migration_reports
+            WHERE migration_key='049_studio_only_post_repair_verification'
+            """
+        ).fetchone()
+        mode = con.execute(
+            "SELECT value FROM app_settings WHERE key='studio_templates_runtime_mode'"
+        ).fetchone()
+
+    assert first_counts == second_counts
+    assert shared["status"] == "active"
+    assert shared["deleted_at"] is None
+    assert int(supported_legacy["studio_template_id"]) != shared_id
+    assert int(unsupported_legacy["studio_template_id"]) != shared_id
+    assert archived["status"] == "archived"
+    assert supported_profile["default_studio_template_id"] == supported_legacy["studio_template_id"]
+    assert unsupported_profile["default_studio_template_id"] == fallback_id
+    assert ambiguous_profile["default_studio_template_id"] == shared_id
+    report = json.loads(str(report_row["report_json"]))
+    assert report["versions_created"]
+    assert report["archived_created"]
+    assert report["profiles_relinked"]
+    assert report["profiles_defaulted"]
+    assert report["ambiguous_profiles_skipped"]
+    verification = json.loads(str(verification_row["report_json"]))
+    assert verification["critical_errors"] == []
+    assert mode["value"] == "studio_only"
 
 
 def test_studio_editing_bridge_schema_exists(tmp_data_dir):

@@ -328,6 +328,88 @@ def test_optional_reaction_with_asset_is_preserved():
     assert recipe["layout"]["reaction_position"] == "top"
 
 
+def test_reaction_enabled_without_asset_is_rejected():
+    from shortsfarm.studio import normalize_studio_recipe
+
+    recipe = _recipe("cuts/main.mp4", 1)
+    recipe["media"]["reaction"] = {
+        "enabled": True,
+        "required": False,
+        "asset_id": None,
+    }
+
+    with pytest.raises(ValueError, match="Enabled reaction требует reaction asset_id"):
+        normalize_studio_recipe(recipe)
+
+
+def test_reaction_required_forces_enabled_and_requires_asset():
+    from shortsfarm.studio import normalize_studio_recipe
+
+    recipe = _recipe("cuts/main.mp4", 1)
+    recipe["media"]["reaction"] = {
+        "enabled": False,
+        "required": True,
+        "asset_id": None,
+    }
+
+    with pytest.raises(ValueError, match="Enabled reaction требует reaction asset_id"):
+        normalize_studio_recipe(recipe)
+
+
+def test_reaction_disabled_clears_asset_and_position():
+    from shortsfarm.studio import normalize_studio_recipe
+
+    recipe = _recipe("cuts/main.mp4", 1)
+    recipe["media"]["reaction"] = {
+        "enabled": False,
+        "required": False,
+        "asset_id": 42,
+    }
+
+    normalized = normalize_studio_recipe(recipe)
+
+    assert normalized["media"]["reaction"] == {
+        "enabled": False,
+        "required": False,
+        "asset_id": None,
+    }
+    assert normalized["layout"]["reaction_position"] == "none"
+
+
+def test_reaction_position_none_disables_reaction():
+    from shortsfarm.studio import normalize_studio_recipe
+
+    recipe = _recipe("cuts/main.mp4", 1)
+    recipe["layout"]["reaction_position"] = "none"
+
+    normalized = normalize_studio_recipe(recipe)
+
+    assert normalized["media"]["reaction"]["enabled"] is False
+    assert normalized["media"]["reaction"]["asset_id"] is None
+
+
+def test_main_only_recipe_always_disables_reaction():
+    from shortsfarm.studio import normalize_studio_recipe
+
+    recipe = _recipe("cuts/main.mp4", 1)
+    recipe["template"] = {
+        "key": "main_only",
+        "renderer": "ffmpeg_fast",
+        "adapter": "main_only",
+        "renderer_adapter": "main_only",
+        "composition_id": "MainOnlyTemplate",
+    }
+
+    normalized = normalize_studio_recipe(recipe)
+
+    assert normalized["media"]["reaction"] == {
+        "enabled": False,
+        "required": False,
+        "asset_id": None,
+    }
+    assert normalized["layout"]["reaction_position"] == "none"
+
+
 def test_resolved_recipe_omits_reaction_url_when_optional_disabled(tmp_path, monkeypatch):
     from shortsfarm.studio import parameterized_recipe_from_template, resolved_studio_recipe
     from shortsfarm.studio_templates import default_reaction_top_25_definition
@@ -488,7 +570,12 @@ def test_studio_project_allows_main_only_test_context(tmp_path, monkeypatch):
     main.write_bytes(b"main")
     monkeypatch.setattr("shortsfarm.studio.probe_duration", lambda path: 8.0)
     recipe = _recipe("prepared/main.mp4", 1)
-    recipe["media"]["reaction"]["asset_id"] = None
+    recipe["media"]["reaction"] = {
+        "enabled": False,
+        "required": False,
+        "asset_id": None,
+    }
+    recipe["layout"]["reaction_position"] = "none"
 
     created = studio_project_create(
         StudioProjectRequest(recipe_json=recipe),

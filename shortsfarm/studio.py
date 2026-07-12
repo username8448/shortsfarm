@@ -172,24 +172,30 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
 
     adapter_key = renderer_adapter or str(template.get("renderer_adapter") or "")
     has_reaction_layout = adapter_key != "main_only" and reaction_position != "none"
-    if "required" in reaction:
-        reaction_required = bool(reaction.get("required"))
-    else:
-        reaction_required = bool(has_reaction_layout)
-    if not has_reaction_layout:
+    if adapter_key == "main_only" or reaction_position == "none":
+        reaction_enabled = False
         reaction_required = False
-    if "enabled" in reaction:
-        reaction_enabled = bool(reaction.get("enabled"))
+        normalized_asset_id = None
+        reaction_position = "none"
     else:
-        reaction_enabled = bool(
-            has_reaction_layout
-            and (reaction_required or normalized_asset_id is not None)
+        reaction_required = (
+            bool(reaction.get("required"))
+            if "required" in reaction
+            else True
+        )
+        reaction_enabled = (
+            bool(reaction.get("enabled"))
+            if "enabled" in reaction
+            else bool(reaction_required or normalized_asset_id is not None)
         )
     if reaction_required:
         reaction_enabled = True
     if not reaction_enabled:
+        reaction_required = False
         normalized_asset_id = None
         reaction_position = "none"
+    elif normalized_asset_id is None:
+        raise ValueError("Enabled reaction требует reaction asset_id.")
 
     return {
         "version": 1,

@@ -3845,27 +3845,47 @@ def editing_jobs_bulk_render(
         raise _fail(exc)
 
 
-@router.post("/editing/worker/run-once")
-def editing_worker_run_once(
-    req: EditWorkerRunOnceRequest | None = None,
+@router.post("/editing/worker/start")
+def editing_worker_start(
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     try:
         _init()
-        legacy_rows = [
-            row for row in db.list_edit_jobs(status="queued", limit=10000)
-            if row["studio_project_id"] is None or row["remotion_render_job_id"] is None
-        ]
+        with db.connect() as con:
+            queued_studio = int(con.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM remotion_render_jobs
+                WHERE status='queued'
+                """
+            ).fetchone()["count"])
+            legacy_skipped = int(con.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM edit_jobs
+                WHERE status='queued'
+                  AND (studio_project_id IS NULL OR remotion_render_job_id IS NULL)
+                """
+            ).fetchone()["count"])
         queue = start_studio_render_queue(_base_url(request))
         return {
             "status": "ok",
             "queue": queue,
-            "jobs": [],
-            "processed": 0,
-            "legacy_skipped": len(legacy_rows),
+            "queued_studio": queued_studio,
+            "legacy_skipped": legacy_skipped,
         }
     except Exception as exc:
         raise _fail(exc)
+
+
+@router.post("/editing/worker/run-once")
+def editing_worker_run_once(
+    req: EditWorkerRunOnceRequest | None = None,
+) -> dict[str, Any]:
+    raise _fail(
+        ValueError("Endpoint переименован в /api/editing/worker/start."),
+        status_code=410,
+    )
 
 
 @router.post("/editing/jobs/{job_id}/render")

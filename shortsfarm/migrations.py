@@ -228,6 +228,36 @@ def _definitions_match(expected: dict[str, object], current: dict[str, object]) 
     return _canonical_json(expected) == _canonical_json(current)
 
 
+def _find_matching_studio_template_id(
+    con: sqlite3.Connection,
+    definition: dict[str, object],
+    *,
+    status: str | None = None,
+) -> int | None:
+    clauses = ["template_key=?"]
+    params: list[object] = [str(definition["key"])]
+    if status is not None:
+        clauses.append("status=?")
+        params.append(status)
+    rows = con.execute(
+        f"""
+        SELECT *
+        FROM studio_templates
+        WHERE {" AND ".join(clauses)}
+        ORDER BY version DESC, id DESC
+        """,
+        params,
+    ).fetchall()
+    for row in rows:
+        try:
+            current = _studio_definition_from_row(row)
+        except Exception:
+            continue
+        if _definitions_match(definition, current):
+            return int(row["id"])
+    return None
+
+
 def _latest_active_studio_template_id(
     con: sqlite3.Connection,
     key: str = "reaction_top_25",
@@ -285,6 +315,9 @@ def _create_archived_migration_template_in_connection(
 ) -> int:
     from .studio_templates import archived_legacy_edit_template_definition
 
+    existing = _find_archived_migration_template_id(con, int(legacy_row["id"]))
+    if existing is not None:
+        return existing
     definition = archived_legacy_edit_template_definition(legacy_row, reason)
     return _create_studio_template_version_in_connection(
         con,
@@ -292,6 +325,35 @@ def _create_archived_migration_template_in_connection(
         status="archived",
         now=now,
     )
+
+
+def _find_archived_migration_template_id(
+    con: sqlite3.Connection,
+    legacy_id: int,
+) -> int | None:
+    rows = con.execute(
+        """
+        SELECT id, definition_json
+        FROM studio_templates
+        WHERE status='archived'
+        ORDER BY id ASC
+        """
+    ).fetchall()
+    for row in rows:
+        try:
+            definition = json.loads(str(row["definition_json"]))
+        except json.JSONDecodeError:
+            continue
+        rules = definition.get("rules") if isinstance(definition, dict) else None
+        if not isinstance(rules, dict):
+            continue
+        try:
+            candidate_id = int(rules.get("legacy_edit_template_id"))
+        except (TypeError, ValueError):
+            continue
+        if candidate_id == int(legacy_id) and rules.get("migration_warning"):
+            return int(row["id"])
+    return None
 
 
 def _ensure_default_studio_templates_for_migration(con: sqlite3.Connection) -> None:
@@ -458,7 +520,7 @@ def _run_045_studio_template_data_migration(con: sqlite3.Connection) -> None:
                 bucket = "updated"
             if studio_id is not None:
                 con.execute(
-                    "UPDATE channel_profiles SET default_studio_template_id=?, updated_at=? WHERE id=?",
+                    "UPDATE channel_profiles SET default_studio_template_id = ?, updated_at=? WHERE id=?",
                     (studio_id, now, int(profile["id"])),
                 )
                 report["channel_profiles"][bucket].append(int(profile["id"]))  # type: ignore[index]
@@ -536,25 +598,22 @@ def _set_app_setting_in_connection(
     )
 
 
-def _run_047_studio_only_verification(con: sqlite3.Connection) -> None:
+def _verify_studio_only_runtime(
+    con: sqlite3.Connection,
+    *,
+    report_key: str,
+    base_report: dict[str, object] | None = None,
+) -> dict[str, object]:
     if not _table_exists(con, "app_settings"):
-        return
+        return {}
     _ensure_migration_reports(con)
-    from .studio_templates import legacy_edit_template_to_definition
 
-    report: dict[str, object] = {
-        "critical_errors": [],
-        "warnings": [],
-        "repairs": {
-            "relinked_unsafe_templates": [],
-            "defaulted_channel_profiles": [],
-        },
-        "checks": {},
-    }
+    report: dict[str, object] = base_report if base_report is not None else {}
+    report.setdefault("critical_errors", [])
+    report.setdefault("warnings", [])
+    report.setdefault("checks", {})
     critical: list[dict[str, object]] = report["critical_errors"]  # type: ignore[assignment]
     warnings: list[dict[str, object]] = report["warnings"]  # type: ignore[assignment]
-    repairs: dict[str, list[dict[str, object]]] = report["repairs"]  # type: ignore[assignment]
-    now = _now_utc()
 
     report_045 = con.execute(
         """
@@ -592,46 +651,8 @@ def _run_047_studio_only_verification(con: sqlite3.Connection) -> None:
                     "edit_template_id": int(row["id"]),
                 })
                 continue
-            try:
-                legacy_edit_template_to_definition(row)
-            except Exception as exc:
-                reason = str(exc) or exc.__class__.__name__
-                if str(row["linked_status"] or "") == "archived":
-                    linked = con.execute(
-                        "SELECT * FROM studio_templates WHERE id=?",
-                        (int(row["studio_template_id"]),),
-                    ).fetchone()
-                    if linked is not None:
-                        try:
-                            current = _studio_definition_from_row(linked)
-                            rules = current.get("rules") if isinstance(current.get("rules"), dict) else {}
-                            if int(rules.get("legacy_edit_template_id") or 0) == int(row["id"]):
-                                continue
-                        except Exception:
-                            pass
-                archived_id = _create_archived_migration_template_in_connection(
-                    con,
-                    row,
-                    reason,
-                    now=now,
-                )
-                con.execute(
-                    "UPDATE edit_templates SET studio_template_id=?, updated_at=? WHERE id=?",
-                    (archived_id, now, int(row["id"])),
-                )
-                repairs["relinked_unsafe_templates"].append({
-                    "edit_template_id": int(row["id"]),
-                    "old_studio_template_id": int(row["studio_template_id"]),
-                    "archived_studio_template_id": archived_id,
-                    "reason": reason,
-                })
 
     if _table_exists(con, "channel_profiles"):
-        default_studio_id = (
-            _latest_active_studio_template_id(con)
-            if _table_exists(con, "studio_templates")
-            else None
-        )
         profile_rows = con.execute(
             """
             SELECT cp.id, cp.enabled, cp.default_studio_template_id,
@@ -652,35 +673,17 @@ def _run_047_studio_only_verification(con: sqlite3.Connection) -> None:
             )
             if not invalid:
                 continue
-            fallback_valid = None
-            if default_studio_id is not None:
-                fallback_valid = con.execute(
-                    """
-                    SELECT id
-                    FROM studio_templates
-                    WHERE id=? AND status='active' AND deleted_at IS NULL
-                    """,
-                    (default_studio_id,),
-                ).fetchone()
-            if fallback_valid is not None:
-                con.execute(
-                    """
-                    UPDATE channel_profiles
-                    SET default_studio_template_id=?, updated_at=?
-                    WHERE id=?
-                    """,
-                    (default_studio_id, now, int(profile["id"])),
-                )
-                repairs["defaulted_channel_profiles"].append({
-                    "profile_id": int(profile["id"]),
-                    "studio_template_id": default_studio_id,
-                })
-            else:
-                critical.append({
-                    "kind": "active_profile_without_valid_studio_template",
-                    "profile_id": int(profile["id"]),
-                })
+            critical.append({
+                "kind": "active_profile_without_valid_studio_template",
+                "profile_id": int(profile["id"]),
+                "studio_template_id": (
+                    int(profile["default_studio_template_id"])
+                    if profile["default_studio_template_id"] is not None
+                    else None
+                ),
+            })
 
+    active_legacy_jobs = 0
     if _table_exists(con, "edit_jobs"):
         legacy_jobs = con.execute(
             """
@@ -691,6 +694,7 @@ def _run_047_studio_only_verification(con: sqlite3.Connection) -> None:
             ORDER BY id ASC
             """
         ).fetchall()
+        active_legacy_jobs = len(legacy_jobs)
         for row in legacy_jobs:
             critical.append({
                 "kind": "active_legacy_edit_job",
@@ -698,9 +702,8 @@ def _run_047_studio_only_verification(con: sqlite3.Connection) -> None:
                 "status": str(row["status"]),
                 "reason": "Legacy edit job будет доступен только для просмотра.",
             })
-        report["checks"] = {
-            "active_legacy_jobs": len(legacy_jobs),
-        }
+    checks: dict[str, object] = report["checks"]  # type: ignore[assignment]
+    checks["active_legacy_jobs"] = active_legacy_jobs
 
     mode = "studio_only_with_migration_errors" if critical else "studio_only"
     _set_app_setting_in_connection(
@@ -708,7 +711,67 @@ def _run_047_studio_only_verification(con: sqlite3.Connection) -> None:
         "studio_templates_runtime_mode",
         mode,
     )
-    _store_migration_report(con, "047_studio_only_verification", report)
+    _store_migration_report(con, report_key, report)
+    return report
+
+
+def _run_047_studio_only_verification(con: sqlite3.Connection) -> None:
+    if not _table_exists(con, "app_settings"):
+        return
+    _ensure_migration_reports(con)
+    from .studio_templates import legacy_edit_template_to_definition
+
+    report: dict[str, object] = {
+        "critical_errors": [],
+        "warnings": [],
+        "repairs": {
+            "relinked_unsafe_templates": [],
+        },
+        "checks": {},
+    }
+    repairs: dict[str, list[dict[str, object]]] = report["repairs"]  # type: ignore[assignment]
+    now = _now_utc()
+
+    if _table_exists(con, "edit_templates") and _table_exists(con, "studio_templates"):
+        rows = con.execute(
+            """
+            SELECT et.*, st.id AS linked_studio_id, st.status AS linked_status
+            FROM edit_templates et
+            LEFT JOIN studio_templates st ON st.id=et.studio_template_id
+            ORDER BY et.id ASC
+            """
+        ).fetchall()
+        for row in rows:
+            if row["studio_template_id"] is None or row["linked_studio_id"] is None:
+                continue
+            try:
+                legacy_edit_template_to_definition(row)
+            except Exception as exc:
+                reason = str(exc) or exc.__class__.__name__
+                archived_id = _create_archived_migration_template_in_connection(
+                    con,
+                    row,
+                    reason,
+                    now=now,
+                )
+                if int(row["studio_template_id"]) == archived_id:
+                    continue
+                con.execute(
+                    "UPDATE edit_templates SET studio_template_id=?, updated_at=? WHERE id=?",
+                    (archived_id, now, int(row["id"])),
+                )
+                repairs["relinked_unsafe_templates"].append({
+                    "edit_template_id": int(row["id"]),
+                    "old_studio_template_id": int(row["studio_template_id"]),
+                    "archived_studio_template_id": archived_id,
+                    "reason": reason,
+                })
+
+    _verify_studio_only_runtime(
+        con,
+        report_key="047_studio_only_verification",
+        base_report=report,
+    )
 
 
 def _run_048_studio_migration_repair(con: sqlite3.Connection) -> None:
@@ -815,28 +878,18 @@ def _run_048_studio_migration_repair(con: sqlite3.Connection) -> None:
                     SELECT id
                     FROM channel_profiles
                     WHERE default_template_id=?
-                       OR (
-                            default_template_id IS NULL
-                            AND default_studio_template_id=?
-                            AND ? IS NOT NULL
-                       )
                     ORDER BY id ASC
                     """,
-                    (legacy_id, old_studio_id, old_studio_id),
+                    (legacy_id,),
                 ).fetchall()
                 if updated_profile_rows:
                     con.execute(
                         """
                         UPDATE channel_profiles
-                        SET default_studio_template_id=?, updated_at=?
+                        SET default_studio_template_id = ?, updated_at=?
                         WHERE default_template_id=?
-                           OR (
-                                default_template_id IS NULL
-                                AND default_studio_template_id=?
-                                AND ? IS NOT NULL
-                           )
                         """,
-                        (new_studio_id, now, legacy_id, old_studio_id, old_studio_id),
+                        (new_studio_id, now, legacy_id),
                     )
                     for profile in updated_profile_rows:
                         report["relinked_profiles"].append({  # type: ignore[index]
@@ -855,6 +908,253 @@ def _run_048_studio_migration_repair(con: sqlite3.Connection) -> None:
     _store_migration_report(con, "048_studio_migration_repair", report)
 
 
+def _ambiguous_profiles_for_studio_template(
+    con: sqlite3.Connection,
+    studio_template_id: int | None,
+    *,
+    legacy_id: int,
+    reason: str,
+) -> list[dict[str, object]]:
+    if studio_template_id is None or not _table_exists(con, "channel_profiles"):
+        return []
+    rows = con.execute(
+        """
+        SELECT id
+        FROM channel_profiles
+        WHERE default_template_id IS ?
+          AND default_studio_template_id = ?
+        ORDER BY id ASC
+        """,
+        (None, int(studio_template_id)),
+    ).fetchall()
+    return [
+        {
+            "profile_id": int(row["id"]),
+            "edit_template_id": int(legacy_id),
+            "studio_template_id": int(studio_template_id),
+            "reason": reason,
+        }
+        for row in rows
+    ]
+
+
+def _run_049_studio_only_final_repair(con: sqlite3.Connection) -> None:
+    if not all(_table_exists(con, table) for table in ("edit_templates", "studio_templates")):
+        _verify_studio_only_runtime(
+            con,
+            report_key="049_studio_only_post_repair_verification",
+        )
+        return
+    _ensure_migration_reports(con)
+    from .studio_templates import legacy_edit_template_to_definition
+
+    now = _now_utc()
+    report: dict[str, object] = {
+        "unchanged": [],
+        "versions_created": [],
+        "archived_created": [],
+        "legacy_links_updated": [],
+        "profiles_relinked": [],
+        "profiles_defaulted": [],
+        "ambiguous_profiles_skipped": [],
+        "critical_errors": [],
+        "warnings": [],
+    }
+    rows = con.execute(
+        """
+        SELECT et.*, st.id AS linked_studio_id,
+               st.definition_json AS linked_definition_json,
+               st.status AS linked_status
+        FROM edit_templates et
+        LEFT JOIN studio_templates st ON st.id=et.studio_template_id
+        ORDER BY et.id ASC
+        """
+    ).fetchall()
+    for row in rows:
+        legacy_id = int(row["id"])
+        old_studio_id = (
+            int(row["studio_template_id"])
+            if row["studio_template_id"] is not None and row["linked_studio_id"] is not None
+            else None
+        )
+        try:
+            expected = legacy_edit_template_to_definition(row)
+        except Exception as exc:
+            reason = str(exc) or exc.__class__.__name__
+            archived_before = _find_archived_migration_template_id(con, legacy_id)
+            archived_id = _create_archived_migration_template_in_connection(
+                con,
+                row,
+                reason,
+                now=now,
+            )
+            if archived_before is None:
+                report["archived_created"].append({  # type: ignore[index]
+                    "edit_template_id": legacy_id,
+                    "archived_studio_template_id": archived_id,
+                    "reason": reason,
+                })
+            if old_studio_id != archived_id:
+                con.execute(
+                    "UPDATE edit_templates SET studio_template_id=?, updated_at=? WHERE id=?",
+                    (archived_id, now, legacy_id),
+                )
+                report["legacy_links_updated"].append({  # type: ignore[index]
+                    "edit_template_id": legacy_id,
+                    "old_studio_template_id": old_studio_id,
+                    "new_studio_template_id": archived_id,
+                    "reason": "unsupported legacy recipe",
+                })
+
+            ambiguous = _ambiguous_profiles_for_studio_template(
+                con,
+                old_studio_id,
+                legacy_id=legacy_id,
+                reason="Studio-only profile is not explicitly linked by default_template_id.",
+            )
+            report["ambiguous_profiles_skipped"].extend(ambiguous)  # type: ignore[union-attr]
+            report["warnings"].extend(ambiguous)  # type: ignore[union-attr]
+
+            explicit_profiles = []
+            if _table_exists(con, "channel_profiles"):
+                explicit_profiles = con.execute(
+                    """
+                    SELECT id
+                    FROM channel_profiles
+                    WHERE default_template_id=?
+                    ORDER BY id ASC
+                    """,
+                    (legacy_id,),
+                ).fetchall()
+            if explicit_profiles:
+                fallback_id = _latest_active_studio_template_id(con)
+                if fallback_id is None:
+                    for profile in explicit_profiles:
+                        report["critical_errors"].append({  # type: ignore[index]
+                            "kind": "missing_active_reaction_top_25_fallback",
+                            "profile_id": int(profile["id"]),
+                            "edit_template_id": legacy_id,
+                        })
+                else:
+                    con.execute(
+                        """
+                        UPDATE channel_profiles
+                        SET default_studio_template_id = ?, updated_at=?
+                        WHERE default_template_id=?
+                        """,
+                        (fallback_id, now, legacy_id),
+                    )
+                    for profile in explicit_profiles:
+                        report["profiles_defaulted"].append({  # type: ignore[index]
+                            "profile_id": int(profile["id"]),
+                            "edit_template_id": legacy_id,
+                            "studio_template_id": fallback_id,
+                            "reason": "unsupported legacy recipe",
+                        })
+            continue
+
+        status = "active" if bool(row["enabled"]) else "archived"
+        current_matches = False
+        if old_studio_id is not None:
+            linked = con.execute(
+                "SELECT * FROM studio_templates WHERE id=?",
+                (old_studio_id,),
+            ).fetchone()
+            if linked is not None:
+                try:
+                    current_matches = _definitions_match(
+                        expected,
+                        _studio_definition_from_row(linked),
+                    )
+                except Exception:
+                    current_matches = False
+        if current_matches:
+            report["unchanged"].append({  # type: ignore[index]
+                "edit_template_id": legacy_id,
+                "studio_template_id": old_studio_id,
+            })
+            continue
+
+        matching_id = _find_matching_studio_template_id(con, expected, status=status)
+        if matching_id is None:
+            matching_id = _create_studio_template_version_in_connection(
+                con,
+                expected,
+                status=status,
+                now=now,
+            )
+            report["versions_created"].append({  # type: ignore[index]
+                "edit_template_id": legacy_id,
+                "old_studio_template_id": old_studio_id,
+                "new_studio_template_id": matching_id,
+                "status": status,
+            })
+
+        if old_studio_id != matching_id:
+            con.execute(
+                "UPDATE edit_templates SET studio_template_id=?, updated_at=? WHERE id=?",
+                (matching_id, now, legacy_id),
+            )
+            report["legacy_links_updated"].append({  # type: ignore[index]
+                "edit_template_id": legacy_id,
+                "old_studio_template_id": old_studio_id,
+                "new_studio_template_id": matching_id,
+                "reason": "definition repaired",
+            })
+
+        ambiguous = _ambiguous_profiles_for_studio_template(
+            con,
+            old_studio_id,
+            legacy_id=legacy_id,
+            reason="Studio-only profile is not explicitly linked by default_template_id.",
+        )
+        report["ambiguous_profiles_skipped"].extend(ambiguous)  # type: ignore[union-attr]
+        report["warnings"].extend(ambiguous)  # type: ignore[union-attr]
+        if _table_exists(con, "channel_profiles"):
+            profiles = con.execute(
+                """
+                SELECT id, default_studio_template_id
+                FROM channel_profiles
+                WHERE default_template_id=?
+                ORDER BY id ASC
+                """,
+                (legacy_id,),
+            ).fetchall()
+            if profiles:
+                con.execute(
+                    """
+                    UPDATE channel_profiles
+                    SET default_studio_template_id = ?, updated_at=?
+                    WHERE default_template_id=?
+                    """,
+                    (matching_id, now, legacy_id),
+                )
+                for profile in profiles:
+                    if int(profile["default_studio_template_id"] or 0) == int(matching_id):
+                        continue
+                    report["profiles_relinked"].append({  # type: ignore[index]
+                        "profile_id": int(profile["id"]),
+                        "edit_template_id": legacy_id,
+                        "old_studio_template_id": (
+                            int(profile["default_studio_template_id"])
+                            if profile["default_studio_template_id"] is not None
+                            else None
+                        ),
+                        "new_studio_template_id": matching_id,
+                    })
+
+    _store_migration_report(con, "049_studio_only_final_repair", report)
+    _verify_studio_only_runtime(
+        con,
+        report_key="049_studio_only_post_repair_verification",
+        base_report={
+            "critical_errors": list(report["critical_errors"]),  # type: ignore[arg-type]
+            "warnings": list(report["warnings"]),  # type: ignore[arg-type]
+            "checks": {},
+        },
+    )
+
+
 def _run_python_migration(version: str, con: sqlite3.Connection) -> None:
     if version.startswith("045_"):
         _run_045_studio_template_data_migration(con)
@@ -864,6 +1164,8 @@ def _run_python_migration(version: str, con: sqlite3.Connection) -> None:
         _run_047_studio_only_verification(con)
     elif version.startswith("048_"):
         _run_048_studio_migration_repair(con)
+    elif version.startswith("049_"):
+        _run_049_studio_only_final_repair(con)
 
 
 def apply_all(con: sqlite3.Connection) -> list[str]:

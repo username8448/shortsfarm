@@ -7712,11 +7712,10 @@ async function resetEditingJobReview(jobId) {
 
 async function runEditingWorker(limit) {
   try {
-    const data = await api.post('/api/editing/worker/run-once', {limit: Number(limit)});
-    const failed = (data.jobs || []).filter(job => job.status === 'failed').length;
+    const data = await api.post('/api/editing/worker/start', {});
     showToast(
-      `Обработано задач монтажа: ${data.processed || 0}${failed ? `, ошибок: ${failed}` : ''}`,
-      failed ? 'err' : 'ok'
+      `Studio queue запущена · queued: ${data.queued_studio || 0} · legacy пропущено: ${data.legacy_skipped || 0}`,
+      'ok'
     );
     await loadEditingJobs(true);
   } catch (err) {

@@ -348,7 +348,6 @@ def test_edit_render_api_endpoints(tmp_path, monkeypatch):
     from shortsfarm.web.schemas import (
         EditJobRenderRequest,
         EditJobsBulkRenderRequest,
-        EditWorkerRunOnceRequest,
     )
 
     direct_id, *_ = _make_edit_job(tmp_path, name="api-direct")
@@ -367,12 +366,16 @@ def test_edit_render_api_endpoints(tmp_path, monkeypatch):
         "start_studio_render_queue",
         lambda base_url: started.append(base_url) or {"running": False},
     )
-    worker = api.editing_worker_run_once(
-        EditWorkerRunOnceRequest(limit=1),
-        _request(),
-    )
+    worker = api.editing_worker_start(_request())
+    assert worker["queued_studio"] == 0
     assert worker["legacy_skipped"] >= 1
-    assert worker["processed"] == 0
+    assert "processed" not in worker
+    assert started == ["http://127.0.0.1:8000"]
+
+    with pytest.raises(Exception) as worker_exc:
+        api.editing_worker_run_once()
+    assert "410" in str(worker_exc.value)
+    assert "Endpoint переименован" in str(worker_exc.value)
     assert started == ["http://127.0.0.1:8000"]
 
     bulk = api.editing_jobs_bulk_render(
