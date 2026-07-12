@@ -48,6 +48,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "045_studio_template_data_migration" in versions
     assert "046_studio_only_runtime_cutover" in versions
     assert "047_studio_only_verification" in versions
+    assert "048_studio_migration_repair" in versions
 
 
 def test_studio_only_cutover_records_settings_and_report(tmp_data_dir):
@@ -82,39 +83,34 @@ def test_studio_only_cutover_records_settings_and_report(tmp_data_dir):
     assert {"templates", "channel_profiles", "edit_jobs"} <= set(report)
 
 
-def test_studio_only_verification_archives_unsafe_legacy_links(tmp_data_dir):
+def test_studio_only_verification_relinks_unsafe_legacy_without_archiving_shared_template(tmp_data_dir):
     from shortsfarm import db
     from shortsfarm.migrations import _run_047_studio_only_verification
     from shortsfarm.studio_templates import ensure_default_studio_templates
 
     safe_template_id = int(ensure_default_studio_templates()[0]["id"])
-    legacy_template_id = db.create_edit_template(
-        key="unsafe-custom",
-        name="Unsafe custom",
-        recipe_json={"version": 1, "slots": {}},
-    )
-    unsafe_studio_id = db.create_studio_template(
-        template_key="unsafe_custom",
-        name="Unsafe custom",
-        engine="remotion",
-        version=1,
-        status="active",
-        definition_json={
-            "schema_version": 2,
-            "key": "unsafe_custom",
-            "name": "Unsafe custom",
-            "adapter": "main_only",
-            "supported_renderers": ["ffmpeg_fast"],
-            "default_renderer": "ffmpeg_fast",
-            "canvas": {"width": 1080, "height": 1920, "fps": 30},
-            "slots": {"main": {"type": "video", "required": True}},
-            "parameters": {},
-            "rules": {},
-        },
-    )
+    existing = db.get_edit_template_by_key("reaction_top_25")
+    if existing is None:
+        legacy_template_id = db.create_edit_template(
+            key="reaction_top_25",
+            name="Broken legacy default",
+            recipe_json="[]",
+            studio_template_id=safe_template_id,
+        )
+    else:
+        legacy_template_id = int(existing["id"])
+        with db.connect() as con:
+            con.execute(
+                """
+                UPDATE edit_templates
+                SET recipe_json='[]', studio_template_id=?
+                WHERE id=?
+                """,
+                (safe_template_id, legacy_template_id),
+            )
     profile_id = db.create_channel_profile(
         name="Unsafe profile",
-        default_studio_template_id=unsafe_studio_id,
+        default_studio_template_id=safe_template_id,
     )
     db.create_edit_job(
         workspace_item_key="segment:404",
@@ -123,12 +119,20 @@ def test_studio_only_verification_archives_unsafe_legacy_links(tmp_data_dir):
     with db.connect() as con:
         con.execute(
             "UPDATE edit_templates SET studio_template_id=? WHERE id=?",
-            (unsafe_studio_id, legacy_template_id),
+            (safe_template_id, legacy_template_id),
         )
         _run_047_studio_only_verification(con)
-        unsafe = con.execute(
+        canonical = con.execute(
             "SELECT status, deleted_at FROM studio_templates WHERE id=?",
-            (unsafe_studio_id,),
+            (safe_template_id,),
+        ).fetchone()
+        legacy = con.execute(
+            "SELECT studio_template_id FROM edit_templates WHERE id=?",
+            (legacy_template_id,),
+        ).fetchone()
+        archived = con.execute(
+            "SELECT status, deleted_at FROM studio_templates WHERE id=?",
+            (int(legacy["studio_template_id"]),),
         ).fetchone()
         profile = con.execute(
             "SELECT default_studio_template_id FROM channel_profiles WHERE id=?",
@@ -145,13 +149,97 @@ def test_studio_only_verification_archives_unsafe_legacy_links(tmp_data_dir):
             """
         ).fetchone()
 
-    assert unsafe["status"] == "archived"
-    assert unsafe["deleted_at"] is not None
+    assert canonical["status"] == "active"
+    assert canonical["deleted_at"] is None
+    assert int(legacy["studio_template_id"]) != safe_template_id
+    assert archived["status"] == "archived"
     assert profile["default_studio_template_id"] == safe_template_id
     assert mode["value"] == "studio_only_with_migration_errors"
     payload = json.loads(str(report["report_json"]))
-    assert payload["repairs"]["archived_unsafe_templates"]
+    assert payload["repairs"]["relinked_unsafe_templates"]
     assert payload["critical_errors"]
+
+
+def test_studio_migration_repair_creates_correct_version_for_previously_wrong_link(tmp_data_dir):
+    from shortsfarm import db
+    from shortsfarm.migrations import _run_048_studio_migration_repair
+
+    legacy_template_id = db.create_edit_template(
+        key="custom_top",
+        name="Custom Top",
+        recipe_json={
+            "version": 1,
+            "slots": {
+                "reaction": {"x": 0, "y": 0, "w": 1080, "h": 600, "fit": "contain"},
+                "main": {"x": 0, "y": 600, "w": 1080, "h": 1320, "fit": "cover"},
+            },
+            "layout": {"background_color": "#123456"},
+            "audio": {"main_volume": 0.8, "reaction_volume": 0.2, "mute_reaction": False},
+        },
+    )
+    wrong_studio_id = db.create_studio_template(
+        template_key="custom_top",
+        name="Wrong Custom Top",
+        engine="remotion",
+        version=1,
+        status="active",
+        definition_json={
+            "schema_version": 2,
+            "key": "custom_top",
+            "name": "Wrong Custom Top",
+            "adapter": "main_only",
+            "supported_renderers": ["ffmpeg_fast"],
+            "default_renderer": "ffmpeg_fast",
+            "canvas": {"width": 1080, "height": 1920, "fps": 30},
+            "slots": {"main": {"type": "video", "required": True}},
+            "parameters": {},
+            "rules": {},
+        },
+    )
+    profile_id = db.create_channel_profile(
+        name="Custom profile",
+        default_studio_template_id=wrong_studio_id,
+    )
+    with db.connect() as con:
+        con.execute(
+            "UPDATE edit_templates SET studio_template_id=? WHERE id=?",
+            (wrong_studio_id, legacy_template_id),
+        )
+        con.execute(
+            "UPDATE channel_profiles SET default_template_id=? WHERE id=?",
+            (legacy_template_id, profile_id),
+        )
+        _run_048_studio_migration_repair(con)
+        legacy = con.execute(
+            "SELECT studio_template_id FROM edit_templates WHERE id=?",
+            (legacy_template_id,),
+        ).fetchone()
+        repaired = con.execute(
+            "SELECT version, definition_json FROM studio_templates WHERE id=?",
+            (int(legacy["studio_template_id"]),),
+        ).fetchone()
+        profile = con.execute(
+            "SELECT default_studio_template_id FROM channel_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        report = con.execute(
+            """
+            SELECT report_json
+            FROM migration_reports
+            WHERE migration_key='048_studio_migration_repair'
+            """
+        ).fetchone()
+
+    definition = json.loads(str(repaired["definition_json"]))
+    assert int(legacy["studio_template_id"]) != wrong_studio_id
+    assert repaired["version"] == 2
+    assert definition["adapter"] == "reaction_layout"
+    assert definition["parameters"]["reaction_height"]["default"] == 600
+    assert definition["parameters"]["background_color"]["default"] == "#123456"
+    assert profile["default_studio_template_id"] == legacy["studio_template_id"]
+    payload = json.loads(str(report["report_json"]))
+    assert payload["version_created"]
+    assert payload["relinked_profiles"]
 
 
 def test_studio_editing_bridge_schema_exists(tmp_data_dir):

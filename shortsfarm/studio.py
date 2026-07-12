@@ -170,6 +170,27 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
     if not _COLOR_RE.fullmatch(background_color):
         raise ValueError("background_color должен быть в формате #RRGGBB.")
 
+    adapter_key = renderer_adapter or str(template.get("renderer_adapter") or "")
+    has_reaction_layout = adapter_key != "main_only" and reaction_position != "none"
+    if "required" in reaction:
+        reaction_required = bool(reaction.get("required"))
+    else:
+        reaction_required = bool(has_reaction_layout)
+    if not has_reaction_layout:
+        reaction_required = False
+    if "enabled" in reaction:
+        reaction_enabled = bool(reaction.get("enabled"))
+    else:
+        reaction_enabled = bool(
+            has_reaction_layout
+            and (reaction_required or normalized_asset_id is not None)
+        )
+    if reaction_required:
+        reaction_enabled = True
+    if not reaction_enabled:
+        normalized_asset_id = None
+        reaction_position = "none"
+
     return {
         "version": 1,
         "template": {
@@ -186,7 +207,11 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
         "canvas": {"width": width, "height": height, "fps": fps},
         "media": {
             "main": {"workspace_path": workspace_path},
-            "reaction": {"asset_id": normalized_asset_id},
+            "reaction": {
+                "enabled": reaction_enabled,
+                "required": reaction_required,
+                "asset_id": normalized_asset_id,
+            },
         },
         "layout": {
             "reaction_position": reaction_position,
@@ -469,6 +494,16 @@ def parameterized_recipe_from_template(
         "reaction_position",
         "none" if adapter.key == "main_only" else "top",
     )
+    reaction_slot = (definition.get("slots") or {}).get("reaction")
+    has_reaction_slot = isinstance(reaction_slot, dict)
+    reaction_enabled = bool(
+        has_reaction_slot
+        and reaction_position != "none"
+        and (reaction_required or reaction_asset_id is not None)
+    )
+    if not reaction_enabled:
+        reaction_position = "none"
+        reaction_asset_id = None
 
     return normalize_studio_recipe({
         "version": 1,
@@ -486,7 +521,11 @@ def parameterized_recipe_from_template(
         "canvas": definition.get("canvas") or {"width": 1080, "height": 1920, "fps": 30},
         "media": {
             "main": {"workspace_path": main_workspace_path},
-            "reaction": {"asset_id": reaction_asset_id if reaction_required else None},
+            "reaction": {
+                "enabled": reaction_enabled,
+                "required": reaction_required,
+                "asset_id": reaction_asset_id if reaction_enabled else None,
+            },
         },
         "layout": {
             "reaction_position": reaction_position,
@@ -563,8 +602,11 @@ def resolved_studio_recipe(
     if duration is None or duration <= 0:
         raise ValueError(f"Не удалось определить duration main media: {main_path}")
 
-    asset_id = normalized["media"]["reaction"]["asset_id"]
-    if asset_id is None and require_reaction:
+    reaction_media = normalized["media"]["reaction"]
+    asset_id = reaction_media["asset_id"]
+    reaction_enabled = bool(reaction_media.get("enabled", asset_id is not None))
+    reaction_required = bool(reaction_media.get("required", require_reaction))
+    if asset_id is None and reaction_enabled and reaction_required and require_reaction:
         raise ValueError("Выберите reaction asset.")
 
     profile = get_render_profile(render_profile)
@@ -599,7 +641,7 @@ def resolved_studio_recipe(
         ),
         "duration_sec": duration,
     })
-    if asset_id is not None:
+    if asset_id is not None and reaction_enabled:
         _asset, reaction_path = resolve_reaction_media_path(asset_id)
         reaction_duration = probe_duration(reaction_path)
         resolved["media"]["reaction"].update({

@@ -98,6 +98,9 @@ export const recipeFromTemplate = (
     const parameter = defaults[key];
     if (parameter) parameters[key] = parameter.default;
   });
+  const reactionSlot = template.definition.slots?.reaction;
+  const reactionRequired = Boolean(reactionSlot?.required);
+  const reactionEnabled = Boolean(reactionSlot);
   return {
     version: 1,
     template: {
@@ -120,7 +123,11 @@ export const recipeFromTemplate = (
     },
     media: current?.media ?? {
       main: {workspace_path: ''},
-      reaction: {asset_id: null},
+      reaction: {
+        enabled: reactionEnabled,
+        required: reactionRequired,
+        asset_id: null,
+      },
     },
     layout: {
       reaction_position: String(value('reaction_position', 'top')) as Recipe['layout']['reaction_position'],

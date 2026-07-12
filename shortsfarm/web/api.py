@@ -3848,21 +3848,21 @@ def editing_jobs_bulk_render(
 @router.post("/editing/worker/run-once")
 def editing_worker_run_once(
     req: EditWorkerRunOnceRequest | None = None,
+    request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     try:
         _init()
-        rows = [
-            row for row in db.list_edit_jobs(status="queued", limit=req.limit if req else 1)
+        legacy_rows = [
+            row for row in db.list_edit_jobs(status="queued", limit=10000)
             if row["studio_project_id"] is None or row["remotion_render_job_id"] is None
         ]
-        if rows:
-            raise ValueError(LEGACY_EDIT_JOB_READONLY_MESSAGE)
-        queue = start_studio_render_queue("")
+        queue = start_studio_render_queue(_base_url(request))
         return {
             "status": "ok",
             "queue": queue,
             "jobs": [],
             "processed": 0,
+            "legacy_skipped": len(legacy_rows),
         }
     except Exception as exc:
         raise _fail(exc)

@@ -19,6 +19,7 @@ from .studio import (
     resolved_studio_recipe,
 )
 from .studio_templates import (
+    effective_parameter_values,
     normalize_template_definition,
     reaction_required_for_definition,
     validate_renderer_for_definition,
@@ -80,7 +81,23 @@ def choose_reaction_for_template(
     reaction_pool_id: int | None,
     parameter_values: dict[str, Any] | None,
 ) -> int | None:
-    if not reaction_required(definition, parameter_values):
+    values = effective_parameter_values(definition, parameter_values or {})
+    slots = definition.get("slots") or {}
+    reaction_slot = slots.get("reaction") if isinstance(slots, dict) else None
+    if not isinstance(reaction_slot, dict):
+        return None
+    if str(values.get("reaction_position") or "top") == "none":
+        return None
+    required = reaction_required_for_definition(definition, values)
+    optional_selected = (
+        reaction_asset_id is not None
+        or (
+            reaction_pool_id is not None
+            and str(reaction_strategy or "").strip().lower()
+            in {"pool_first", "pool_weighted"}
+        )
+    )
+    if not required and not optional_selected:
         return None
     from .studio import choose_reaction_asset
 
@@ -181,7 +198,7 @@ def create_apply_batch(
         resolved_studio_recipe(
             recipe,
             base_url=base_url,
-            require_reaction=selected_reaction_id is not None,
+            require_reaction=True,
             render_profile=profile.key,
             duration_limit_sec=duration_limit,
             start_offset_sec=start_offset,
@@ -345,7 +362,7 @@ def create_edit_render_graph(
     resolved_studio_recipe(
         recipe,
         base_url=base_url,
-        require_reaction=reaction_required(definition, parameter_values),
+        require_reaction=True,
         render_profile=profile.key,
         duration_limit_sec=duration_limit,
         start_offset_sec=start_offset,

@@ -282,6 +282,74 @@ def test_template_parameter_validation_rejects_unknown_and_invalid_values():
         effective_parameter_values(definition, {"background_color": "black"})
 
 
+def test_optional_reaction_without_asset_materializes_as_main_only():
+    from shortsfarm.studio import parameterized_recipe_from_template
+    from shortsfarm.studio_templates import default_reaction_top_25_definition
+
+    definition = default_reaction_top_25_definition()
+    definition["slots"]["reaction"]["required"] = False
+
+    recipe = parameterized_recipe_from_template(
+        definition,
+        main_workspace_path="cuts/main.mp4",
+        reaction_asset_id=None,
+        parameter_values={"reaction_position": "top"},
+        renderer_engine="ffmpeg_fast",
+    )
+
+    assert recipe["media"]["reaction"] == {
+        "enabled": False,
+        "required": False,
+        "asset_id": None,
+    }
+    assert recipe["layout"]["reaction_position"] == "none"
+
+
+def test_optional_reaction_with_asset_is_preserved():
+    from shortsfarm.studio import parameterized_recipe_from_template
+    from shortsfarm.studio_templates import default_reaction_top_25_definition
+
+    definition = default_reaction_top_25_definition()
+    definition["slots"]["reaction"]["required"] = False
+
+    recipe = parameterized_recipe_from_template(
+        definition,
+        main_workspace_path="cuts/main.mp4",
+        reaction_asset_id=42,
+        parameter_values={"reaction_position": "top"},
+        renderer_engine="ffmpeg_fast",
+    )
+
+    assert recipe["media"]["reaction"] == {
+        "enabled": True,
+        "required": False,
+        "asset_id": 42,
+    }
+    assert recipe["layout"]["reaction_position"] == "top"
+
+
+def test_resolved_recipe_omits_reaction_url_when_optional_disabled(tmp_path, monkeypatch):
+    from shortsfarm.studio import parameterized_recipe_from_template, resolved_studio_recipe
+    from shortsfarm.studio_templates import default_reaction_top_25_definition
+
+    root = _workspace(tmp_path)
+    (root / "cuts" / "main.mp4").write_bytes(b"main")
+    monkeypatch.setattr("shortsfarm.studio.probe_duration", lambda path: 8.0)
+    definition = default_reaction_top_25_definition()
+    definition["slots"]["reaction"]["required"] = False
+    recipe = parameterized_recipe_from_template(
+        definition,
+        main_workspace_path="cuts/main.mp4",
+        reaction_asset_id=None,
+        parameter_values={"reaction_position": "top"},
+    )
+
+    resolved = resolved_studio_recipe(recipe, require_reaction=True)
+
+    assert resolved["media"]["reaction"]["enabled"] is False
+    assert "url" not in resolved["media"]["reaction"]
+
+
 def test_ffmpeg_fast_audio_filter_applies_volumes_and_reaction_mix(tmp_path, monkeypatch):
     import shortsfarm.remotion_renderer as renderer
     from shortsfarm.remotion_renderer import ProcessResult
@@ -326,7 +394,59 @@ def test_ffmpeg_fast_audio_filter_applies_volumes_and_reaction_mix(tmp_path, mon
     assert "volume=0.500000" in filter_complex
     assert "volume=0.250000" in filter_complex
     assert "amix=inputs=2" in filter_complex
+    assert "duration=longest" in filter_complex
+    assert "apad" in filter_complex
+    assert "atrim=duration=5.000000" in filter_complex
+    assert "-shortest" not in command
     assert command[command.index("-map", command.index("-map") + 1) + 1] == "[a]"
+
+
+def test_ffmpeg_fast_optional_reaction_disabled_uses_one_input(tmp_path, monkeypatch):
+    import shortsfarm.remotion_renderer as renderer
+    from shortsfarm.remotion_renderer import ProcessResult
+    from shortsfarm.studio import normalize_studio_recipe
+
+    root = _workspace(tmp_path)
+    main = root / "cuts" / "solo" / "main.mp4"
+    main.parent.mkdir(parents=True)
+    main.write_bytes(b"main")
+    recipe = normalize_studio_recipe({
+        **_recipe("cuts/solo/main.mp4", 1),
+        "template": {"key": "reaction_top_25", "renderer": "ffmpeg_fast"},
+        "media": {
+            "main": {"workspace_path": "cuts/solo/main.mp4"},
+            "reaction": {"enabled": False, "required": False, "asset_id": None},
+        },
+        "layout": {
+            "reaction_position": "none",
+            "reaction_height": 480,
+            "main_fit": "cover",
+            "reaction_fit": "cover",
+            "background_color": "#000000",
+        },
+    })
+    resolved = {
+        **recipe,
+        "trim": {"duration_sec": 5.0, "start_sec": 0.0},
+        "render_profile": {"key": "low_540p"},
+    }
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr(renderer, "require_binary", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(
+        renderer,
+        "probe_media_metadata",
+        lambda path: {"has_audio": True},
+    )
+
+    def fake_run(job_id, command, **_kwargs):
+        captured["command"] = command
+        return ProcessResult(0, "", "", 0.1)
+
+    monkeypatch.setattr(renderer, "_run_process_streaming_progress", fake_run)
+    renderer._run_ffmpeg_fast(1, recipe, resolved, tmp_path / "out.mp4")
+
+    command = captured["command"]
+    assert command.count("-i") == 1
 
 
 def test_studio_template_delete_soft_hides_seeded_and_restore():

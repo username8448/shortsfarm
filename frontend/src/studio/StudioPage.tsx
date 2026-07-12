@@ -338,7 +338,14 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   const selectReaction = (id: number | null) => {
     setRecipe((current) => ({
       ...current,
-      media: {...current.media, reaction: {asset_id: id}},
+      media: {
+        ...current.media,
+        reaction: {
+          ...current.media.reaction,
+          enabled: id !== null,
+          asset_id: id,
+        },
+      },
     }));
   };
 

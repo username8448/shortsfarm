@@ -191,7 +191,11 @@ def plan_edit_job_for_workspace_item(
     except json.JSONDecodeError as exc:
         raise ValueError(f"Studio template definition_json invalid: {exc.msg}") from exc
     reaction_needed = reaction_required_for_definition(definition, parameter_values or {})
-    reaction = _resolve_reaction(profile, reaction_asset_id) if reaction_needed else None
+    reaction = (
+        _resolve_reaction(profile, reaction_asset_id)
+        if reaction_needed or reaction_asset_id is not None
+        else None
+    )
     if reaction_needed and reaction is None:
         raise ValueError("Для выбранного Studio template требуется reaction asset или reaction pool.")
     source_path = str(item.get("source_path") or "")

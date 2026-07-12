@@ -5,6 +5,21 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from starlette.requests import Request
+
+
+def _request() -> Request:
+    return Request({
+        "type": "http",
+        "method": "POST",
+        "path": "/api/editing/worker/run-once",
+        "root_path": "",
+        "scheme": "http",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 8000),
+    })
 
 
 def _make_edit_job(
@@ -346,9 +361,19 @@ def test_edit_render_api_endpoints(tmp_path, monkeypatch):
         api.editing_job_render(direct_id, EditJobRenderRequest())
     assert "Legacy edit job доступен только для просмотра" in str(direct_exc.value)
 
-    with pytest.raises(Exception) as worker_exc:
-        api.editing_worker_run_once(EditWorkerRunOnceRequest(limit=1))
-    assert "Legacy edit job доступен только для просмотра" in str(worker_exc.value)
+    started: list[str] = []
+    monkeypatch.setattr(
+        api,
+        "start_studio_render_queue",
+        lambda base_url: started.append(base_url) or {"running": False},
+    )
+    worker = api.editing_worker_run_once(
+        EditWorkerRunOnceRequest(limit=1),
+        _request(),
+    )
+    assert worker["legacy_skipped"] >= 1
+    assert worker["processed"] == 0
+    assert started == ["http://127.0.0.1:8000"]
 
     bulk = api.editing_jobs_bulk_render(
         EditJobsBulkRenderRequest(job_ids=[bulk_one_id, bulk_two_id])

@@ -20,7 +20,11 @@ export type Recipe = {
   canvas: {width: number; height: number; fps: number};
   media: {
     main: {workspace_path: string};
-    reaction: {asset_id: number | null};
+    reaction: {
+      enabled?: boolean;
+      required?: boolean;
+      asset_id: number | null;
+    };
   };
   layout: {
     reaction_position: ReactionPosition;
@@ -42,6 +46,8 @@ export type ResolvedRecipe = Recipe & {
   media: {
     main: {workspace_path: string; url: string; duration_sec: number};
     reaction: {
+      enabled?: boolean;
+      required?: boolean;
       asset_id: number | null;
       url?: string;
       duration_sec?: number | null;
@@ -82,7 +88,7 @@ export const createDefaultRecipe = (): Recipe => ({
   canvas: {width: 1080, height: 1920, fps: 30},
   media: {
     main: {workspace_path: ''},
-    reaction: {asset_id: null},
+    reaction: {enabled: true, required: true, asset_id: null},
   },
   layout: {
     reaction_position: 'top',
@@ -115,6 +121,8 @@ export const resolveDraftRecipe = (
       duration_sec: mainDuration,
     },
     reaction: {
+      enabled: recipe.media.reaction.enabled,
+      required: recipe.media.reaction.required,
       asset_id: recipe.media.reaction.asset_id,
       ...(reactionUrl ? {url: reactionUrl} : {}),
       duration_sec: reactionDuration,

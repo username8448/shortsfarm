@@ -670,11 +670,14 @@ def _run_ffmpeg_fast(
     main_path = resolve_studio_media_path(
         normalized_recipe["media"]["main"]["workspace_path"]
     )
-    asset_id = normalized_recipe["media"]["reaction"]["asset_id"]
+    reaction_media = normalized_recipe["media"]["reaction"]
+    asset_id = reaction_media["asset_id"]
+    reaction_enabled = bool(reaction_media.get("enabled", asset_id is not None))
+    reaction_required = bool(reaction_media.get("required", reaction_enabled))
     reaction_path: Path | None = None
-    if asset_id is not None:
+    if asset_id is not None and reaction_enabled:
         _asset, reaction_path = resolve_reaction_media_path(int(asset_id))
-    elif str(normalized_recipe.get("layout", {}).get("reaction_position") or "top") != "none":
+    elif reaction_enabled and reaction_required:
         raise ValueError("FFmpeg fast renderer требует reaction asset для этого template.")
     profile = get_render_profile(str(resolved_recipe.get("render_profile", {}).get("key")))
     trim = resolved_recipe["trim"]
@@ -699,8 +702,11 @@ def _run_ffmpeg_fast(
     if main_has_audio and reaction_has_audio:
         audio_filters.extend([
             f"[0:a]volume={main_volume:.6f}[maina]",
-            f"[1:a]volume={reaction_volume:.6f}[reacta]",
-            "[maina][reacta]amix=inputs=2:duration=shortest:dropout_transition=0[a]",
+            f"[1:a]volume={reaction_volume:.6f},apad[reacta]",
+            (
+                "[maina][reacta]amix=inputs=2:duration=longest:"
+                f"dropout_transition=0,atrim=duration={duration:.6f}[a]"
+            ),
         ])
         audio_map = "[a]"
     elif main_has_audio and abs(main_volume - 1.0) > 0.000001:
@@ -757,7 +763,6 @@ def _run_ffmpeg_fast(
         "128k",
         "-movflags",
         "+faststart",
-        "-shortest",
         str(temp_path),
     ])
     total_frames = max(1, int(round(duration * profile.fps)))
@@ -836,13 +841,10 @@ def _run_claimed_remotion_render_job(job: Any, base_url: str) -> None:
         normalized_recipe = normalize_studio_recipe(
             json.loads(str(project["recipe_json"]))
         )
-        require_reaction = (
-            str(
-                normalized_recipe.get("template", {}).get("adapter")
-                or normalized_recipe.get("template", {}).get("renderer_adapter")
-                or ""
-            ) != "main_only"
-            and str(normalized_recipe.get("layout", {}).get("reaction_position") or "top") != "none"
+        reaction_media = normalized_recipe.get("media", {}).get("reaction", {})
+        require_reaction = bool(
+            reaction_media.get("enabled")
+            and reaction_media.get("required")
         )
         resolved_recipe = resolved_studio_recipe(
             normalized_recipe,
