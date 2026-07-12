@@ -1104,17 +1104,13 @@ def publish_worker_cmd(
 def edit_worker_cmd(
     limit: int = typer.Option(1, "--limit", help="Maximum edit jobs to render", min=1),
 ) -> None:
-    """Render queued template edit jobs once."""
+    """Legacy edit worker is disabled after Studio-only cutover."""
     try:
-        from .edit_renderer import run_edit_queue_once
-
         db.init_db()
-        rows = run_edit_queue_once(limit=limit)
-        done = sum(1 for row in rows if row["status"] == "done")
-        failed = sum(1 for row in rows if row["status"] == "failed")
-        typer.echo(f"Processed edit jobs: {len(rows)}")
-        typer.echo(f"  done:   {done}")
-        typer.echo(f"  failed: {failed}")
+        raise RuntimeError(
+            "Legacy edit worker отключён. "
+            "Новые задачи рендерятся через Studio render queue."
+        )
     except Exception as exc:
         die(str(exc))
 

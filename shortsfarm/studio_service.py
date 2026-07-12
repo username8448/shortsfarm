@@ -342,6 +342,15 @@ def create_edit_render_graph(
         template_version=int(template["version"]),
         renderer_engine=renderer,
     )
+    resolved_studio_recipe(
+        recipe,
+        base_url=base_url,
+        require_reaction=reaction_required(definition, parameter_values),
+        render_profile=profile.key,
+        duration_limit_sec=duration_limit,
+        start_offset_sec=start_offset,
+        full_length=full_length,
+    )
 
     template_key = str(template["template_key"])
     now = db.now_utc()

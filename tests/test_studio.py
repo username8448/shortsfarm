@@ -267,6 +267,68 @@ def test_template_definition_lists_slots_parameters_rules_and_versions():
     assert new_version["version"] == template["version"] + 1
 
 
+def test_template_parameter_validation_rejects_unknown_and_invalid_values():
+    from shortsfarm.studio_templates import (
+        default_reaction_top_25_definition,
+        effective_parameter_values,
+    )
+
+    definition = default_reaction_top_25_definition()
+    with pytest.raises(ValueError, match="Unknown template parameter"):
+        effective_parameter_values(definition, {"surprise": 1})
+    with pytest.raises(ValueError, match="reaction_height"):
+        effective_parameter_values(definition, {"reaction_height": 1200})
+    with pytest.raises(ValueError, match="background_color"):
+        effective_parameter_values(definition, {"background_color": "black"})
+
+
+def test_ffmpeg_fast_audio_filter_applies_volumes_and_reaction_mix(tmp_path, monkeypatch):
+    import shortsfarm.remotion_renderer as renderer
+    from shortsfarm.remotion_renderer import ProcessResult
+    from shortsfarm.studio import normalize_studio_recipe
+
+    root = _workspace(tmp_path)
+    main = root / "cuts" / "audio" / "main.mp4"
+    main.parent.mkdir(parents=True)
+    main.write_bytes(b"main")
+    asset_id, _reaction_path = _reaction(tmp_path)
+    recipe = normalize_studio_recipe({
+        **_recipe("cuts/audio/main.mp4", asset_id),
+        "template": {"key": "reaction_top_25", "renderer": "ffmpeg_fast"},
+        "audio": {
+            "main_volume": 0.5,
+            "reaction_volume": 0.25,
+            "mute_reaction": False,
+        },
+    })
+    resolved = {
+        **recipe,
+        "trim": {"duration_sec": 5.0, "start_sec": 0.0},
+        "render_profile": {"key": "low_540p"},
+    }
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr(renderer, "require_binary", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(
+        renderer,
+        "probe_media_metadata",
+        lambda path: {"has_audio": True},
+    )
+
+    def fake_run(job_id, command, **_kwargs):
+        captured["command"] = command
+        return ProcessResult(0, "", "", 0.1)
+
+    monkeypatch.setattr(renderer, "_run_process_streaming_progress", fake_run)
+    renderer._run_ffmpeg_fast(1, recipe, resolved, tmp_path / "out.mp4")
+
+    command = captured["command"]
+    filter_complex = command[command.index("-filter_complex") + 1]
+    assert "volume=0.500000" in filter_complex
+    assert "volume=0.250000" in filter_complex
+    assert "amix=inputs=2" in filter_complex
+    assert command[command.index("-map", command.index("-map") + 1) + 1] == "[a]"
+
+
 def test_studio_template_delete_soft_hides_seeded_and_restore():
     from shortsfarm.web.studio_api import (
         studio_template_delete,

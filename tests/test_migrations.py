@@ -47,6 +47,7 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "041_unify_studio_editing_templates" in versions
     assert "045_studio_template_data_migration" in versions
     assert "046_studio_only_runtime_cutover" in versions
+    assert "047_studio_only_verification" in versions
 
 
 def test_studio_only_cutover_records_settings_and_report(tmp_data_dir):
@@ -79,6 +80,78 @@ def test_studio_only_cutover_records_settings_and_report(tmp_data_dir):
     assert report_row is not None
     report = json.loads(str(report_row["report_json"]))
     assert {"templates", "channel_profiles", "edit_jobs"} <= set(report)
+
+
+def test_studio_only_verification_archives_unsafe_legacy_links(tmp_data_dir):
+    from shortsfarm import db
+    from shortsfarm.migrations import _run_047_studio_only_verification
+    from shortsfarm.studio_templates import ensure_default_studio_templates
+
+    safe_template_id = int(ensure_default_studio_templates()[0]["id"])
+    legacy_template_id = db.create_edit_template(
+        key="unsafe-custom",
+        name="Unsafe custom",
+        recipe_json={"version": 1, "slots": {}},
+    )
+    unsafe_studio_id = db.create_studio_template(
+        template_key="unsafe_custom",
+        name="Unsafe custom",
+        engine="remotion",
+        version=1,
+        status="active",
+        definition_json={
+            "schema_version": 2,
+            "key": "unsafe_custom",
+            "name": "Unsafe custom",
+            "adapter": "main_only",
+            "supported_renderers": ["ffmpeg_fast"],
+            "default_renderer": "ffmpeg_fast",
+            "canvas": {"width": 1080, "height": 1920, "fps": 30},
+            "slots": {"main": {"type": "video", "required": True}},
+            "parameters": {},
+            "rules": {},
+        },
+    )
+    profile_id = db.create_channel_profile(
+        name="Unsafe profile",
+        default_studio_template_id=unsafe_studio_id,
+    )
+    db.create_edit_job(
+        workspace_item_key="segment:404",
+        recipe_json={"version": 1},
+    )
+    with db.connect() as con:
+        con.execute(
+            "UPDATE edit_templates SET studio_template_id=? WHERE id=?",
+            (unsafe_studio_id, legacy_template_id),
+        )
+        _run_047_studio_only_verification(con)
+        unsafe = con.execute(
+            "SELECT status, deleted_at FROM studio_templates WHERE id=?",
+            (unsafe_studio_id,),
+        ).fetchone()
+        profile = con.execute(
+            "SELECT default_studio_template_id FROM channel_profiles WHERE id=?",
+            (profile_id,),
+        ).fetchone()
+        mode = con.execute(
+            "SELECT value FROM app_settings WHERE key='studio_templates_runtime_mode'"
+        ).fetchone()
+        report = con.execute(
+            """
+            SELECT report_json
+            FROM migration_reports
+            WHERE migration_key='047_studio_only_verification'
+            """
+        ).fetchone()
+
+    assert unsafe["status"] == "archived"
+    assert unsafe["deleted_at"] is not None
+    assert profile["default_studio_template_id"] == safe_template_id
+    assert mode["value"] == "studio_only_with_migration_errors"
+    payload = json.loads(str(report["report_json"]))
+    assert payload["repairs"]["archived_unsafe_templates"]
+    assert payload["critical_errors"]
 
 
 def test_studio_editing_bridge_schema_exists(tmp_data_dir):

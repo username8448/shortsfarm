@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -343,35 +342,30 @@ def test_edit_render_api_endpoints(tmp_path, monkeypatch):
     bulk_two_id, *_ = _make_edit_job(tmp_path, name="api-bulk-two")
     _mock_successful_ffmpeg(monkeypatch)
 
-    direct = api.editing_job_render(direct_id, EditJobRenderRequest())
-    assert direct["status"] == "ok"
-    assert direct["job"]["status"] == "done"
+    with pytest.raises(Exception) as direct_exc:
+        api.editing_job_render(direct_id, EditJobRenderRequest())
+    assert "Legacy edit job доступен только для просмотра" in str(direct_exc.value)
 
-    worker = api.editing_worker_run_once(EditWorkerRunOnceRequest(limit=1))
-    assert worker["status"] == "ok"
-    assert worker["processed"] == 1
-    assert worker["jobs"][0]["id"] == worker_id
+    with pytest.raises(Exception) as worker_exc:
+        api.editing_worker_run_once(EditWorkerRunOnceRequest(limit=1))
+    assert "Legacy edit job доступен только для просмотра" in str(worker_exc.value)
 
     bulk = api.editing_jobs_bulk_render(
         EditJobsBulkRenderRequest(job_ids=[bulk_one_id, bulk_two_id])
     )
     assert bulk["status"] == "ok"
-    assert bulk["summary"] == {"processed": 2, "skipped": 0, "errors": 0}
-    assert [result["status"] for result in bulk["results"]] == ["done", "done"]
+    assert bulk["summary"] == {"processed": 0, "skipped": 0, "errors": 2}
+    assert [result["status"] for result in bulk["results"]] == ["error", "error"]
+    assert all(
+        "Legacy edit job доступен только для просмотра" in result["error"]
+        for result in bulk["results"]
+    )
 
 
 def test_edit_worker_cli_prints_summary(runner):
     from shortsfarm.cli import app
 
-    rows = [{"status": "done"}, {"status": "failed"}]
-    with patch(
-        "shortsfarm.edit_renderer.run_edit_queue_once",
-        return_value=rows,
-    ) as worker:
-        result = runner.invoke(app, ["edit-worker", "--limit", "2"])
+    result = runner.invoke(app, ["edit-worker", "--limit", "2"])
 
-    assert result.exit_code == 0, result.output
-    assert "Processed edit jobs: 2" in result.output
-    assert "done:   1" in result.output
-    assert "failed: 1" in result.output
-    worker.assert_called_once_with(limit=2)
+    assert result.exit_code == 1
+    assert "Legacy edit worker отключён" in result.output

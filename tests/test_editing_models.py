@@ -146,21 +146,18 @@ def test_channel_profile_allows_null_youtube_account():
 
 def test_channel_profile_update_clear_and_disable():
     from shortsfarm import db
+    from shortsfarm.studio_templates import ensure_default_studio_templates
 
-    template_id = db.create_edit_template(
-        key="profile_template",
-        name="Profile template",
-        recipe_json=_recipe(),
-    )
+    template_id = int(ensure_default_studio_templates()[0]["id"])
     profile_id = db.create_channel_profile(
         name="Profile",
-        default_template_id=template_id,
+        default_studio_template_id=template_id,
     )
 
     assert db.update_channel_profile(
         profile_id,
         name="Updated profile",
-        default_template_id=None,
+        default_studio_template_id=None,
     )
     assert db.disable_channel_profile(profile_id)
 
@@ -168,6 +165,7 @@ def test_channel_profile_update_clear_and_disable():
     assert row is not None
     assert row["name"] == "Updated profile"
     assert row["default_template_id"] is None
+    assert row["default_studio_template_id"] is None
     assert row["enabled"] == 0
 
 

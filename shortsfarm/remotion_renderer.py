@@ -20,7 +20,7 @@ from queue import Empty, Queue
 from typing import Any, Callable
 
 from . import db
-from .ffmpeg_tools import probe_duration, require_binary
+from .ffmpeg_tools import probe_duration, probe_media_metadata, require_binary
 from .render_profiles import get_render_profile, normalize_render_engine
 from .studio import (
     build_remotion_output_paths,
@@ -684,6 +684,33 @@ def _run_ffmpeg_fast(
         resolved_recipe,
         original_canvas_height=int(normalized_recipe["canvas"]["height"]),
     )
+    audio = normalized_recipe.get("audio") or {}
+    main_volume = float(audio.get("main_volume", 1))
+    reaction_volume = float(audio.get("reaction_volume", 0))
+    mute_reaction = bool(audio.get("mute_reaction", True))
+    main_has_audio = bool(probe_media_metadata(main_path).get("has_audio"))
+    reaction_has_audio = (
+        bool(probe_media_metadata(reaction_path).get("has_audio"))
+        if reaction_path is not None and not mute_reaction and reaction_volume > 0
+        else False
+    )
+    audio_filters: list[str] = []
+    audio_map: str | None = None
+    if main_has_audio and reaction_has_audio:
+        audio_filters.extend([
+            f"[0:a]volume={main_volume:.6f}[maina]",
+            f"[1:a]volume={reaction_volume:.6f}[reacta]",
+            "[maina][reacta]amix=inputs=2:duration=shortest:dropout_transition=0[a]",
+        ])
+        audio_map = "[a]"
+    elif main_has_audio and abs(main_volume - 1.0) > 0.000001:
+        audio_filters.append(f"[0:a]volume={main_volume:.6f}[a]")
+        audio_map = "[a]"
+    elif reaction_has_audio:
+        audio_filters.append(f"[1:a]volume={reaction_volume:.6f}[a]")
+        audio_map = "[a]"
+    if audio_filters:
+        filter_complex = ";".join([filter_complex, *audio_filters])
     command = [
         ffmpeg,
         "-hide_banner",
@@ -711,7 +738,7 @@ def _run_ffmpeg_fast(
         "-map",
         "[v]",
         "-map",
-        "0:a?",
+        audio_map or "0:a?",
         "-sn",
         "-dn",
         "-c:v",

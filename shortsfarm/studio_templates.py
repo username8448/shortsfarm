@@ -13,6 +13,7 @@ from . import db
 TEMPLATE_STATUSES = {"draft", "active", "archived"}
 TEMPLATE_RENDERERS = {"ffmpeg_fast", "remotion"}
 _KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_]{1,79}$")
+_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,18 @@ class StudioTemplateAdapter:
     supported_renderers: tuple[str, ...]
     supports_optional_reaction: bool
     reaction_required_fn: Callable[[dict[str, Any], dict[str, Any]], bool]
+
+    def validate_parameters(
+        self,
+        definition: dict[str, Any],
+        parameter_values: dict[str, Any] | None,
+    ) -> None:
+        validate_parameter_values(definition, parameter_values)
+
+    def materialize_recipe(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        from .studio import parameterized_recipe_from_template
+
+        return parameterized_recipe_from_template(*args, **kwargs)
 
 
 def _reaction_layout_required(
@@ -478,13 +491,77 @@ def effective_parameter_values(
 ) -> dict[str, Any]:
     normalized = normalize_template_definition(definition)
     overrides = parameter_values or {}
+    validate_parameter_values(normalized, overrides)
     values: dict[str, Any] = {}
     for key, parameter in normalized["parameters"].items():
-        values[key] = overrides[key] if key in overrides else parameter.get("default")
-    for key, value in overrides.items():
-        if key not in values:
-            values[str(key)] = value
+        values[key] = _normalize_parameter_value(
+            key,
+            parameter,
+            overrides[key] if key in overrides else parameter.get("default"),
+        )
     return values
+
+
+def _normalize_parameter_value(
+    key: str,
+    parameter: dict[str, Any],
+    value: Any,
+) -> Any:
+    parameter_type = str(parameter.get("type") or "").strip()
+    if parameter_type == "number":
+        if isinstance(value, bool):
+            raise ValueError(f"Parameter {key} должен быть number.")
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Parameter {key} должен быть number.") from exc
+        minimum = parameter.get("min")
+        maximum = parameter.get("max")
+        if minimum is not None and normalized < float(minimum):
+            raise ValueError(f"Parameter {key} должен быть >= {minimum}.")
+        if maximum is not None and normalized > float(maximum):
+            raise ValueError(f"Parameter {key} должен быть <= {maximum}.")
+        return int(normalized) if normalized.is_integer() else normalized
+    if parameter_type == "select":
+        choices = [str(item) for item in parameter.get("values") or []]
+        normalized = str(value)
+        if normalized not in choices:
+            raise ValueError(
+                f"Parameter {key} должен быть одним из: {', '.join(choices)}."
+            )
+        return normalized
+    if parameter_type == "boolean":
+        if not isinstance(value, bool):
+            raise ValueError(f"Parameter {key} должен быть boolean.")
+        return value
+    if parameter_type == "text":
+        if not isinstance(value, str):
+            raise ValueError(f"Parameter {key} должен быть text.")
+        max_length = parameter.get("max_length")
+        if max_length is not None and len(value) > int(max_length):
+            raise ValueError(f"Parameter {key} длиннее {max_length} символов.")
+        return value
+    if parameter_type == "color":
+        normalized = str(value or "")
+        if not _COLOR_RE.fullmatch(normalized):
+            raise ValueError(f"Parameter {key} должен быть цветом #RRGGBB.")
+        return normalized.lower()
+    raise ValueError(f"Unsupported parameter type: {parameter_type}")
+
+
+def validate_parameter_values(
+    definition: dict[str, Any],
+    parameter_values: dict[str, Any] | None = None,
+) -> None:
+    normalized = normalize_template_definition(definition)
+    values = parameter_values or {}
+    if not isinstance(values, dict):
+        raise ValueError("parameter_values должен быть JSON object.")
+    unknown = sorted(str(key) for key in values if str(key) not in normalized["parameters"])
+    if unknown:
+        raise ValueError("Unknown template parameter: " + ", ".join(unknown))
+    for key, value in values.items():
+        _normalize_parameter_value(str(key), normalized["parameters"][str(key)], value)
 
 
 def reaction_required_for_definition(
@@ -596,13 +673,112 @@ def parameter_defaults(definition: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class UnsupportedLegacyTemplateError(ValueError):
+    """Raised when an edit_templates.recipe_json cannot be safely converted."""
+
+
+def _legacy_row_value(row: Any, key: str, default: Any = None) -> Any:
+    try:
+        if key in row.keys():
+            return row[key]
+    except AttributeError:
+        if isinstance(row, dict) and key in row:
+            return row[key]
+    return default
+
+
+def _legacy_template_key(row: Any) -> str:
+    raw_key = str(
+        _legacy_row_value(row, "key")
+        or _legacy_row_value(row, "template_key")
+        or ""
+    ).strip().lower()
+    key = re.sub(r"[^a-z0-9_]+", "_", raw_key).strip("_")
+    legacy_id = _legacy_row_value(row, "id")
+    if len(key) < 2:
+        key = f"legacy_{int(legacy_id) if legacy_id is not None else 'template'}"
+    return key[:80]
+
+
+def _legacy_template_name(row: Any, key: str) -> str:
+    return str(_legacy_row_value(row, "name") or key).strip() or key
+
+
+def _legacy_recipe(row: Any) -> dict[str, Any]:
+    raw = _legacy_row_value(row, "recipe_json")
+    if isinstance(raw, dict):
+        recipe = raw
+    else:
+        try:
+            recipe = json.loads(str(raw or "{}"))
+        except json.JSONDecodeError as exc:
+            raise UnsupportedLegacyTemplateError(
+                f"legacy recipe_json invalid: {exc.msg}"
+            ) from exc
+    if not isinstance(recipe, dict):
+        raise UnsupportedLegacyTemplateError("legacy recipe_json must be object")
+    return recipe
+
+
+def _slot_int(slot: dict[str, Any], key: str) -> int | None:
+    try:
+        return int(slot.get(key))
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_legacy_recipe_defaults(
+    definition: dict[str, Any],
+    recipe: dict[str, Any],
+) -> dict[str, Any]:
+    parameters = definition.setdefault("parameters", {})
+
+    def set_default(key: str, value: Any) -> None:
+        if key in parameters and value is not None:
+            parameters[key]["default"] = value
+
+    slots = recipe.get("slots") if isinstance(recipe.get("slots"), dict) else {}
+    main_slot = slots.get("main") if isinstance(slots.get("main"), dict) else {}
+    reaction_slot = slots.get("reaction") if isinstance(slots.get("reaction"), dict) else {}
+    set_default("main_fit", main_slot.get("fit") or main_slot.get("object_fit"))
+    set_default("reaction_fit", reaction_slot.get("fit") or reaction_slot.get("object_fit"))
+
+    layout = recipe.get("layout") if isinstance(recipe.get("layout"), dict) else {}
+    set_default("background_color", layout.get("background_color"))
+
+    audio = recipe.get("audio") if isinstance(recipe.get("audio"), dict) else {}
+    set_default("main_volume", audio.get("main_volume"))
+    set_default("reaction_volume", audio.get("reaction_volume"))
+    if "mute_reaction" in audio:
+        set_default("mute_reaction", bool(audio.get("mute_reaction")))
+    elif str(audio.get("mode") or "").strip().lower() in {"main_only", "mute_reaction"}:
+        set_default("mute_reaction", True)
+        set_default("reaction_volume", 0)
+    elif str(audio.get("mode") or "").strip().lower() in {"mix", "both", "reaction"}:
+        set_default("mute_reaction", False)
+
+    overlays = recipe.get("overlays")
+    if isinstance(overlays, dict):
+        set_default("top_text", overlays.get("top_text"))
+        set_default("bottom_text", overlays.get("bottom_text"))
+    elif isinstance(overlays, list):
+        for item in overlays:
+            if not isinstance(item, dict):
+                continue
+            target = str(item.get("target") or item.get("position") or "").lower()
+            text = item.get("text")
+            if target == "top":
+                set_default("top_text", text)
+            elif target == "bottom":
+                set_default("bottom_text", text)
+    return definition
+
+
 def legacy_edit_template_to_definition(row: Any) -> dict[str, Any]:
     """Best-effort conversion of archived edit_templates into Studio definitions."""
-    raw_key = str(row["key"] if "key" in row.keys() else row["template_key"]).strip().lower()
-    key = re.sub(r"[^a-z0-9_]+", "_", raw_key).strip("_")
-    if len(key) < 2:
-        key = f"legacy_{int(row['id']) if 'id' in row.keys() else 'template'}"
-    name = str(row["name"] if "name" in row.keys() else key).strip() or key
+    key = _legacy_template_key(row)
+    name = _legacy_template_name(row, key)
+    recipe = _legacy_recipe(row)
     if key in {
         "reaction_top_25",
         "reaction_top_33",
@@ -612,14 +788,60 @@ def legacy_edit_template_to_definition(row: Any) -> dict[str, Any]:
     }:
         for definition in default_studio_template_definitions():
             if str(definition["key"]) == key:
-                return normalize_template_definition({**definition, "name": name})
-    # Most historical edit_templates used the old reaction_top_25 slot shape
-    # under custom keys.  Convert them to the reaction_layout adapter so legacy
-    # channel profiles can be bridged into Studio without resurrecting the old
-    # renderer path.
-    definition = default_reaction_top_25_definition()
+                return normalize_template_definition(
+                    _apply_legacy_recipe_defaults({**definition, "name": name}, recipe)
+                )
+
+    slots = recipe.get("slots")
+    if not isinstance(slots, dict):
+        raise UnsupportedLegacyTemplateError("legacy recipe has no slots object")
+    main_slot = slots.get("main")
+    reaction_slot = slots.get("reaction")
+    if not isinstance(main_slot, dict):
+        raise UnsupportedLegacyTemplateError("legacy recipe has no main slot")
+
+    if reaction_slot is None:
+        definition = _main_only_definition()
+        definition["key"] = key
+        definition["name"] = name
+        return normalize_template_definition(
+            _apply_legacy_recipe_defaults(definition, recipe)
+        )
+    if not isinstance(reaction_slot, dict):
+        raise UnsupportedLegacyTemplateError("legacy reaction slot is not object")
+
+    reaction_height = _slot_int(reaction_slot, "h") or _slot_int(reaction_slot, "height")
+    reaction_y = _slot_int(reaction_slot, "y") or 0
+    main_y = _slot_int(main_slot, "y") or 0
+    if reaction_height is None or not 240 <= reaction_height <= 960:
+        raise UnsupportedLegacyTemplateError("legacy reaction slot height is unsupported")
+    reaction_position = "top" if reaction_y <= main_y else "bottom"
+    layout_variant = "top_reaction" if reaction_position == "top" else "bottom_reaction"
+    definition = _reaction_layout_definition(
+        key=key,
+        name=name,
+        reaction_position=reaction_position,
+        reaction_height=reaction_height,
+        layout_variant=layout_variant,
+    )
+    return normalize_template_definition(
+        _apply_legacy_recipe_defaults(definition, recipe)
+    )
+
+
+def archived_legacy_edit_template_definition(
+    row: Any,
+    reason: str,
+) -> dict[str, Any]:
+    key = _legacy_template_key(row)
+    name = _legacy_template_name(row, key)
+    definition = _main_only_definition()
     definition["key"] = key
     definition["name"] = name
+    definition.setdefault("rules", {})["migration_warning"] = reason
+    legacy_id = _legacy_row_value(row, "id")
+    if legacy_id is not None:
+        definition["rules"]["legacy_edit_template_id"] = int(legacy_id)
     return normalize_template_definition(definition)
 
 

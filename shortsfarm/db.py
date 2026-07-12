@@ -5516,71 +5516,6 @@ def disable_edit_template(template_id: int) -> bool:
         return result.rowcount > 0
 
 
-def _legacy_edit_template_to_studio_template_id_in_connection(
-    con: sqlite3.Connection,
-    template_id: int | None,
-) -> int | None:
-    if template_id is None:
-        return None
-    row = con.execute(
-        "SELECT * FROM edit_templates WHERE id=?",
-        (int(template_id),),
-    ).fetchone()
-    if row is None:
-        return None
-    if row["studio_template_id"] is not None:
-        return int(row["studio_template_id"])
-    studio = con.execute(
-        """
-        SELECT id
-        FROM studio_templates
-        WHERE template_key=? AND deleted_at IS NULL
-        ORDER BY version DESC, id DESC
-        LIMIT 1
-        """,
-        (str(row["key"]),),
-    ).fetchone()
-    if studio is not None:
-        studio_id = int(studio["id"])
-    else:
-        from .studio_templates import legacy_edit_template_to_definition
-
-        definition = legacy_edit_template_to_definition(row)
-        version_row = con.execute(
-            """
-            SELECT COALESCE(MAX(version), 0) AS max_version
-            FROM studio_templates
-            WHERE template_key=?
-            """,
-            (definition["key"],),
-        ).fetchone()
-        version = int(version_row["max_version"] or 0) + 1
-        now = now_utc()
-        cur = con.execute(
-            """
-            INSERT INTO studio_templates
-                (template_key, name, engine, version, status,
-                 definition_json, created_at, updated_at)
-            VALUES (?, ?, 'remotion', ?, ?, ?, ?, ?)
-            """,
-            (
-                definition["key"],
-                definition["name"],
-                version,
-                "active" if bool(row["enabled"]) else "archived",
-                json.dumps(definition, ensure_ascii=False),
-                now,
-                now,
-            ),
-        )
-        studio_id = int(cur.lastrowid)
-    con.execute(
-        "UPDATE edit_templates SET studio_template_id=?, updated_at=? WHERE id=?",
-        (studio_id, now_utc(), int(template_id)),
-    )
-    return studio_id
-
-
 def create_channel_profile(
     *,
     name: str,
@@ -5595,13 +5530,10 @@ def create_channel_profile(
     default_category_id: str | None = None,
     enabled: bool = True,
 ) -> int:
+    if default_template_id is not None:
+        raise ValueError("Legacy default_template_id is no longer supported.")
     now = now_utc()
     with connect() as con:
-        if default_studio_template_id is None:
-            default_studio_template_id = _legacy_edit_template_to_studio_template_id_in_connection(
-                con,
-                default_template_id,
-            )
         cur = con.execute(
             """
             INSERT INTO channel_profiles
@@ -5614,7 +5546,7 @@ def create_channel_profile(
             (
                 name,
                 youtube_account_id,
-                default_template_id,
+                None,
                 reaction_pool_id,
                 title_template,
                 description_template,
@@ -5678,15 +5610,14 @@ def list_channel_profiles_with_details(enabled: bool | None = None) -> list[sqli
                 cp.*,
                 sa.channel_title AS youtube_channel_title,
                 sa.display_name AS youtube_display_name,
-                et.name AS default_template_name,
-                et.key AS default_template_key,
+                NULL AS default_template_name,
+                NULL AS default_template_key,
                 st.name AS default_studio_template_name,
                 st.template_key AS default_studio_template_key,
                 st.version AS default_studio_template_version,
                 rp.name AS reaction_pool_name
             FROM channel_profiles cp
             LEFT JOIN social_accounts sa ON sa.id=cp.youtube_account_id
-            LEFT JOIN edit_templates et ON et.id=cp.default_template_id
             LEFT JOIN studio_templates st ON st.id=cp.default_studio_template_id
             LEFT JOIN reaction_pools rp ON rp.id=cp.reaction_pool_id
             {where}
@@ -5718,15 +5649,8 @@ def update_channel_profile(
         ).fetchone()
         if row is None:
             return False
-        if (
-            default_studio_template_id is _UNSET
-            and default_template_id is not _UNSET
-            and default_template_id is not None
-        ):
-            default_studio_template_id = _legacy_edit_template_to_studio_template_id_in_connection(
-                con,
-                int(default_template_id),
-            )
+        if default_template_id is not _UNSET and default_template_id is not None:
+            raise ValueError("Legacy default_template_id is no longer supported.")
         enabled_value = row["enabled"] if enabled is _UNSET else (1 if enabled else 0)
         con.execute(
             """
@@ -5740,7 +5664,7 @@ def update_channel_profile(
             (
                 _updated_value(row, "name", name),
                 _updated_value(row, "youtube_account_id", youtube_account_id),
-                _updated_value(row, "default_template_id", default_template_id),
+                None if default_template_id is not _UNSET else row["default_template_id"],
                 _updated_value(row, "reaction_pool_id", reaction_pool_id),
                 _updated_value(row, "title_template", title_template),
                 _updated_value(row, "description_template", description_template),
@@ -6075,6 +5999,53 @@ def sync_edit_job_from_remotion_render_job(render_job_id: int) -> bool:
             ),
         )
         return result.rowcount > 0
+
+
+def _sync_edit_jobs_for_render_ids_in_connection(
+    con: sqlite3.Connection,
+    render_job_ids: list[int],
+) -> None:
+    if not render_job_ids:
+        return
+    placeholders = ",".join("?" for _ in render_job_ids)
+    rows = con.execute(
+        f"""
+        SELECT id, status, output_path, error, started_at, finished_at
+        FROM remotion_render_jobs
+        WHERE id IN ({placeholders})
+        """,
+        render_job_ids,
+    ).fetchall()
+    for row in rows:
+        status = str(row["status"] or "queued")
+        edit_status = status if status in EDIT_JOB_STATUSES else "queued"
+        if edit_status == "queued":
+            values = ("queued", None, None, None, None, int(row["id"]))
+        elif edit_status == "rendering":
+            values = ("rendering", None, None, row["started_at"], None, int(row["id"]))
+        elif edit_status == "done":
+            values = ("done", row["output_path"], None, row["started_at"], row["finished_at"], int(row["id"]))
+        else:
+            values = (
+                edit_status,
+                None,
+                row["error"],
+                row["started_at"],
+                row["finished_at"],
+                int(row["id"]),
+            )
+        con.execute(
+            """
+            UPDATE edit_jobs
+            SET status=?,
+                edited_path=?,
+                error=?,
+                started_at=?,
+                finished_at=?
+            WHERE remotion_render_job_id=?
+            """,
+            values,
+        )
 
 
 def _claim_edit_job_where(
@@ -7386,14 +7357,7 @@ def cancel_remotion_render_job(job_id: int) -> bool:
             )
             _sync_remotion_render_batch_in_connection(con, batch_id)
         if result.rowcount > 0:
-            con.execute(
-                """
-                UPDATE edit_jobs
-                SET status='cancelled', finished_at=?
-                WHERE remotion_render_job_id=?
-                """,
-                (now_utc(), int(job_id)),
-            )
+            _sync_edit_jobs_for_render_ids_in_connection(con, [int(job_id)])
         return result.rowcount > 0
 
 
@@ -7440,18 +7404,7 @@ def retry_remotion_render_job(job_id: int) -> bool:
             )
             _sync_remotion_render_batch_in_connection(con, batch_id)
         if result.rowcount > 0:
-            con.execute(
-                """
-                UPDATE edit_jobs
-                SET status='queued',
-                    edited_path=NULL,
-                    error=NULL,
-                    started_at=NULL,
-                    finished_at=NULL
-                WHERE remotion_render_job_id=?
-                """,
-                (int(job_id),),
-            )
+            _sync_edit_jobs_for_render_ids_in_connection(con, [int(job_id)])
         return result.rowcount > 0
 
 
@@ -7508,6 +7461,7 @@ def retry_failed_remotion_render_batch(batch_id: int) -> int:
             """,
             [now_utc(), *job_ids],
         )
+        _sync_edit_jobs_for_render_ids_in_connection(con, job_ids)
         _sync_remotion_render_batch_in_connection(con, int(batch_id))
         return len(job_ids)
 
@@ -7578,6 +7532,7 @@ def auto_retry_failed_remotion_render_batch(
             """,
             [now_utc(), *job_ids],
         )
+        _sync_edit_jobs_for_render_ids_in_connection(con, job_ids)
         _sync_remotion_render_batch_in_connection(con, int(batch_id))
         return len(job_ids)
 
@@ -7620,6 +7575,18 @@ def fail_interrupted_remotion_render_jobs() -> int:
             """,
             (now_utc(),),
         )
+        interrupted_ids = [
+            int(row["id"])
+            for row in con.execute(
+                """
+                SELECT id
+                FROM remotion_render_jobs
+                WHERE error='Remotion render был прерван перезапуском backend.'
+                  AND status='failed'
+                """
+            ).fetchall()
+        ]
+        _sync_edit_jobs_for_render_ids_in_connection(con, interrupted_ids)
         for batch_id in affected_batches:
             _sync_remotion_render_batch_in_connection(con, batch_id)
         return int(result.rowcount)
@@ -7818,6 +7785,7 @@ def cancel_remotion_render_batch(batch_id: int) -> int:
             """,
             [now, *job_ids],
         )
+        _sync_edit_jobs_for_render_ids_in_connection(con, job_ids)
         _sync_remotion_render_batch_in_connection(con, int(batch_id))
         return len(job_ids)
 
@@ -8139,46 +8107,6 @@ def restore_studio_template(template_id: int) -> bool:
             (now_utc(), int(template_id)),
         )
         return result.rowcount > 0
-
-
-def link_legacy_edit_templates_to_studio() -> int:
-    """Attach legacy edit_templates/channel defaults to matching Studio templates."""
-    with connect() as con:
-        rows = con.execute(
-            """
-            SELECT et.id, et.key
-            FROM edit_templates et
-            WHERE et.studio_template_id IS NULL
-            """
-        ).fetchall()
-        updated = 0
-        for row in rows:
-            studio = con.execute(
-                """
-                SELECT id
-                FROM studio_templates
-                WHERE template_key=? AND deleted_at IS NULL
-                ORDER BY version DESC, id DESC
-                LIMIT 1
-                """,
-                (row["key"],),
-            ).fetchone()
-            if studio is None:
-                continue
-            con.execute(
-                "UPDATE edit_templates SET studio_template_id=?, updated_at=? WHERE id=?",
-                (int(studio["id"]), now_utc(), int(row["id"])),
-            )
-            con.execute(
-                """
-                UPDATE channel_profiles
-                SET default_studio_template_id=?
-                WHERE default_template_id=? AND default_studio_template_id IS NULL
-                """,
-                (int(studio["id"]), int(row["id"])),
-            )
-            updated += 1
-        return updated
 
 
 def next_studio_template_version(template_key: str) -> int:

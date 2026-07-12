@@ -7,6 +7,18 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _mock_studio_edit_preflight(monkeypatch):
+    """Planning tests assert DB graph creation, not ffprobe/media probing."""
+    monkeypatch.setattr(
+        "shortsfarm.studio_service.resolved_studio_recipe",
+        lambda recipe, **_kwargs: recipe | {
+            "trim": {"duration_sec": 10.0, "start_sec": 0.0},
+            "render_profile": {"key": _kwargs.get("render_profile") or "low_540p"},
+        },
+    )
+
+
 def test_parse_workspace_item_key_validates_format():
     from shortsfarm.edit_planner import parse_workspace_item_key
 

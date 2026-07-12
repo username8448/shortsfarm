@@ -1635,6 +1635,7 @@ async function loadDashboard() {
     document.getElementById('nav-jobs').textContent = runningJobs + queuedJobs + activePipelineRuns || '';
     document.getElementById('job-pulse').classList.toggle('pulse', runningJobs > 0 || activePipelineRuns > 0);
 
+    renderStudioMigrationWarning(data.studio_migration_warning);
     renderRunningBanner(data.latest_jobs || []);
     renderJobsTable('dash-jobs', data.latest_jobs || [], false);
     renderVideoStatusBars(videos, data.videos_total || 0);
@@ -1643,6 +1644,22 @@ async function loadDashboard() {
   } catch (err) {
     showError('dash-jobs', err);
   }
+}
+
+function renderStudioMigrationWarning(warning) {
+  const el = document.getElementById('studio-migration-warning');
+  if (!el) return;
+  if (!warning) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="banner" style="background:var(--warn-bg);border-color:rgba(245,158,11,.35);">
+    <div class="banner-left" style="justify-content:space-between;align-items:flex-start">
+      <div>
+        <div class="badge b-warn" style="margin-bottom:8px">Template Studio migration</div>
+        <div class="txt">${esc(warning.message || 'Проверка миграции Template Studio нашла проблемы.')}</div>
+        <div class="mono mid" style="margin-top:6px">mode=${esc(warning.mode || 'unknown')}</div>
+      </div>
+      <button class="btn-mini" onclick="nav('settings',document.querySelector('[data-v=settings]'))">Настройки</button>
+    </div>
+  </div>`;
 }
 
 function renderRunningBanner(jobs) {

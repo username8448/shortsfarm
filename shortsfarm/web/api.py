@@ -32,11 +32,7 @@ from ..config import (
     youtube_redirect_uri,
 )
 from ..edit_planner import parse_workspace_item_key, plan_edit_jobs_for_workspace_items
-from ..edit_renderer import (
-    render_edit_job,
-    resolve_edit_job_media_path,
-    run_edit_queue_once,
-)
+from ..edit_renderer import resolve_edit_job_media_path
 from ..ffmpeg_tools import probe_duration, require_binary
 from ..local_dialogs import (
     LocalDialogUnavailable,
@@ -372,6 +368,17 @@ def _base_url(request: Request | None) -> str:
     if request is None:
         return ""
     return str(request.base_url).rstrip("/")
+
+
+LEGACY_EDIT_JOB_READONLY_MESSAGE = (
+    "Legacy edit job доступен только для просмотра. "
+    "Повторный render запрещён."
+)
+
+
+def _require_studio_edit_job(row: Any) -> None:
+    if _row(row, "studio_project_id") is None or _row(row, "remotion_render_job_id") is None:
+        raise ValueError(LEGACY_EDIT_JOB_READONLY_MESSAGE)
 
 
 def _reaction_asset_dict(row: Any) -> dict[str, Any]:
@@ -3798,60 +3805,31 @@ def editing_jobs_bulk_render(
                 current = db.get_edit_job(job_id)
                 if current is None:
                     raise FileNotFoundError(f"Edit job {job_id} не найден.")
-                if current["remotion_render_job_id"] is not None:
-                    render_job_id = int(current["remotion_render_job_id"])
-                    render_row = db.get_remotion_render_job(render_job_id)
-                    if render_row is None:
-                        raise FileNotFoundError(f"Remotion render job {render_job_id} не найден.")
-                    render_status = str(render_row["status"])
-                    if render_status in {"failed", "cancelled"} and req.force:
-                        db.retry_remotion_render_job(render_job_id)
-                        render_status = "queued"
-                    if render_status != "queued":
-                        summary["skipped"] += 1
-                        results.append({
-                            "job_id": job_id,
-                            "status": "skipped",
-                            "reason": f"Remotion job со status={render_status} не запускается bulk-render.",
-                        })
-                        continue
-                    start_studio_render_queue(_base_url(request))
-                    summary["processed"] += 1
-                    db.sync_edit_job_from_remotion_render_job(render_job_id)
-                    updated = db.get_edit_job(job_id)
-                    results.append({
-                        "job_id": job_id,
-                        "status": "queued",
-                        "job": _edit_job_dict(updated),
-                    })
-                    continue
-                current_status = str(current["status"])
-                runnable = (
-                    current_status == "queued"
-                    or (
-                        req.force
-                        and current_status in {"done", "failed", "cancelled"}
-                    )
-                )
-                if not runnable:
+                _require_studio_edit_job(current)
+                render_job_id = int(current["remotion_render_job_id"])
+                render_row = db.get_remotion_render_job(render_job_id)
+                if render_row is None:
+                    raise FileNotFoundError(f"Remotion render job {render_job_id} не найден.")
+                render_status = str(render_row["status"])
+                if render_status in {"failed", "cancelled"} and req.force:
+                    db.retry_remotion_render_job(render_job_id)
+                    render_status = "queued"
+                if render_status != "queued":
                     summary["skipped"] += 1
                     results.append({
                         "job_id": job_id,
                         "status": "skipped",
-                        "reason": (
-                            "Job уже rendering."
-                            if current_status == "rendering"
-                            else f"Для status={current_status} требуется force=true."
-                        ),
+                        "reason": f"Remotion job со status={render_status} не запускается bulk-render.",
                     })
                     continue
-
-                rendered = render_edit_job(job_id, force=req.force)
+                start_studio_render_queue(_base_url(request))
                 summary["processed"] += 1
+                db.sync_edit_job_from_remotion_render_job(render_job_id)
+                updated = db.get_edit_job(job_id)
                 results.append({
                     "job_id": job_id,
-                    "status": str(rendered["status"]),
-                    "job": _edit_job_dict(rendered),
+                    "status": "queued",
+                    "job": _edit_job_dict(updated),
                 })
             except Exception as exc:
                 summary["errors"] += 1
@@ -3873,11 +3851,18 @@ def editing_worker_run_once(
 ) -> dict[str, Any]:
     try:
         _init()
-        rows = run_edit_queue_once(limit=req.limit if req else 1)
+        rows = [
+            row for row in db.list_edit_jobs(status="queued", limit=req.limit if req else 1)
+            if row["studio_project_id"] is None or row["remotion_render_job_id"] is None
+        ]
+        if rows:
+            raise ValueError(LEGACY_EDIT_JOB_READONLY_MESSAGE)
+        queue = start_studio_render_queue("")
         return {
             "status": "ok",
-            "jobs": [_edit_job_dict(row) for row in rows],
-            "processed": len(rows),
+            "queue": queue,
+            "jobs": [],
+            "processed": 0,
         }
     except Exception as exc:
         raise _fail(exc)
@@ -3897,36 +3882,34 @@ def editing_job_render(
         current = db.get_edit_job(job_id)
         if current is None:
             raise FileNotFoundError("Edit job не найден.")
-        if current["remotion_render_job_id"] is not None:
-            render_job_id = int(current["remotion_render_job_id"])
-            render_row = db.get_remotion_render_job(render_job_id)
-            if render_row is None:
-                raise FileNotFoundError("Remotion render job не найден.")
-            render_status = str(render_row["status"])
-            force = bool(req.force) if req else False
-            if render_status == "done" and not force:
-                return {"status": "ok", "job": _edit_job_dict(current)}
-            if render_status in {"failed", "cancelled"} and force:
-                db.retry_remotion_render_job(render_job_id)
-                render_status = "queued"
-            elif render_status in {"failed", "cancelled"}:
-                raise ValueError(
-                    f"Remotion job со status={render_status} можно повторить только с force=true."
-                )
-            elif render_status == "done" and force:
-                raise ValueError("Готовый Remotion render нельзя перезаписать этим действием; создайте задачу заново.")
-            if render_status != "queued":
-                raise ValueError(f"Remotion job со status={render_status} уже не queued.")
-            started = start_studio_render_queue(_base_url(request))
-            db.sync_edit_job_from_remotion_render_job(render_job_id)
-            updated = db.get_edit_job(job_id)
-            return {
-                "status": "queued",
-                "queue": started,
-                "job": _edit_job_dict(updated or current),
-            }
-        rendered = render_edit_job(job_id, force=bool(req.force) if req else False)
-        return {"status": "ok", "job": _edit_job_dict(rendered)}
+        _require_studio_edit_job(current)
+        render_job_id = int(current["remotion_render_job_id"])
+        render_row = db.get_remotion_render_job(render_job_id)
+        if render_row is None:
+            raise FileNotFoundError("Remotion render job не найден.")
+        render_status = str(render_row["status"])
+        force = bool(req.force) if req else False
+        if render_status == "done" and not force:
+            return {"status": "ok", "job": _edit_job_dict(current)}
+        if render_status in {"failed", "cancelled"} and force:
+            db.retry_remotion_render_job(render_job_id)
+            render_status = "queued"
+        elif render_status in {"failed", "cancelled"}:
+            raise ValueError(
+                f"Remotion job со status={render_status} можно повторить только с force=true."
+            )
+        elif render_status == "done" and force:
+            raise ValueError("Готовый Remotion render нельзя перезаписать этим действием; создайте задачу заново.")
+        if render_status != "queued":
+            raise ValueError(f"Remotion job со status={render_status} уже не queued.")
+        started = start_studio_render_queue(_base_url(request))
+        db.sync_edit_job_from_remotion_render_job(render_job_id)
+        updated = db.get_edit_job(job_id)
+        return {
+            "status": "queued",
+            "queue": started,
+            "job": _edit_job_dict(updated or current),
+        }
     except FileNotFoundError as exc:
         raise _fail(exc, status_code=404)
     except Exception as exc:
@@ -3940,18 +3923,9 @@ def editing_job_cancel(job_id: int) -> dict[str, Any]:
         job = db.get_edit_job(job_id)
         if job is None:
             raise FileNotFoundError("Edit job не найден.")
-        if job["remotion_render_job_id"] is not None:
-            if not db.cancel_remotion_render_job(int(job["remotion_render_job_id"])):
-                raise ValueError("Отменить можно только queued Remotion job.")
-            row = next(
-                row for row in db.list_edit_jobs_with_details(limit=10000)
-                if int(row["id"]) == job_id
-            )
-            return {"item": _edit_job_dict(row)}
-        if str(job["status"]) == "rendering":
-            raise ValueError("Нельзя отменить rendering job в этом этапе.")
-        if not db.cancel_edit_job(job_id):
-            raise ValueError("Отменить можно только queued или failed edit job.")
+        _require_studio_edit_job(job)
+        if not db.cancel_remotion_render_job(int(job["remotion_render_job_id"])):
+            raise ValueError("Отменить можно только queued Remotion job.")
         row = next(
             row for row in db.list_edit_jobs_with_details(limit=10000)
             if int(row["id"]) == job_id
@@ -3970,15 +3944,8 @@ def editing_job_retry(job_id: int) -> dict[str, Any]:
         job = db.get_edit_job(job_id)
         if job is None:
             raise FileNotFoundError("Edit job не найден.")
-        if job["remotion_render_job_id"] is not None:
-            if not db.retry_remotion_render_job(int(job["remotion_render_job_id"])):
-                raise ValueError("Повторить можно только failed или cancelled Remotion job.")
-            row = next(
-                row for row in db.list_edit_jobs_with_details(limit=10000)
-                if int(row["id"]) == job_id
-            )
-            return {"item": _edit_job_dict(row)}
-        if not db.retry_edit_job(job_id):
+        _require_studio_edit_job(job)
+        if not db.retry_remotion_render_job(int(job["remotion_render_job_id"])):
             raise ValueError("Повторить можно только failed или cancelled edit job.")
         row = next(
             row for row in db.list_edit_jobs_with_details(limit=10000)
@@ -4013,6 +3980,22 @@ def status() -> dict[str, Any]:
             }
             for row in db.list_recent_errors(limit=5)
         ]
+        studio_runtime_mode = db.get_setting(
+            "studio_templates_runtime_mode",
+            "studio_only",
+        )
+        studio_migration_warning = (
+            {
+                "mode": studio_runtime_mode,
+                "message": (
+                    "Template Studio работает в режиме Studio-only, "
+                    "но проверка миграции нашла проблемы. "
+                    "Откройте migration report 047_studio_only_verification."
+                ),
+            }
+            if studio_runtime_mode == "studio_only_with_migration_errors"
+            else None
+        )
         return {
             "videos_total": db.count_videos(),
             "segments_total": db.count_segments(),
@@ -4023,6 +4006,8 @@ def status() -> dict[str, Any]:
             "latest_outputs": _latest_outputs(),
             "recent_errors": errors,
             "latest_videos": videos[:10],
+            "studio_templates_runtime_mode": studio_runtime_mode,
+            "studio_migration_warning": studio_migration_warning,
         }
     except Exception as exc:
         raise _fail(exc)
