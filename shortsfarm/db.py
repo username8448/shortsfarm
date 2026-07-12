@@ -5516,6 +5516,71 @@ def disable_edit_template(template_id: int) -> bool:
         return result.rowcount > 0
 
 
+def _legacy_edit_template_to_studio_template_id_in_connection(
+    con: sqlite3.Connection,
+    template_id: int | None,
+) -> int | None:
+    if template_id is None:
+        return None
+    row = con.execute(
+        "SELECT * FROM edit_templates WHERE id=?",
+        (int(template_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["studio_template_id"] is not None:
+        return int(row["studio_template_id"])
+    studio = con.execute(
+        """
+        SELECT id
+        FROM studio_templates
+        WHERE template_key=? AND deleted_at IS NULL
+        ORDER BY version DESC, id DESC
+        LIMIT 1
+        """,
+        (str(row["key"]),),
+    ).fetchone()
+    if studio is not None:
+        studio_id = int(studio["id"])
+    else:
+        from .studio_templates import legacy_edit_template_to_definition
+
+        definition = legacy_edit_template_to_definition(row)
+        version_row = con.execute(
+            """
+            SELECT COALESCE(MAX(version), 0) AS max_version
+            FROM studio_templates
+            WHERE template_key=?
+            """,
+            (definition["key"],),
+        ).fetchone()
+        version = int(version_row["max_version"] or 0) + 1
+        now = now_utc()
+        cur = con.execute(
+            """
+            INSERT INTO studio_templates
+                (template_key, name, engine, version, status,
+                 definition_json, created_at, updated_at)
+            VALUES (?, ?, 'remotion', ?, ?, ?, ?, ?)
+            """,
+            (
+                definition["key"],
+                definition["name"],
+                version,
+                "active" if bool(row["enabled"]) else "archived",
+                json.dumps(definition, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        studio_id = int(cur.lastrowid)
+    con.execute(
+        "UPDATE edit_templates SET studio_template_id=?, updated_at=? WHERE id=?",
+        (studio_id, now_utc(), int(template_id)),
+    )
+    return studio_id
+
+
 def create_channel_profile(
     *,
     name: str,
@@ -5532,6 +5597,11 @@ def create_channel_profile(
 ) -> int:
     now = now_utc()
     with connect() as con:
+        if default_studio_template_id is None:
+            default_studio_template_id = _legacy_edit_template_to_studio_template_id_in_connection(
+                con,
+                default_template_id,
+            )
         cur = con.execute(
             """
             INSERT INTO channel_profiles
@@ -5648,6 +5718,15 @@ def update_channel_profile(
         ).fetchone()
         if row is None:
             return False
+        if (
+            default_studio_template_id is _UNSET
+            and default_template_id is not _UNSET
+            and default_template_id is not None
+        ):
+            default_studio_template_id = _legacy_edit_template_to_studio_template_id_in_connection(
+                con,
+                int(default_template_id),
+            )
         enabled_value = row["enabled"] if enabled is _UNSET else (1 if enabled else 0)
         con.execute(
             """

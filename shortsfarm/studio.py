@@ -13,11 +13,18 @@ from . import db
 from .ffmpeg_tools import probe_duration
 from .render_profiles import get_render_profile
 from .services import VIDEO_EXTENSIONS, safe_filename
-from .studio_templates import composition_id_for_definition, require_remotion_adapter
+from .studio_templates import (
+    composition_id_for_definition,
+    effective_parameter_values,
+    reaction_required_for_definition,
+    require_template_adapter,
+    validate_renderer_for_definition,
+)
 from .workspace_fs import get_workspace_root, resolve_workspace_path
 
 
 STUDIO_RENDERER = "remotion"
+STUDIO_RENDERERS = {"ffmpeg_fast", "remotion"}
 STUDIO_MEDIA_SECTIONS = (
     ("sources", "Исходники", "source"),
     ("cuts", "Нарезки", "cut"),
@@ -75,9 +82,13 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
     if not _TEMPLATE_KEY_RE.fullmatch(template_key):
         raise ValueError("recipe.template.key имеет некорректный формат.")
     renderer = str(template.get("renderer") or STUDIO_RENDERER).strip().lower()
-    if renderer != STUDIO_RENDERER:
-        raise ValueError("Studio recipe поддерживает только renderer=remotion.")
-    renderer_adapter = str(template.get("renderer_adapter") or "").strip()
+    if renderer == "ffmpeg":
+        renderer = "ffmpeg_fast"
+    if renderer not in STUDIO_RENDERERS:
+        raise ValueError("Studio recipe renderer должен быть ffmpeg_fast или remotion.")
+    renderer_adapter = str(
+        template.get("adapter") or template.get("renderer_adapter") or ""
+    ).strip()
     composition_id = str(template.get("composition_id") or "").strip()
     raw_studio_template_id = template.get("studio_template_id")
     studio_template_id: int | None
@@ -90,7 +101,7 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
             raise ValueError("recipe.template.studio_template_id должен быть integer.") from exc
         if studio_template_id <= 0:
             raise ValueError("recipe.template.studio_template_id должен быть положительным integer.")
-    raw_template_version = template.get("version")
+    raw_template_version = template.get("template_version", template.get("version"))
     template_version: int | None
     if raw_template_version in {None, ""}:
         template_version = None
@@ -98,9 +109,20 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
         try:
             template_version = int(raw_template_version)
         except (TypeError, ValueError) as exc:
-            raise ValueError("recipe.template.version должен быть integer.") from exc
+            raise ValueError("recipe.template.template_version должен быть integer.") from exc
         if template_version <= 0:
-            raise ValueError("recipe.template.version должен быть положительным integer.")
+            raise ValueError("recipe.template.template_version должен быть положительным integer.")
+    raw_definition_schema_version = template.get("definition_schema_version")
+    definition_schema_version: int | None
+    if raw_definition_schema_version in {None, ""}:
+        definition_schema_version = None
+    else:
+        try:
+            definition_schema_version = int(raw_definition_schema_version)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("recipe.template.definition_schema_version должен быть integer.") from exc
+        if definition_schema_version <= 0:
+            raise ValueError("recipe.template.definition_schema_version должен быть положительным integer.")
 
     width = int(canvas.get("width", 1080))
     height = int(canvas.get("height", 1920))
@@ -154,10 +176,13 @@ def normalize_studio_recipe(value: Any) -> dict[str, Any]:
             "key": template_key,
             "renderer": renderer,
             **({"studio_template_id": studio_template_id} if studio_template_id else {}),
-            **({"version": template_version} if template_version else {}),
+            **({"template_version": template_version} if template_version else {}),
+            **({"definition_schema_version": definition_schema_version} if definition_schema_version else {}),
+            **({"adapter": renderer_adapter} if renderer_adapter else {}),
             **({"renderer_adapter": renderer_adapter} if renderer_adapter else {}),
             **({"composition_id": composition_id} if composition_id else {}),
         },
+        "parameters": dict(recipe.get("parameters") or {}),
         "canvas": {"width": width, "height": height, "fps": fps},
         "media": {
             "main": {"workspace_path": workspace_path},
@@ -207,9 +232,11 @@ def default_studio_recipe(
         "template": {
             "key": template_key,
             "renderer": STUDIO_RENDERER,
+            "adapter": "reaction_layout",
             "renderer_adapter": "reaction_layout",
             "composition_id": "ReactionLayoutTemplate",
         },
+        "parameters": {},
         "media": {
             "main": {"workspace_path": main_workspace_path or "sources/placeholder.mp4"},
             "reaction": {"asset_id": reaction_asset_id},
@@ -427,37 +454,42 @@ def parameterized_recipe_from_template(
     parameter_values: dict[str, Any] | None = None,
     studio_template_id: int | None = None,
     template_version: int | None = None,
+    renderer_engine: str | None = None,
 ) -> dict[str, Any]:
-    params = definition.get("parameters") or {}
-    overrides = parameter_values or {}
-    adapter = require_remotion_adapter(definition)
+    adapter = require_template_adapter(definition)
     composition_id = composition_id_for_definition(definition)
+    renderer = validate_renderer_for_definition(definition, renderer_engine)
+    values = effective_parameter_values(definition, parameter_values)
+    reaction_required = reaction_required_for_definition(definition, values)
 
     def value(key: str, fallback: Any) -> Any:
-        if key in overrides:
-            return overrides[key]
-        raw = params.get(key) or {}
-        if isinstance(raw, dict) and "default" in raw:
-            return raw["default"]
-        return fallback
+        return values.get(key, fallback)
+
+    reaction_position = value(
+        "reaction_position",
+        "none" if adapter.key == "main_only" else "top",
+    )
 
     return normalize_studio_recipe({
         "version": 1,
         "template": {
             "key": str(definition["key"]),
-            "renderer": str(definition["engine"]),
+            "renderer": renderer,
             **({"studio_template_id": int(studio_template_id)} if studio_template_id else {}),
-            **({"version": int(template_version)} if template_version else {}),
+            **({"template_version": int(template_version)} if template_version else {}),
+            "definition_schema_version": int(definition.get("schema_version") or 2),
+            "adapter": adapter.key,
             "renderer_adapter": adapter.key,
             "composition_id": composition_id,
         },
+        "parameters": values,
         "canvas": definition.get("canvas") or {"width": 1080, "height": 1920, "fps": 30},
         "media": {
             "main": {"workspace_path": main_workspace_path},
-            "reaction": {"asset_id": reaction_asset_id},
+            "reaction": {"asset_id": reaction_asset_id if reaction_required else None},
         },
         "layout": {
-            "reaction_position": value("reaction_position", "top"),
+            "reaction_position": reaction_position,
             "reaction_height": value("reaction_height", 480),
             "pip_position": value("pip_position", "top_right"),
             "main_fit": value("main_fit", "cover"),

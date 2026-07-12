@@ -1,6 +1,7 @@
 """Tests for the migration runner."""
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -44,6 +45,40 @@ def test_schema_versions_recorded(tmp_data_dir):
     assert "038_create_shorts_pipeline" in versions
     assert "039_remotion_auto_retry" in versions
     assert "041_unify_studio_editing_templates" in versions
+    assert "045_studio_template_data_migration" in versions
+    assert "046_studio_only_runtime_cutover" in versions
+
+
+def test_studio_only_cutover_records_settings_and_report(tmp_data_dir):
+    from shortsfarm import db
+
+    with db.connect() as con:
+        settings = {
+            row["key"]: row["value"]
+            for row in con.execute(
+                """
+                SELECT key, value
+                FROM app_settings
+                WHERE key IN (
+                    'studio_templates_runtime_mode',
+                    'studio_templates_cutover_at'
+                )
+                """
+            ).fetchall()
+        }
+        report_row = con.execute(
+            """
+            SELECT report_json
+            FROM migration_reports
+            WHERE migration_key='045_studio_template_data_migration'
+            """
+        ).fetchone()
+
+    assert settings["studio_templates_runtime_mode"] == "studio_only"
+    assert settings["studio_templates_cutover_at"]
+    assert report_row is not None
+    report = json.loads(str(report_row["report_json"]))
+    assert {"templates", "channel_profiles", "edit_jobs"} <= set(report)
 
 
 def test_studio_editing_bridge_schema_exists(tmp_data_dir):

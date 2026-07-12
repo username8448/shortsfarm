@@ -1,7 +1,7 @@
-import type {Recipe} from './recipe';
+import type {Recipe, StudioRenderer} from './recipe';
 
 export type TemplateStatus = 'draft' | 'active' | 'archived';
-export type TemplateEngine = 'remotion' | 'ffmpeg';
+export type TemplateEngine = 'remotion' | 'ffmpeg' | 'ffmpeg_fast';
 
 export type SlotDefinition = {
   type: 'video';
@@ -23,10 +23,14 @@ export type ParameterDefinition = {
 };
 
 export type TemplateDefinition = {
-  version: 1;
+  schema_version?: 2;
+  version?: 1;
   key: string;
   name: string;
-  engine: TemplateEngine;
+  engine?: TemplateEngine;
+  adapter?: string;
+  supported_renderers?: StudioRenderer[];
+  default_renderer?: StudioRenderer;
   canvas: {width: number; height: number; fps: number};
   slots: Record<string, SlotDefinition>;
   parameters: Record<string, ParameterDefinition>;
@@ -37,6 +41,7 @@ export type TemplateRendererAdapter = {
   key: string;
   compositionId: string;
   displayName: string;
+  supportedRenderers: StudioRenderer[];
 };
 
 export const TEMPLATE_RENDERER_REGISTRY: Record<string, TemplateRendererAdapter> = {
@@ -44,11 +49,18 @@ export const TEMPLATE_RENDERER_REGISTRY: Record<string, TemplateRendererAdapter>
     key: 'reaction_layout',
     compositionId: 'ReactionLayoutTemplate',
     displayName: 'Reaction Layout Template',
+    supportedRenderers: ['ffmpeg_fast', 'remotion'],
+  },
+  main_only: {
+    key: 'main_only',
+    compositionId: 'MainOnlyTemplate',
+    displayName: 'Main Only Template',
+    supportedRenderers: ['ffmpeg_fast', 'remotion'],
   },
 };
 
 export const rendererAdapterKey = (definition: TemplateDefinition): string =>
-  String(definition.rules.renderer_adapter || 'reaction_layout');
+  String(definition.adapter || definition.rules.renderer_adapter || 'reaction_layout');
 
 export const rendererAdapter = (
   definition: TemplateDefinition,
@@ -78,20 +90,29 @@ export const recipeFromTemplate = (
 ): Recipe => {
   const defaults = template.definition.parameters;
   const adapter = rendererAdapter(template.definition);
+  const renderer = template.definition.default_renderer || 'ffmpeg_fast';
   const value = (key: string, fallback: string | number | boolean) =>
     defaults[key]?.default ?? fallback;
+  const parameters: Record<string, string | number | boolean> = {};
+  Object.keys(defaults).forEach((key) => {
+    const parameter = defaults[key];
+    if (parameter) parameters[key] = parameter.default;
+  });
   return {
     version: 1,
     template: {
       key: template.key,
-      renderer: 'remotion',
+      renderer,
       studio_template_id: template.id,
-      version: template.version,
+      template_version: template.version,
+      definition_schema_version: template.definition.schema_version || 2,
+      adapter: adapter?.key || rendererAdapterKey(template.definition),
       renderer_adapter: adapter?.key || rendererAdapterKey(template.definition),
       composition_id: String(
         template.definition.rules.composition_id || adapter?.compositionId || 'ReactionLayoutTemplate',
       ),
     },
+    parameters,
     canvas: {
       width: template.definition.canvas.width,
       height: template.definition.canvas.height,

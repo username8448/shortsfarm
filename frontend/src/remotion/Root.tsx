@@ -2,6 +2,7 @@ import React from 'react';
 import {Composition, type CalculateMetadataFunction} from 'remotion';
 import {ReactionLayoutTemplate} from './templates/ReactionLayoutTemplate';
 import {ReactionTop25} from './templates/ReactionTop25';
+import {MainOnlyTemplate} from './templates/MainOnlyTemplate';
 import {createDefaultRecipe, type ResolvedRecipe} from '../studio/recipe';
 
 const defaults = createDefaultRecipe();
@@ -37,6 +38,16 @@ export const RemotionRoot: React.FC = () => (
     <Composition
       id="ReactionTop25"
       component={ReactionTop25}
+      durationInFrames={30}
+      fps={30}
+      width={1080}
+      height={1920}
+      defaultProps={defaultProps}
+      calculateMetadata={calculateMetadata}
+    />
+    <Composition
+      id="MainOnlyTemplate"
+      component={MainOnlyTemplate}
       durationInFrames={30}
       fps={30}
       width={1080}

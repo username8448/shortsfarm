@@ -143,12 +143,13 @@ def test_templates_api_ensure_defaults_and_reject_invalid_json():
     item = api.editing_templates_ensure_defaults()["item"]
     assert item["key"] == "reaction_top_25"
     items = api.editing_templates()["items"]
-    assert len([row for row in items if row["source"] == "studio"]) >= 5
-    assert len([row for row in items if row["source"] == "legacy"]) == 1
+    assert len([row for row in items if row["source"] == "studio"]) >= 6
+    assert len([row for row in items if row["source"] == "legacy"]) == 0
     assert any(
         row["key"] == "reaction_top_25" and row["source"] == "studio"
         for row in items
     )
+    assert any(row["key"] == "main_only" for row in items)
 
     with pytest.raises(HTTPException) as exc:
         api.editing_template_update(
@@ -156,7 +157,7 @@ def test_templates_api_ensure_defaults_and_reject_invalid_json():
             EditTemplateUpdateRequest(recipe_json="{broken"),
         )
     assert exc.value.status_code == 400
-    assert "valid JSON" in exc.value.detail["message"]
+    assert "Legacy templates are no longer supported" in exc.value.detail["message"]
 
 
 def test_channel_profile_api_create_with_null_account():
@@ -178,6 +179,7 @@ def test_channel_profile_api_create_with_null_account():
 
 def test_channel_profile_api_links_and_updates_account_template_pool():
     from shortsfarm import db
+    from shortsfarm.studio_templates import ensure_default_studio_templates
     from shortsfarm.web import api
     from shortsfarm.web.schemas import (
         ChannelProfileCreateRequest,
@@ -186,16 +188,9 @@ def test_channel_profile_api_links_and_updates_account_template_pool():
     )
 
     account_id = _youtube_account()
-    template_id = db.create_edit_template(
-        key="profile_template",
-        name="Profile Template",
-        recipe_json=_template_recipe(),
-    )
-    second_template_id = db.create_edit_template(
-        key="second_template",
-        name="Second Template",
-        recipe_json=_template_recipe(),
-    )
+    templates = ensure_default_studio_templates()
+    template_id = int(next(row for row in templates if row["template_key"] == "main_only")["id"])
+    second_template_id = int(next(row for row in templates if row["template_key"] == "reaction_top_25")["id"])
     pool_id = api.editing_reaction_pool_create(
         ReactionPoolCreateRequest(name="Pool One")
     )["item"]["id"]
@@ -205,29 +200,44 @@ def test_channel_profile_api_links_and_updates_account_template_pool():
 
     created = api.editing_channel_profile_create(
         ChannelProfileCreateRequest(
-            name="Funny RU Channel",
-            youtube_account_id=account_id,
-            default_template_id=template_id,
-            reaction_pool_id=pool_id,
-            default_privacy="private",
-            default_category_id="22",
-        )
-    )["item"]
+                name="Funny RU Channel",
+                youtube_account_id=account_id,
+                default_studio_template_id=template_id,
+                reaction_pool_id=pool_id,
+                default_privacy="private",
+                default_category_id="22",
+            )
+        )["item"]
     assert created["youtube_channel_title"] == "Editing Channel"
-    assert created["default_template_name"] == "Profile Template"
+    assert created["default_template_name"] == ""
+    assert created["default_studio_template_name"] == "Main Only"
     assert created["reaction_pool_name"] == "Pool One"
 
     updated = api.editing_channel_profile_update(
         created["id"],
         ChannelProfileUpdateRequest(
-            default_template_id=second_template_id,
+            default_studio_template_id=second_template_id,
             reaction_pool_id=second_pool_id,
             default_privacy="unlisted",
         ),
     )["item"]
 
-    assert updated["default_template_id"] == second_template_id
-    assert updated["default_template_name"] == "Second Template"
+    assert updated["default_template_id"] is None
+    assert updated["default_studio_template_id"] == second_template_id
+    assert updated["default_studio_template_name"] == "Reaction Top 25%"
     assert updated["reaction_pool_id"] == second_pool_id
     assert updated["reaction_pool_name"] == "Pool Two"
     assert updated["default_privacy"] == "unlisted"
+
+    legacy_id = db.create_edit_template(
+        key="legacy_profile_template",
+        name="Legacy Profile Template",
+        recipe_json=_template_recipe(),
+    )
+    with pytest.raises(HTTPException) as exc:
+        api.editing_channel_profile_update(
+            created["id"],
+            ChannelProfileUpdateRequest(default_template_id=legacy_id),
+        )
+    assert exc.value.status_code == 400
+    assert "Legacy templates are no longer supported" in exc.value.detail["message"]

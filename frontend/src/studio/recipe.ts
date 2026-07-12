@@ -1,17 +1,22 @@
 export type FitMode = 'cover' | 'contain';
 export type ReactionPosition = 'top' | 'bottom' | 'pip' | 'none';
 export type PipPosition = 'top_left' | 'top_right' | 'bottom_left' | 'bottom_right';
+export type StudioRenderer = 'ffmpeg_fast' | 'remotion';
 
 export type Recipe = {
   version: 1;
   template: {
     key: string;
-    renderer: 'remotion';
+    renderer: StudioRenderer;
     studio_template_id?: number;
+    template_version?: number;
+    definition_schema_version?: number;
+    adapter?: string;
     version?: number;
     renderer_adapter?: string;
     composition_id?: string;
   };
+  parameters?: Record<string, string | number | boolean>;
   canvas: {width: number; height: number; fps: number};
   media: {
     main: {workspace_path: string};
@@ -67,10 +72,13 @@ export const createDefaultRecipe = (): Recipe => ({
   version: 1,
   template: {
     key: 'reaction_top_25',
-    renderer: 'remotion',
+    renderer: 'ffmpeg_fast',
+    definition_schema_version: 2,
+    adapter: 'reaction_layout',
     renderer_adapter: 'reaction_layout',
     composition_id: 'ReactionLayoutTemplate',
   },
+  parameters: {},
   canvas: {width: 1080, height: 1920, fps: 30},
   media: {
     main: {workspace_path: ''},

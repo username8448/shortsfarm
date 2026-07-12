@@ -856,6 +856,75 @@ function pipelinePoolOptions() {
 function pipelineRenderProfileOptions() {
   return (pipelineRenderProfiles || []).map(item => `<option value="${esc(item.key)}">${esc(item.label || item.key)}</option>`).join('');
 }
+function pipelineSelectedTemplate() {
+  const id = Number(document.getElementById('pipeline-template')?.value || 0);
+  return (pipelineTemplates || []).find(item => Number(item.id) === id) || null;
+}
+function pipelineRendererOptions(template = pipelineSelectedTemplate()) {
+  const renderers = template?.supported_renderers || template?.definition?.supported_renderers || ['ffmpeg_fast'];
+  const selected = document.getElementById('pipeline-renderer')?.value || template?.default_renderer || template?.definition?.default_renderer || renderers[0] || 'ffmpeg_fast';
+  return renderers.map(renderer => `<option value="${esc(renderer)}"${renderer === selected ? ' selected' : ''}>${renderer === 'ffmpeg_fast' ? 'FFmpeg Fast' : 'Remotion'}</option>`).join('');
+}
+function studioParameterLabel(key) {
+  return ({
+    reaction_position: 'Позиция реакции',
+    reaction_height: 'Высота реакции',
+    pip_position: 'PIP позиция',
+    main_fit: 'Основное видео',
+    reaction_fit: 'Reaction fit',
+    background_color: 'Фон',
+    main_volume: 'Громкость видео',
+    reaction_volume: 'Громкость реакции',
+    mute_reaction: 'Заглушить реакцию',
+    top_text: 'Верхний текст',
+    bottom_text: 'Нижний текст',
+  })[key] || key;
+}
+function renderStudioParameterControls(params, attrName, cssClass = '') {
+  const entries = Object.entries(params || {});
+  if (!entries.length) return '<div class="mono dim">У шаблона нет дополнительных параметров.</div>';
+  return entries.map(([key, meta]) => {
+    const type = meta?.type || 'text';
+    const value = meta?.default ?? '';
+    const attrs = `${attrName}="${esc(key)}"`;
+    if (type === 'select') {
+      const options = (meta.values || []).map(item => `<option value="${esc(item)}"${String(item) === String(value) ? ' selected' : ''}>${esc(item)}</option>`).join('');
+      return `<label class="mini-field ${cssClass}"><span class="field-lbl">${esc(studioParameterLabel(key))}</span><select ${attrs} onchange="renderPipelineReactionMode()">${options}</select></label>`;
+    }
+    if (type === 'boolean') {
+      return `<label class="toggle-label ${cssClass}"><input type="checkbox" ${attrs} ${value ? 'checked' : ''} onchange="renderPipelineReactionMode()"> ${esc(studioParameterLabel(key))}</label>`;
+    }
+    if (type === 'color') {
+      return `<label class="mini-field ${cssClass}"><span class="field-lbl">${esc(studioParameterLabel(key))}</span><input type="color" ${attrs} value="${esc(value || '#000000')}"></label>`;
+    }
+    if (type === 'number') {
+      const min = meta.min !== undefined ? ` min="${esc(meta.min)}"` : '';
+      const max = meta.max !== undefined ? ` max="${esc(meta.max)}"` : '';
+      return `<label class="mini-field ${cssClass}"><span class="field-lbl">${esc(studioParameterLabel(key))}</span><input type="number" step="any"${min}${max} ${attrs} value="${esc(value)}" onchange="renderPipelineReactionMode()"></label>`;
+    }
+    return `<label class="mini-field ${cssClass}"><span class="field-lbl">${esc(studioParameterLabel(key))}</span><input type="text" maxlength="${Number(meta.max_length || 200)}" ${attrs} value="${esc(value)}"></label>`;
+  }).join('');
+}
+function collectStudioParameterValues(selector) {
+  const values = {};
+  document.querySelectorAll(selector).forEach(field => {
+    const key = field.getAttribute('data-pipeline-template-param') || field.getAttribute('data-workspace-template-param');
+    if (!key) return;
+    if (field.type === 'checkbox') values[key] = Boolean(field.checked);
+    else if (field.type === 'number') values[key] = field.value === '' ? null : Number(field.value);
+    else values[key] = field.value;
+  });
+  return values;
+}
+function renderPipelineTemplateParams() {
+  const el = document.getElementById('pipeline-template-params');
+  const renderer = document.getElementById('pipeline-renderer');
+  const template = pipelineSelectedTemplate();
+  if (renderer) renderer.innerHTML = pipelineRendererOptions(template);
+  if (!el) return;
+  const params = template?.parameters || template?.definition?.parameters || {};
+  el.innerHTML = `<details class="workspace-editing-param-details" open><summary>Параметры шаблона · ${esc(template?.name || '—')}</summary><div class="workspace-editing-param-grid">${renderStudioParameterControls(params, 'data-pipeline-template-param', 'pipeline-param-field')}</div></details>`;
+}
 function pipelineTagOptions(kind) {
   const tags = (catalogTags || []).filter(tag => tag.enabled !== false && tag.kind === kind);
   return tags.map(tag => `<option value="${Number(tag.id)}">${esc(tag.name)} · ${esc(tag.slug || '')}</option>`).join('');
@@ -907,13 +976,15 @@ function renderPipelineForm() {
       <div class="pipeline-step-body">
         <h3>Studio/Remotion шаблон</h3>
         <div class="g2 compact-grid">
-          <div class="field"><label class="field-lbl">Шаблон</label><select id="pipeline-template">${pipelineTemplateOptions()}</select></div>
+          <div class="field"><label class="field-lbl">Шаблон</label><select id="pipeline-template" onchange="renderPipelineTemplateParams();renderPipelineReactionMode()">${pipelineTemplateOptions()}</select></div>
+          <div class="field"><label class="field-lbl">Renderer</label><select id="pipeline-renderer" onchange="refreshPipelineHealth()">${pipelineRendererOptions()}</select></div>
           <div class="field"><label class="field-lbl">Render profile</label><select id="pipeline-render-profile">${pipelineRenderProfileOptions()}</select></div>
           <div class="field"><label class="field-lbl">Reaction strategy</label><select id="pipeline-reaction-strategy" onchange="renderPipelineReactionMode()"><option value="fixed_asset">Конкретная реакция</option><option value="pool_first">Первый файл из пула</option><option value="pool_weighted">Случайно по весам из пула</option></select></div>
           <div class="field pipeline-reaction-asset-field"><label class="field-lbl">Reaction asset</label><select id="pipeline-reaction-asset">${pipelineReactionOptions()}</select></div>
           <div class="field pipeline-reaction-pool-field" style="display:none"><label class="field-lbl">Reaction pool</label><select id="pipeline-reaction-pool">${pipelinePoolOptions()}</select></div>
           <div class="field"><label class="field-lbl">Ограничение render, сек</label><input id="pipeline-duration-limit" type="number" min="1" placeholder="из render profile"></div>
         </div>
+        <div id="pipeline-template-params" class="workspace-editing-params"></div>
         <label class="toggle-label"><input id="pipeline-full-length" type="checkbox"> Рендерить полную длину сегмента</label>
       </div>
     </section>
@@ -933,6 +1004,7 @@ function renderPipelineForm() {
     </div>
   </div>`;
   renderPipelineSourceMode();
+  renderPipelineTemplateParams();
   renderPipelineReactionMode();
 }
 function renderPipelineSourceMode() {
@@ -943,9 +1015,15 @@ function renderPipelineSourceMode() {
   if (workspace) workspace.style.display = mode === 'workspace' ? '' : 'none';
 }
 function renderPipelineReactionMode() {
+  const template = pipelineSelectedTemplate();
+  const params = collectStudioParameterValues('[data-pipeline-template-param]');
+  const reactionSlot = template?.definition?.slots?.reaction || null;
+  const needsReaction = Boolean(reactionSlot) && params.reaction_position !== 'none';
   const strategy = document.getElementById('pipeline-reaction-strategy')?.value || 'fixed_asset';
-  document.querySelectorAll('.pipeline-reaction-asset-field').forEach(el => el.style.display = strategy === 'fixed_asset' ? '' : 'none');
-  document.querySelectorAll('.pipeline-reaction-pool-field').forEach(el => el.style.display = strategy === 'fixed_asset' ? 'none' : '');
+  document.querySelectorAll('.pipeline-reaction-asset-field').forEach(el => el.style.display = needsReaction && strategy === 'fixed_asset' ? '' : 'none');
+  document.querySelectorAll('.pipeline-reaction-pool-field').forEach(el => el.style.display = needsReaction && strategy !== 'fixed_asset' ? '' : 'none');
+  const strategyField = document.getElementById('pipeline-reaction-strategy')?.closest('.field');
+  if (strategyField) strategyField.style.display = needsReaction ? '' : 'none';
 }
 async function loadPipelineView(options = {}) {
   const {silent = false} = options;
@@ -959,7 +1037,7 @@ async function loadPipelineView(options = {}) {
       api.get('/api/studio/render-profiles'),
       loadCatalogTags({force: true}).then(() => ({items: catalogTags})),
       api.get('/api/shorts-pipeline/runs'),
-      api.get('/api/shorts-pipeline/health'),
+      api.get('/api/shorts-pipeline/health?renderer_engine=ffmpeg_fast'),
     ]);
     pipelineSources = sourcesData || {sections: []};
     pipelineTemplates = templatesData.items || [];
@@ -1007,8 +1085,8 @@ function pipelineRequestBody() {
     reaction_strategy: strategy,
     reaction_asset_id: strategy === 'fixed_asset' ? Number(document.getElementById('pipeline-reaction-asset')?.value || 0) || null : null,
     reaction_pool_id: strategy === 'fixed_asset' ? null : Number(document.getElementById('pipeline-reaction-pool')?.value || 0) || null,
-    parameter_values: {},
-    renderer_engine: 'ffmpeg_fast',
+    parameter_values: collectStudioParameterValues('[data-pipeline-template-param]'),
+    renderer_engine: document.getElementById('pipeline-renderer')?.value || 'ffmpeg_fast',
     render_profile: document.getElementById('pipeline-render-profile')?.value || 'low_540p',
     duration_limit_sec: durationText ? Number(durationText) : null,
     full_length: Boolean(document.getElementById('pipeline-full-length')?.checked),
@@ -1039,7 +1117,9 @@ async function planShortsPipeline() {
 async function runShortsPipeline() {
   hideInlineError('pipeline-error');
   try {
-    const data = await api.post('/api/shorts-pipeline/runs', pipelineRequestBody());
+    const body = pipelineRequestBody();
+    await api.post('/api/shorts-pipeline/preflight', body);
+    const data = await api.post('/api/shorts-pipeline/runs', body);
     const run = data.run;
     pipelineActiveRunId = run?.id || null;
     pipelineRuns = [run, ...pipelineRuns.filter(item => Number(item.id) !== Number(run.id))];
@@ -1112,7 +1192,8 @@ function renderPipelineHealth(targetId = 'pipeline-health') {
 async function refreshPipelineHealth(options = {}) {
   const {silent = false} = options;
   try {
-    pipelineHealth = await api.get('/api/shorts-pipeline/health');
+    const renderer = document.getElementById('pipeline-renderer')?.value || 'ffmpeg_fast';
+    pipelineHealth = await api.get(`/api/shorts-pipeline/health?renderer_engine=${encodeURIComponent(renderer)}`);
     renderPipelineHealth('pipeline-health');
     renderPipelineHealth('queue-pipeline-health');
     if (pipelineHealth?.run) {
@@ -1185,7 +1266,7 @@ async function refreshPipelineRuns() {
   try {
     const [data, healthData] = await Promise.all([
       api.get('/api/shorts-pipeline/runs'),
-      api.get('/api/shorts-pipeline/health'),
+      api.get('/api/shorts-pipeline/health?renderer_engine=ffmpeg_fast'),
     ]);
     pipelineRuns = data.items || [];
     pipelineHealth = healthData || null;
@@ -2140,7 +2221,7 @@ async function loadJobs() {
       api.get('/api/jobs'),
       api.get(`/api/queue/items${params.toString() ? `?${params.toString()}` : ''}`),
       api.get('/api/shorts-pipeline/runs'),
-      api.get('/api/shorts-pipeline/health'),
+      api.get('/api/shorts-pipeline/health?renderer_engine=ffmpeg_fast'),
     ]);
     lastJobs = data.jobs || [];
     lastQueueItems = queueData.items || [];
@@ -6843,7 +6924,7 @@ function editingOptionalId(value) {
 
 function studioEditingTemplates({includeDeleted = false, includeArchived = false} = {}) {
   return (editingTemplates || []).filter(item => {
-    if ((item.source || 'legacy') !== 'studio') return false;
+    if ((item.source || 'studio') !== 'studio') return false;
     if (!includeDeleted && item.deleted_at) return false;
     if (!includeArchived && item.status === 'archived') return false;
     return true;
@@ -6887,7 +6968,7 @@ async function loadEditingView(options = {}) {
       editingTemplateId
       && !editingTemplates.some(item =>
         Number(item.id) === Number(editingTemplateId)
-        && (item.source || 'legacy') === editingTemplateSource
+        && (item.source || 'studio') === editingTemplateSource
       )
     ) {
       editingTemplateId = null;
@@ -7165,11 +7246,9 @@ function renderEditingTemplates() {
     return;
   }
   const rows = editingTemplates.map(item => {
-    const source = item.source || 'legacy';
+    const source = item.source || 'studio';
     const active = Number(item.id) === Number(editingTemplateId) && source === editingTemplateSource;
-    const sourceBadge = source === 'studio'
-      ? `<span class="badge b-ok">Studio</span>`
-      : `<span class="badge b-dim">legacy readonly</span>`;
+    const sourceBadge = `<span class="badge b-ok">Studio</span>`;
     const status = item.deleted_at
       ? `<span class="badge b-warn">скрыт</span>`
       : badge(item.enabled ? 'active' : 'disabled');
@@ -7181,13 +7260,13 @@ function renderEditingTemplates() {
 function selectEditingTemplate(templateId, source = 'studio') {
   const item = editingTemplates.find(row =>
     Number(row.id) === Number(templateId)
-    && (row.source || 'legacy') === source
+    && (row.source || 'studio') === source
   ) || editingTemplates.find(row => Number(row.id) === Number(templateId));
   if (!item) return;
   editingTemplateId = Number(item.id);
-  editingTemplateSource = item.source || 'legacy';
+  editingTemplateSource = item.source || 'studio';
   const isStudio = editingTemplateSource === 'studio';
-  document.getElementById('editing-template-title').textContent = `${item.name} · ${item.key}${isStudio ? ' · Studio template' : ' · legacy readonly'}`;
+  document.getElementById('editing-template-title').textContent = `${item.name} · ${item.key} · Studio template`;
   document.getElementById('editing-template-name').value = item.name || '';
   document.getElementById('editing-template-description').value = item.description || '';
   document.getElementById('editing-template-renderer').value = item.renderer || 'ffmpeg';
@@ -7269,7 +7348,7 @@ function openSelectedEditingTemplateInStudio() {
 async function createSelectedEditingTemplateVersion() {
   const item = editingTemplates.find(row =>
     Number(row.id) === Number(editingTemplateId)
-    && (row.source || 'legacy') === 'studio'
+    && (row.source || 'studio') === 'studio'
   );
   if (!item) {
     editingError('Выберите Studio template.');
@@ -7293,7 +7372,7 @@ async function createSelectedEditingTemplateVersion() {
 async function deleteSelectedEditingTemplate() {
   const item = editingTemplates.find(row =>
     Number(row.id) === Number(editingTemplateId)
-    && (row.source || 'legacy') === 'studio'
+    && (row.source || 'studio') === 'studio'
   );
   if (!item) {
     editingError('Выберите Studio template.');
@@ -7312,7 +7391,7 @@ async function deleteSelectedEditingTemplate() {
 async function restoreSelectedEditingTemplate() {
   const item = editingTemplates.find(row =>
     Number(row.id) === Number(editingTemplateId)
-    && (row.source || 'legacy') === 'studio'
+    && (row.source || 'studio') === 'studio'
   );
   if (!item) {
     editingError('Выберите Studio template.');

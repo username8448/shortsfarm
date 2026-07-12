@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -14,9 +15,9 @@ from pydantic import BaseModel, Field
 
 from .. import db
 from ..remotion_renderer import (
-    ensure_remotion_render_queue_running,
-    recover_remotion_render_queue,
-    remotion_render_queue_status,
+    ensure_studio_render_queue_running as _ensure_studio_render_queue_running,
+    recover_studio_render_queue as _recover_studio_render_queue,
+    studio_render_queue_status as _studio_render_queue_status,
 )
 from ..render_profiles import (
     DEFAULT_RENDER_ENGINE,
@@ -27,26 +28,47 @@ from ..render_profiles import (
     normalize_start_offset,
 )
 from ..services import VIDEO_EXTENSIONS, split_video_file
-from ..studio import choose_reaction_asset
+from ..studio_service import (
+    choose_reaction_for_template,
+    create_apply_batch as service_create_apply_batch,
+    get_studio_template_for_use,
+    resolve_template_render_settings,
+)
+from ..studio import choose_reaction_asset as _choose_reaction_asset
 from ..workspace_fs import (
     get_workspace_root,
     import_source_file,
     register_workspace_source,
     resolve_workspace_path,
 )
-from .studio_api import (
-    StudioApplyRequest,
-    _base_url,
-    _batch_payload,
-    _create_apply_batch,
-    _template_for_apply,
-)
+from .studio_api import _base_url, _batch_payload
 
 
 router = APIRouter()
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 RENDER_SCRIPT = FRONTEND_ROOT / "scripts" / "render-remotion.mjs"
+
+
+def choose_reaction_asset(**kwargs: Any) -> int:
+    return _choose_reaction_asset(**kwargs)
+
+
+ensure_remotion_render_queue_running = _ensure_studio_render_queue_running
+recover_remotion_render_queue = _recover_studio_render_queue
+remotion_render_queue_status = _studio_render_queue_status
+
+
+def ensure_studio_render_queue_running(base_url: str) -> dict[str, Any]:
+    return ensure_remotion_render_queue_running(base_url)
+
+
+def recover_studio_render_queue() -> dict[str, Any]:
+    return recover_remotion_render_queue()
+
+
+def studio_render_queue_status() -> dict[str, Any]:
+    return remotion_render_queue_status()
 
 
 class ShortsPipelineRequest(BaseModel):
@@ -199,18 +221,23 @@ def _workspace_check() -> dict[str, Any]:
     )
 
 
-def _pipeline_preflight() -> dict[str, Any]:
+def _pipeline_preflight(renderer_engine: str | None = None) -> dict[str, Any]:
+    renderer = normalize_render_engine(renderer_engine or DEFAULT_RENDER_ENGINE)
     checks = [
         _workspace_check(),
         _binary_check("ffmpeg", "FFmpeg"),
         _binary_check("ffprobe", "FFprobe"),
-        _binary_check("node", "Node.js"),
-        _remotion_dependencies_check(),
-        _chromium_check(),
     ]
+    if renderer == "remotion":
+        checks.extend([
+            _binary_check("node", "Node.js"),
+            _remotion_dependencies_check(),
+            _chromium_check(),
+        ])
     blocking = [item for item in checks if not item["ok"]]
     return {
         "ok": not blocking,
+        "renderer_engine": renderer,
         "checks": checks,
         "blocking": blocking,
     }
@@ -249,21 +276,65 @@ def _validate_tags(req: ShortsPipelineRequest) -> tuple[list[int], int | None]:
 
 
 def _validate_template_and_render(req: ShortsPipelineRequest) -> tuple[Any, dict[str, Any], str, str, float | None, float]:
-    template, definition = _template_for_apply(req.studio_template_id)
-    renderer_engine = normalize_render_engine(req.renderer_engine)
-    profile = get_render_profile(req.render_profile)
-    start_offset_sec = normalize_start_offset(req.start_offset_sec)
-    duration_limit_sec = normalize_duration_limit(
-        req.duration_limit_sec,
-        profile=profile,
+    template, definition = get_studio_template_for_use(req.studio_template_id)
+    renderer_engine, profile, duration_limit_sec, start_offset_sec = resolve_template_render_settings(
+        definition,
+        renderer_engine=req.renderer_engine,
+        render_profile=req.render_profile,
+        duration_limit_sec=req.duration_limit_sec,
+        start_offset_sec=req.start_offset_sec,
         full_length=req.full_length,
     )
-    choose_reaction_asset(
+    choose_reaction_for_template(
+        definition,
         reaction_strategy=req.reaction_strategy,
         reaction_asset_id=req.reaction_asset_id,
         reaction_pool_id=req.reaction_pool_id,
+        parameter_values=req.parameter_values,
     )
     return template, definition, renderer_engine, profile.key, duration_limit_sec, start_offset_sec
+
+
+def _create_apply_batch(
+    template_id: int,
+    req: Any,
+    *,
+    request: Request,
+    source_mode_override: str | None = None,
+) -> dict[str, Any]:
+    result = service_create_apply_batch(
+        template_id=template_id,
+        name=req.name,
+        source_mode=req.source_mode,
+        source_path=req.source_path,
+        source_paths=req.source_paths,
+        recursive=req.recursive,
+        reaction_strategy=req.reaction_strategy,
+        reaction_asset_id=req.reaction_asset_id,
+        reaction_pool_id=req.reaction_pool_id,
+        parameter_values=req.parameter_values,
+        renderer_engine=req.renderer_engine,
+        render_profile=req.render_profile,
+        duration_limit_sec=req.duration_limit_sec,
+        start_offset_sec=req.start_offset_sec,
+        full_length=req.full_length,
+        start=req.start,
+        base_url=_base_url(request),
+        source_mode_override=source_mode_override,
+    )
+    batch_row = db.get_remotion_render_batch(int(result["batch_id"]))
+    if batch_row is None:
+        raise RuntimeError("Studio batch создан, но не найден.")
+    jobs = []
+    for job_id in result["job_ids"]:
+        job = db.get_remotion_render_job(int(job_id))
+        if job is not None:
+            jobs.append({key: job[key] for key in job.keys()})
+    return {
+        "batch": _batch_payload(batch_row, include_items=True),
+        "jobs": jobs,
+        "queue": result["queue"],
+    }
 
 
 def _source_paths_for_request(req: ShortsPipelineRequest, *, import_external: bool) -> list[tuple[str, Path]]:
@@ -448,7 +519,7 @@ def _refresh_run(row: Any, *, base_url: str | None = None) -> Any:
     batch_status = str(batch["status"])
     if batch_status in {"queued", "running"}:
         if base_url:
-            ensure_result = ensure_remotion_render_queue_running(base_url)
+            ensure_result = ensure_studio_render_queue_running(base_url)
             if ensure_result.get("recovered") or ensure_result.get("started"):
                 summary = {
                     **_json_object(row["summary_json"]),
@@ -471,7 +542,7 @@ def _refresh_run(row: Any, *, base_url: str | None = None) -> Any:
                 },
             }
             if base_url:
-                summary["render_queue"] = ensure_remotion_render_queue_running(base_url)
+                summary["render_queue"] = ensure_studio_render_queue_running(base_url)
             db.update_shorts_pipeline_run(
                 int(row["id"]),
                 status="rendering",
@@ -605,13 +676,23 @@ def _run_health_notes(run: dict[str, Any] | None, queue: dict[str, Any], preflig
     return notes
 
 
-def _pipeline_health_payload(*, request: Request | None = None, include_items: bool = True) -> dict[str, Any]:
+def _pipeline_health_payload(
+    *,
+    request: Request | None = None,
+    include_items: bool = True,
+    renderer_engine: str | None = None,
+) -> dict[str, Any]:
     active_row = db.get_active_shorts_pipeline_run()
     latest_row = db.list_shorts_pipeline_runs(limit=1)
     row = active_row or (latest_row[0] if latest_row else None)
     run = _run_payload(row, include_items=include_items, base_url=None) if row is not None else None
-    queue = remotion_render_queue_status()
-    preflight = _pipeline_preflight()
+    queue = studio_render_queue_status()
+    try:
+        preflight = _pipeline_preflight(renderer_engine)
+    except TypeError:
+        # Compatibility for tests/extensions that monkeypatch the older
+        # zero-argument health helper.
+        preflight = _pipeline_preflight()
     notes = _run_health_notes(run, queue, preflight)
     return {
         "ok": preflight["ok"] and not any(note["level"] == "error" for note in notes),
@@ -660,6 +741,40 @@ def shorts_pipeline_plan(req: ShortsPipelineRequest) -> dict[str, Any]:
                 "channel_tag_id": channel_tag_id,
                 "will_sync_profiles": bool(channel_tag_id),
             },
+        }
+    except PermissionError as exc:
+        raise _fail(exc, 403)
+    except FileNotFoundError as exc:
+        raise _fail(exc, 404)
+    except Exception as exc:
+        raise _fail(exc)
+
+
+@router.post("/preflight")
+def shorts_pipeline_preflight(req: ShortsPipelineRequest, request: Request) -> dict[str, Any]:
+    try:
+        db.init_db()
+        template, definition, renderer_engine, render_profile, duration_limit_sec, start_offset_sec = _validate_template_and_render(req)
+        _validate_tags(req)
+        sources = _source_paths_for_request(req, import_external=False)
+        basic = _pipeline_preflight(renderer_engine)
+        plan = _plan_for_sources(req, sources)
+        return {
+            "ok": bool(basic["ok"]),
+            "mode": "deep",
+            "template": {
+                "id": int(template["id"]),
+                "key": str(template["template_key"]),
+                "name": str(template["name"]),
+                "definition": definition,
+            },
+            "renderer_engine": renderer_engine,
+            "render_profile": render_profile,
+            "duration_limit_sec": duration_limit_sec,
+            "start_offset_sec": start_offset_sec,
+            "preflight": basic,
+            "plan": plan,
+            "base_url": _base_url(request),
         }
     except PermissionError as exc:
         raise _fail(exc, 403)
@@ -736,9 +851,10 @@ def shorts_pipeline_run_create(req: ShortsPipelineRequest, request: Request) -> 
                 segment_source[relative] = source_relative
         if not segment_paths:
             raise RuntimeError("Нарезка не создала сегменты.")
-        apply_req = StudioApplyRequest(
+        apply_req = SimpleNamespace(
             name=f"Конвейер #{run_id}",
             source_mode="selected",
+            source_path=None,
             source_paths=segment_paths,
             recursive=False,
             reaction_strategy=req.reaction_strategy,
@@ -820,9 +936,12 @@ def shorts_pipeline_run_get(run_id: int, request: Request = None) -> dict[str, A
 
 
 @router.get("/health")
-def shorts_pipeline_health(request: Request = None) -> dict[str, Any]:
+def shorts_pipeline_health(
+    request: Request = None,
+    renderer_engine: str | None = None,
+) -> dict[str, Any]:
     db.init_db()
-    return _pipeline_health_payload(request=request)
+    return _pipeline_health_payload(request=request, renderer_engine=renderer_engine)
 
 
 @router.post("/runs/{run_id}/continue")
@@ -832,7 +951,7 @@ def shorts_pipeline_run_continue(run_id: int, request: Request) -> dict[str, Any
     if str(row["status"]) in {"done", "failed", "cancelled"}:
         return {
             "run": _run_payload(row, base_url=_base_url(request)),
-            "queue": remotion_render_queue_status(),
+            "queue": studio_render_queue_status(),
             "retried": 0,
             "continued": False,
         }
@@ -841,7 +960,7 @@ def shorts_pipeline_run_continue(run_id: int, request: Request) -> dict[str, Any
         batch_row = db.get_remotion_render_batch(int(row["remotion_batch_id"]))
         if batch_row is not None and str(batch_row["status"]) == "failed":
             retried = db.auto_retry_failed_remotion_render_batch(int(row["remotion_batch_id"]))
-    queue = ensure_remotion_render_queue_running(_base_url(request))
+    queue = ensure_studio_render_queue_running(_base_url(request))
     updated = db.get_shorts_pipeline_run(run_id) or row
     _update_run_summary(updated, {
         "manual_continue": {
@@ -852,7 +971,7 @@ def shorts_pipeline_run_continue(run_id: int, request: Request) -> dict[str, Any
     updated = db.get_shorts_pipeline_run(run_id) or updated
     return {
         "run": _run_payload(updated),
-        "queue": remotion_render_queue_status(),
+        "queue": studio_render_queue_status(),
         "retried": retried,
         "continued": True,
     }
@@ -862,13 +981,13 @@ def shorts_pipeline_run_continue(run_id: int, request: Request) -> dict[str, Any
 def shorts_pipeline_run_repair(run_id: int, request: Request) -> dict[str, Any]:
     db.init_db()
     row = _get_pipeline_run_or_404(run_id)
-    recovered = recover_remotion_render_queue()
+    recovered = recover_studio_render_queue()
     retried = 0
     if row["remotion_batch_id"]:
         batch_row = db.get_remotion_render_batch(int(row["remotion_batch_id"]))
         if batch_row is not None and str(batch_row["status"]) == "failed":
             retried = db.auto_retry_failed_remotion_render_batch(int(row["remotion_batch_id"]))
-    queue = ensure_remotion_render_queue_running(_base_url(request))
+    queue = ensure_studio_render_queue_running(_base_url(request))
     updated = db.get_shorts_pipeline_run(run_id) or row
     if str(updated["status"]) not in {"done", "failed", "cancelled"}:
         _update_run_summary(updated, {
@@ -884,7 +1003,7 @@ def shorts_pipeline_run_repair(run_id: int, request: Request) -> dict[str, Any]:
         "health": _pipeline_health_payload(request=request),
         "recovered": recovered,
         "retried": retried,
-        "queue": remotion_render_queue_status(),
+        "queue": studio_render_queue_status(),
     }
 
 
@@ -897,8 +1016,8 @@ def shorts_pipeline_run_retry_failed(run_id: int, request: Request) -> dict[str,
     if not row["remotion_batch_id"]:
         raise _fail(RuntimeError("У запуска конвейера нет Remotion batch."), 409)
     retried = db.retry_failed_remotion_render_batch(int(row["remotion_batch_id"]))
-    queue = ensure_remotion_render_queue_running(_base_url(request)) if retried else {
-        "queue": remotion_render_queue_status(),
+    queue = ensure_studio_render_queue_running(_base_url(request)) if retried else {
+        "queue": studio_render_queue_status(),
         "recovered": None,
         "started": None,
     }
@@ -913,7 +1032,7 @@ def shorts_pipeline_run_retry_failed(run_id: int, request: Request) -> dict[str,
     return {
         "run": _run_payload(updated),
         "retried": retried,
-        "queue": remotion_render_queue_status(),
+        "queue": studio_render_queue_status(),
     }
 
 

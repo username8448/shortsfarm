@@ -771,10 +771,8 @@ def test_apply_template_rejects_template_without_remotion_adapter(tmp_path):
     definition = default_reaction_top_25_definition()
     definition["key"] = "ffmpeg_only_template"
     definition["name"] = "FFmpeg only"
-    definition["engine"] = "ffmpeg"
-    definition["rules"]["renderer"] = "ffmpeg"
-    definition["rules"].pop("renderer_adapter", None)
-    definition["rules"].pop("composition_id", None)
+    definition["supported_renderers"] = ["unsupported_renderer"]
+    definition["default_renderer"] = "unsupported_renderer"
     template_id = db.create_studio_template(
         template_key=definition["key"],
         name=definition["name"],
@@ -794,10 +792,10 @@ def test_apply_template_rejects_template_without_remotion_adapter(tmp_path):
                 start=False,
             ),
             _request(),
-        )
+    )
 
     assert exc.value.status_code == 400
-    assert "Remotion renderer adapter" in exc.value.detail["message"]
+    assert "Unsupported renderer" in exc.value.detail["message"]
 
 
 def test_apply_template_folder_recursive_and_pipeline_run(tmp_path, monkeypatch):

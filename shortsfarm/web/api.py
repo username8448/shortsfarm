@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from .. import db
@@ -44,7 +44,7 @@ from ..local_dialogs import (
     pick_file_dialog,
 )
 from ..mpv_session import require_mpv
-from ..remotion_renderer import start_remotion_render_queue
+from ..remotion_renderer import start_studio_render_queue
 from ..studio_templates import ensure_default_studio_templates, template_row_payload
 from ..publish_youtube import (
     fetch_youtube_channel_videos,
@@ -356,6 +356,24 @@ def _request_updates(req: Any, fields: tuple[str, ...]) -> dict[str, Any]:
     return {field: getattr(req, field) for field in fields if field in supplied}
 
 
+def _field_was_supplied(req: Any, field: str) -> bool:
+    supplied = getattr(req, "model_fields_set", None)
+    if supplied is None:
+        supplied = getattr(req, "__fields_set__", set())
+    return field in supplied
+
+
+def _reject_legacy_field(req: Any, field: str) -> None:
+    if _field_was_supplied(req, field) and getattr(req, field, None) is not None:
+        raise ValueError("Legacy templates are no longer supported.")
+
+
+def _base_url(request: Request | None) -> str:
+    if request is None:
+        return ""
+    return str(request.base_url).rstrip("/")
+
+
 def _reaction_asset_dict(row: Any) -> dict[str, Any]:
     file_path = str(_row(row, "file_path", "") or "")
     return {
@@ -429,7 +447,7 @@ def _studio_template_edit_dict(row: Any) -> dict[str, Any]:
         "key": str(row["template_key"]),
         "name": str(row["name"]),
         "description": str(definition.get("description") or ""),
-        "renderer": str(row["engine"]),
+        "renderer": str(definition.get("default_renderer") or payload.get("default_renderer") or row["engine"]),
         "recipe_json": json.dumps(definition, ensure_ascii=False),
         "definition": definition,
         "parameters": definition.get("parameters") or {},
@@ -3457,13 +3475,11 @@ def editing_templates(
     enabled: bool | None = None,
     include_deleted: bool = False,
     status: str | None = None,
-    legacy: bool = True,
+    legacy: bool = False,
 ) -> dict[str, Any]:
     try:
         _init()
         ensure_default_studio_templates()
-        db.ensure_default_edit_templates()
-        db.link_legacy_edit_templates_to_studio()
         studio_rows = db.list_studio_templates(
             include_deleted=include_deleted,
             status=status if status and status != "all" else None,
@@ -3474,10 +3490,6 @@ def editing_templates(
         elif enabled is False:
             studio_items = [item for item in studio_items if not item["enabled"]]
         items = studio_items
-        if legacy:
-            legacy_rows = db.list_edit_templates(enabled=enabled)
-            legacy_items = [_edit_template_dict(row) for row in legacy_rows]
-            items.extend(legacy_items)
         return {"items": items, "count": len(items)}
     except Exception as exc:
         raise _fail(exc)
@@ -3487,11 +3499,9 @@ def editing_templates(
 def editing_templates_ensure_defaults() -> dict[str, Any]:
     try:
         _init()
-        ensure_default_studio_templates()
-        item = db.ensure_default_edit_templates()
-        db.link_legacy_edit_templates_to_studio()
-        linked = db.get_edit_template(int(item["id"]))
-        return {"item": _edit_template_dict(linked or item)}
+        items = ensure_default_studio_templates()
+        item = db.get_latest_studio_template_by_key("reaction_top_25", include_deleted=False)
+        return {"item": _studio_template_edit_dict(item or items[0])}
     except Exception as exc:
         raise _fail(exc)
 
@@ -3501,23 +3511,7 @@ def editing_template_update(
     template_id: int,
     req: EditTemplateUpdateRequest,
 ) -> dict[str, Any]:
-    try:
-        _init()
-        updates = _request_updates(
-            req,
-            ("name", "description", "renderer", "recipe_json", "enabled"),
-        )
-        if "name" in updates and not str(updates["name"] or "").strip():
-            raise ValueError("Название шаблона обязательно.")
-        if "renderer" in updates and not str(updates["renderer"] or "").strip():
-            raise ValueError("Renderer обязателен.")
-        if not db.update_edit_template(template_id, **updates):
-            raise FileNotFoundError("Edit template не найден.")
-        return {"item": _edit_template_dict(db.get_edit_template(template_id))}
-    except FileNotFoundError as exc:
-        raise _fail(exc, status_code=404)
-    except Exception as exc:
-        raise _fail(exc)
+    raise _fail(ValueError("Legacy templates are no longer supported."), status_code=400)
 
 
 @router.get("/editing/channel-profiles")
@@ -3525,8 +3519,6 @@ def editing_channel_profiles(enabled: bool | None = None) -> dict[str, Any]:
     try:
         _init()
         ensure_default_studio_templates()
-        db.ensure_default_edit_templates()
-        db.link_legacy_edit_templates_to_studio()
         items = [
             _channel_profile_dict(row)
             for row in db.list_channel_profiles_with_details(enabled=enabled)
@@ -3540,13 +3532,14 @@ def editing_channel_profiles(enabled: bool | None = None) -> dict[str, Any]:
 def editing_channel_profile_create(req: ChannelProfileCreateRequest) -> dict[str, Any]:
     try:
         _init()
+        _reject_legacy_field(req, "default_template_id")
         name = str(req.name or "").strip()
         if not name:
             raise ValueError("Название профиля канала обязательно.")
         profile_id = db.create_channel_profile(
             name=name,
             youtube_account_id=req.youtube_account_id,
-            default_template_id=req.default_template_id,
+            default_template_id=None,
             default_studio_template_id=req.default_studio_template_id,
             reaction_pool_id=req.reaction_pool_id,
             title_template=req.title_template,
@@ -3574,10 +3567,11 @@ def editing_channel_profile_update(
 ) -> dict[str, Any]:
     try:
         _init()
+        _reject_legacy_field(req, "default_template_id")
         updates = _request_updates(
             req,
             (
-                "name", "youtube_account_id", "default_template_id",
+                "name", "youtube_account_id",
                 "default_studio_template_id", "reaction_pool_id",
                 "title_template", "description_template",
                 "tags_template", "default_privacy", "default_category_id", "enabled",
@@ -3621,13 +3615,14 @@ def editing_channel_profile_disable(profile_id: int) -> dict[str, Any]:
 def editing_jobs_plan(req: EditJobsPlanRequest) -> dict[str, Any]:
     try:
         _init()
+        _reject_legacy_field(req, "template_id")
         if not req.item_keys:
             raise ValueError("Выберите хотя бы один workspace item.")
         return plan_edit_jobs_for_workspace_items(
             req.item_keys,
             req.channel_profile_id,
             reaction_asset_id=req.reaction_asset_id,
-            template_id=req.template_id,
+            template_id=None,
             studio_template_id=req.studio_template_id,
             parameter_values=req.parameter_values,
             renderer_engine=req.renderer_engine,
@@ -3782,7 +3777,10 @@ def editing_job_reset_review(
 
 
 @router.post("/editing/jobs/bulk-render")
-def editing_jobs_bulk_render(req: EditJobsBulkRenderRequest) -> dict[str, Any]:
+def editing_jobs_bulk_render(
+    req: EditJobsBulkRenderRequest,
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
     try:
         _init()
         if not req.job_ids:
@@ -3817,7 +3815,7 @@ def editing_jobs_bulk_render(req: EditJobsBulkRenderRequest) -> dict[str, Any]:
                             "reason": f"Remotion job со status={render_status} не запускается bulk-render.",
                         })
                         continue
-                    start_remotion_render_queue("")
+                    start_studio_render_queue(_base_url(request))
                     summary["processed"] += 1
                     db.sync_edit_job_from_remotion_render_job(render_job_id)
                     updated = db.get_edit_job(job_id)
@@ -3888,10 +3886,14 @@ def editing_worker_run_once(
 @router.post("/editing/jobs/{job_id}/render")
 def editing_job_render(
     job_id: int,
+    request: Request = None,  # type: ignore[assignment]
     req: EditJobRenderRequest | None = None,
 ) -> dict[str, Any]:
     try:
         _init()
+        if isinstance(request, EditJobRenderRequest):
+            req = request
+            request = None
         current = db.get_edit_job(job_id)
         if current is None:
             raise FileNotFoundError("Edit job не найден.")
@@ -3915,7 +3917,7 @@ def editing_job_render(
                 raise ValueError("Готовый Remotion render нельзя перезаписать этим действием; создайте задачу заново.")
             if render_status != "queued":
                 raise ValueError(f"Remotion job со status={render_status} уже не queued.")
-            started = start_remotion_render_queue("")
+            started = start_studio_render_queue(_base_url(request))
             db.sync_edit_job_from_remotion_render_job(render_job_id)
             updated = db.get_edit_job(job_id)
             return {

@@ -628,7 +628,7 @@ export const ApplyTemplatePanel = ({
 
       <section className="ts-card apply-panel apply-wide">
         <div className="ts-card-head">
-          <div><h2>Automated Pipelines</h2><p>Пока без watcher/cron: сохранение и ручной запуск.</p></div>
+          <div><h2>Studio Presets</h2><p>Сохранённые наборы применения Studio template: источник, renderer, параметры и reaction.</p></div>
           <button onClick={() => void onRefreshPipelines()}>Обновить</button>
         </div>
         <div className="batch-list">
@@ -640,12 +640,12 @@ export const ApplyTemplatePanel = ({
               </div>
               <div className="ts-row-actions">
                 <button disabled={busy || !pipeline.enabled} onClick={() => void runPipeline(pipeline.id)}>
-                  Запустить pipeline
+                  Запустить preset
                 </button>
               </div>
             </article>
           ))}
-          {!pipelines.length ? <div className="empty-note">Pipeline пока нет.</div> : null}
+          {!pipelines.length ? <div className="empty-note">Studio presets пока нет.</div> : null}
         </div>
       </section>
     </div>

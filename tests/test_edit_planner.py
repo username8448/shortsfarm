@@ -26,10 +26,13 @@ def _make_segment(
     exists: bool = True,
 ) -> tuple[int, str, Path]:
     from shortsfarm import db
+    from shortsfarm.workspace_fs import get_workspace_root, set_workspace_root
 
     job_id = db.create_job(video_in_db, "fast", 60)
     db.mark_job_done(job_id)
-    path = tmp_path / f"{name}.mp4"
+    root = get_workspace_root() or set_workspace_root(tmp_path / "workspace")
+    path = root / "cuts" / f"{name}.mp4"
+    path.parent.mkdir(parents=True, exist_ok=True)
     if exists:
         path.write_bytes(b"segment")
     segment_id = db.insert_segment(
@@ -44,18 +47,30 @@ def _make_segment(
     return segment_id, f"segment:{segment_id}", path
 
 
-def _template(key: str = "reaction_top_25") -> int:
+def _template(key: str = "main_only_template", *, reaction: bool = False) -> int:
     from shortsfarm import db
+    from shortsfarm.studio_templates import (
+        default_reaction_top_25_definition,
+        default_studio_template_definitions,
+    )
 
-    return db.create_edit_template(
-        key=key,
+    if reaction:
+        definition = default_reaction_top_25_definition()
+    else:
+        definition = next(
+            item for item in default_studio_template_definitions()
+            if item["key"] == "main_only"
+        )
+    template_key = key.replace("-", "_")
+    definition["key"] = template_key
+    definition["name"] = f"Template {key}"
+    return db.create_studio_template(
+        template_key=template_key,
         name=f"Template {key}",
-        renderer="ffmpeg",
-        recipe_json={
-            "version": 1,
-            "canvas": {"width": 1080, "height": 1920},
-            "slots": {"main": {}, "reaction": {}},
-        },
+        engine="remotion",
+        version=1,
+        status="active",
+        definition_json=definition,
     )
 
 
@@ -68,9 +83,17 @@ def _profile(
 
     return db.create_channel_profile(
         name="Funny RU",
-        default_template_id=template_id,
+        default_studio_template_id=template_id,
         reaction_pool_id=reaction_pool_id,
     )
+
+
+def _recipe_for_job(job) -> dict:
+    from shortsfarm import db
+
+    project = db.get_studio_project(int(job["studio_project_id"]))
+    assert project is not None
+    return json.loads(str(project["recipe_json"]))
 
 
 def test_plan_endpoint_creates_materialized_job_for_ready_segment(video_in_db, tmp_path):
@@ -100,18 +123,20 @@ def test_plan_endpoint_creates_materialized_job_for_ready_segment(video_in_db, t
     assert job is not None
     assert job["status"] == "queued"
     assert job["input_path"] == str(source.resolve())
-    assert (
-        f"output/edited/reaction_top_25/segment_{segment_id}"
-        f"__profile_{profile_id}__job_{job['id']}.mp4"
-    ) in str(job["output_path"])
-    recipe = json.loads(job["recipe_json"])
-    assert recipe["template"]["id"] == template_id
-    assert recipe["template"]["recipe"]["canvas"]["width"] == 1080
-    assert recipe["workspace"]["item_key"] == item_key
-    assert recipe["workspace"]["main_input_path"] == str(source.resolve())
-    assert recipe["channel_profile"]["id"] == profile_id
-    assert recipe["reaction"]["asset_id"] is None
-    assert recipe["output"]["path"] == job["output_path"]
+    assert job["recipe_json"] is None
+    assert job["studio_template_id"] == template_id
+    assert job["studio_project_id"] is not None
+    assert job["remotion_render_job_id"] is not None
+    assert str(job["output_path"]).endswith(
+        f"edits/ready/main_only_template/render_job_{job['remotion_render_job_id']}.mp4"
+    )
+    recipe = _recipe_for_job(job)
+    assert recipe["template"]["studio_template_id"] == template_id
+    assert recipe["template"]["definition_schema_version"] == 2
+    assert recipe["template"]["adapter"] == "main_only"
+    assert recipe["parameters"]["main_fit"] == "cover"
+    assert recipe["media"]["main"]["workspace_path"] == "cuts/ready.mp4"
+    assert recipe["media"]["reaction"]["asset_id"] is None
 
 
 def test_plan_with_studio_template_creates_remotion_links(tmp_path):
@@ -134,6 +159,12 @@ def test_plan_with_studio_template_creates_remotion_links(tmp_path):
     segment_id = db.insert_segment(video_id, split_job_id, 1, 0.0, 10.0, segment_path)
     db.update_workspace_item("segment", segment_id, workspace_status="ready")
     template = ensure_default_studio_templates()[0]
+    reaction_path = tmp_path / "reaction.mp4"
+    reaction_path.write_bytes(b"reaction")
+    reaction_id = db.create_reaction_asset(
+        name="Reaction",
+        file_path=str(reaction_path),
+    )
     profile_id = db.create_channel_profile(
         name="Studio profile",
         default_studio_template_id=int(template["id"]),
@@ -141,11 +172,13 @@ def test_plan_with_studio_template_creates_remotion_links(tmp_path):
 
     data = api.editing_jobs_plan(
         EditJobsPlanRequest(
-            item_keys=[f"segment:{segment_id}"],
-            channel_profile_id=profile_id,
-            parameter_values={"reaction_height": 360},
+                item_keys=[f"segment:{segment_id}"],
+                channel_profile_id=profile_id,
+                reaction_asset_id=reaction_id,
+                parameter_values={"reaction_height": 360},
+                renderer_engine="remotion",
+            )
         )
-    )
 
     assert data["summary"]["created"] == 1
     job = db.get_edit_job(data["results"][0]["job"]["id"])
@@ -158,9 +191,11 @@ def test_plan_with_studio_template_creates_remotion_links(tmp_path):
     assert render_job is not None
     assert render_job["status"] == "queued"
     assert str(render_job["output_path"]).startswith(str(root / "edits"))
-    recipe = json.loads(str(job["recipe_json"]))
+    assert job["recipe_json"] is None
+    recipe = _recipe_for_job(job)
     assert recipe["template"]["studio_template_id"] == template["id"]
     assert recipe["layout"]["reaction_height"] == 360
+    assert recipe["parameters"]["reaction_height"] == 360
 
 
 def test_plan_uses_workspace_edits_for_managed_source(tmp_path):
@@ -188,12 +223,12 @@ def test_plan_uses_workspace_edits_for_managed_source(tmp_path):
     job = db.get_edit_job(result["job"]["id"])
     assert job is not None
     assert Path(job["output_path"]) == (
-        root / "edits" / "Автор" / "Подкаст" / "Выпуск 001"
-        / "original" / f"segment_{segment_id:03d}" / f"edit_job_{job['id']}.mp4"
+        root / "edits" / "managed-ready" / "main_only_template"
+        / f"render_job_{job['remotion_render_job_id']}.mp4"
     )
-    recipe = json.loads(job["recipe_json"])
-    assert recipe["workspace"]["source_path"] == str(source)
-    assert recipe["output"]["path"] == job["output_path"]
+    assert job["recipe_json"] is None
+    recipe = _recipe_for_job(job)
+    assert recipe["media"]["main"]["workspace_path"].startswith("cuts/")
     assert not Path(job["output_path"]).parent.exists()
 
 
@@ -235,7 +270,7 @@ def test_plan_skips_draft_missing_and_profile_without_template(video_in_db, tmp_
         )
     )
     assert no_template["summary"]["skipped"] == 1
-    assert "default template" in no_template["results"][0]["reason"]
+    assert "default Studio template" in no_template["results"][0]["reason"]
 
 
 def test_plan_selects_available_reaction_from_pool(video_in_db, tmp_path):
@@ -248,7 +283,7 @@ def test_plan_selects_available_reaction_from_pool(video_in_db, tmp_path):
         tmp_path,
         name="pool-main",
     )
-    template_id = _template("pool-template")
+    template_id = _template("pool-template", reaction=True)
     pool_id = db.create_reaction_pool(name="Funny pool")
     missing_id = db.create_reaction_asset(
         name="Missing",
@@ -271,8 +306,8 @@ def test_plan_selects_available_reaction_from_pool(video_in_db, tmp_path):
     job = data["results"][0]["job"]
     assert data["summary"]["created"] == 1
     assert job["reaction_asset_id"] == available_id
-    recipe = json.loads(job["recipe_json"])
-    assert recipe["reaction"]["file_path"] == str(available_path)
+    recipe = _recipe_for_job(job)
+    assert recipe["media"]["reaction"]["asset_id"] == available_id
 
 
 def test_plan_pool_with_only_missing_reaction_is_skipped(video_in_db, tmp_path):
@@ -285,7 +320,7 @@ def test_plan_pool_with_only_missing_reaction_is_skipped(video_in_db, tmp_path):
         tmp_path,
         name="missing-pool-main",
     )
-    template_id = _template("missing-pool-template")
+    template_id = _template("missing-pool-template", reaction=True)
     pool_id = db.create_reaction_pool(name="Missing pool")
     asset_id = db.create_reaction_asset(
         name="Gone",
@@ -312,7 +347,7 @@ def test_plan_explicit_reaction_asset_overrides_pool(video_in_db, tmp_path):
         tmp_path,
         name="explicit-main",
     )
-    template_id = _template("explicit-template")
+    template_id = _template("explicit-template", reaction=True)
     reaction_path = tmp_path / "explicit.mp4"
     reaction_path.write_bytes(b"reaction")
     reaction_id = db.create_reaction_asset(
@@ -356,7 +391,12 @@ def test_duplicate_and_force_new_rules(video_in_db, tmp_path):
     assert queued_existing["results"][0]["job"]["id"] == first_id
     assert len(db.list_edit_jobs()) == 1
 
-    db.mark_edit_job_done(first_id, "/tmp/edited.mp4")
+    first_job = db.get_edit_job(first_id)
+    assert first_job is not None
+    db.mark_remotion_render_job_done(
+        int(first_job["remotion_render_job_id"]),
+        "/tmp/edited.mp4",
+    )
     done_existing = api.editing_jobs_plan(request)
     assert done_existing["results"][0]["status"] == "existing"
     assert done_existing["results"][0]["job"]["id"] == first_id
@@ -403,6 +443,11 @@ def test_edit_jobs_api_details_cancel_and_retry(video_in_db, tmp_path):
     assert retried["started_at"] is None
     assert retried["finished_at"] is None
 
-    db.mark_edit_job_failed(job_id, "boom")
+    current = db.get_edit_job(job_id)
+    assert current is not None
+    db.mark_remotion_render_job_failed(
+        int(current["remotion_render_job_id"]),
+        "boom",
+    )
     failed_retried = api.editing_job_retry(job_id)["item"]
     assert failed_retried["status"] == "queued"

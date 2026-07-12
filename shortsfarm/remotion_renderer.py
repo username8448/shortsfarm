@@ -671,9 +671,11 @@ def _run_ffmpeg_fast(
         normalized_recipe["media"]["main"]["workspace_path"]
     )
     asset_id = normalized_recipe["media"]["reaction"]["asset_id"]
-    if asset_id is None:
-        raise ValueError("FFmpeg fast renderer требует reaction asset.")
-    _asset, reaction_path = resolve_reaction_media_path(int(asset_id))
+    reaction_path: Path | None = None
+    if asset_id is not None:
+        _asset, reaction_path = resolve_reaction_media_path(int(asset_id))
+    elif str(normalized_recipe.get("layout", {}).get("reaction_position") or "top") != "none":
+        raise ValueError("FFmpeg fast renderer требует reaction asset для этого template.")
     profile = get_render_profile(str(resolved_recipe.get("render_profile", {}).get("key")))
     trim = resolved_recipe["trim"]
     duration = float(trim["duration_sec"])
@@ -693,10 +695,15 @@ def _run_ffmpeg_fast(
         f"{start:.3f}",
         "-i",
         str(main_path),
-        "-stream_loop",
-        "-1",
-        "-i",
-        str(reaction_path),
+    ]
+    if reaction_path is not None:
+        command.extend([
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(reaction_path),
+        ])
+    command.extend([
         "-t",
         f"{duration:.3f}",
         "-filter_complex",
@@ -725,7 +732,7 @@ def _run_ffmpeg_fast(
         "+faststart",
         "-shortest",
         str(temp_path),
-    ]
+    ])
     total_frames = max(1, int(round(duration * profile.fps)))
     db.update_remotion_render_job_progress(
         job_id,
@@ -802,9 +809,18 @@ def _run_claimed_remotion_render_job(job: Any, base_url: str) -> None:
         normalized_recipe = normalize_studio_recipe(
             json.loads(str(project["recipe_json"]))
         )
+        require_reaction = (
+            str(
+                normalized_recipe.get("template", {}).get("adapter")
+                or normalized_recipe.get("template", {}).get("renderer_adapter")
+                or ""
+            ) != "main_only"
+            and str(normalized_recipe.get("layout", {}).get("reaction_position") or "top") != "none"
+        )
         resolved_recipe = resolved_studio_recipe(
             normalized_recipe,
             base_url=base_url,
+            require_reaction=require_reaction,
             render_profile=render_profile,
             duration_limit_sec=job["duration_limit_sec"],
             start_offset_sec=float(job["start_offset_sec"] or 0),
@@ -912,7 +928,7 @@ def _active_job_state() -> tuple[Any | None, bool, bool]:
     return job, alive, stale
 
 
-def remotion_render_queue_status() -> dict[str, Any]:
+def studio_render_queue_status() -> dict[str, Any]:
     job, alive, stale = _active_job_state()
     with db.connect() as con:
         queued_count = int(con.execute(
@@ -945,7 +961,7 @@ def remotion_render_queue_status() -> dict[str, Any]:
     }
 
 
-def recover_remotion_render_queue() -> dict[str, Any]:
+def recover_studio_render_queue() -> dict[str, Any]:
     job, alive, stale = _active_job_state()
     recovered = 0
     reason = "no rendering job"
@@ -966,11 +982,11 @@ def recover_remotion_render_queue() -> dict[str, Any]:
     return {
         "recovered": recovered,
         "reason": reason,
-        "queue": remotion_render_queue_status(),
+        "queue": studio_render_queue_status(),
     }
 
 
-def start_remotion_render_queue(base_url: str) -> dict[str, Any]:
+def start_studio_render_queue(base_url: str) -> dict[str, Any]:
     global _queue_thread
     job, alive, stale = _active_job_state()
     if stale:
@@ -1011,16 +1027,16 @@ def start_remotion_render_queue(base_url: str) -> dict[str, Any]:
         }
 
 
-def ensure_remotion_render_queue_running(base_url: str) -> dict[str, Any]:
+def ensure_studio_render_queue_running(base_url: str) -> dict[str, Any]:
     """Recover a stale queue if needed and start queued render jobs.
 
     This is intentionally idempotent and safe to call from polling endpoints:
     it starts a worker only when jobs are queued and no worker is alive.
     """
     recovered: dict[str, Any] | None = None
-    queue = remotion_render_queue_status()
+    queue = studio_render_queue_status()
     if queue["status"] == "stale":
-        recovered = recover_remotion_render_queue()
+        recovered = recover_studio_render_queue()
         queue = recovered["queue"]
     started: dict[str, Any] | None = None
     if (
@@ -1028,13 +1044,20 @@ def ensure_remotion_render_queue_running(base_url: str) -> dict[str, Any]:
         and queue.get("status") == "idle"
         and int(queue.get("rendering_count") or 0) == 0
     ):
-        started = start_remotion_render_queue(base_url)
-        queue = remotion_render_queue_status()
+        started = start_studio_render_queue(base_url)
+        queue = studio_render_queue_status()
     return {
         "queue": queue,
         "recovered": recovered,
         "started": started,
     }
+
+
+# Compatibility aliases kept while older imports/tests migrate to Studio naming.
+remotion_render_queue_status = studio_render_queue_status
+recover_remotion_render_queue = recover_studio_render_queue
+start_remotion_render_queue = start_studio_render_queue
+ensure_remotion_render_queue_running = ensure_studio_render_queue_running
 
 
 def start_remotion_render_job(job_id: int, base_url: str) -> None:

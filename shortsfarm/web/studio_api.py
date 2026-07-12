@@ -13,9 +13,9 @@ from pydantic import BaseModel
 
 from .. import db
 from ..remotion_renderer import (
-    recover_remotion_render_queue,
-    remotion_render_queue_status,
-    start_remotion_render_queue,
+    recover_studio_render_queue as recover_studio_render_queue_worker,
+    studio_render_queue_status as studio_render_queue_status_worker,
+    start_studio_render_queue as _start_studio_render_queue,
 )
 from ..render_profiles import (
     DEFAULT_RENDER_ENGINE,
@@ -40,11 +40,14 @@ from ..studio import (
     resolved_studio_recipe,
     studio_project_payload,
 )
+from ..studio_service import (
+    create_apply_batch as service_create_apply_batch,
+    get_studio_template_for_use,
+)
 from ..studio_templates import (
     TEMPLATE_STATUSES,
     ensure_default_studio_templates,
     normalize_template_definition,
-    require_remotion_adapter,
     template_row_payload,
     unique_duplicate_key,
 )
@@ -58,7 +61,15 @@ SEEDED_STUDIO_TEMPLATE_KEYS = {
     "reaction_top_50",
     "reaction_bottom_25",
     "reaction_pip_corner",
+    "main_only",
 }
+
+
+start_remotion_render_queue = _start_studio_render_queue
+
+
+def start_studio_render_queue(base_url: str) -> dict[str, Any]:
+    return start_remotion_render_queue(base_url)
 
 
 class StudioProjectRequest(BaseModel):
@@ -261,16 +272,7 @@ def _pipeline_payload(row: Any) -> dict[str, Any]:
 
 def _template_for_apply(template_id: int) -> Any:
     ensure_default_studio_templates()
-    row = db.get_studio_template(int(template_id))
-    if row is None:
-        raise FileNotFoundError("Studio template не найден.")
-    if row["deleted_at"] is not None:
-        raise ValueError("Studio template удалён/скрыт и не может использоваться.")
-    if str(row["status"] or "").lower() == "archived":
-        raise ValueError("Studio template архивирован и не может использоваться.")
-    definition = normalize_template_definition(json.loads(str(row["definition_json"])))
-    require_remotion_adapter(definition)
-    return row, definition
+    return get_studio_template_for_use(template_id)
 
 
 def _create_apply_batch(
@@ -280,114 +282,37 @@ def _create_apply_batch(
     request: Request,
     source_mode_override: str | None = None,
 ) -> dict[str, Any]:
-    template, definition = _template_for_apply(template_id)
-    renderer_engine = normalize_render_engine(req.renderer_engine)
-    profile = get_render_profile(req.render_profile)
-    start_offset_sec = normalize_start_offset(req.start_offset_sec)
-    duration_limit_sec = normalize_duration_limit(
-        req.duration_limit_sec,
-        profile=profile,
-        full_length=req.full_length,
-    )
-    allowed_sections = definition.get("slots", {}).get("main", {}).get(
-        "allowed_sections",
-        ["sources", "cuts", "prepared"],
-    )
-    source_mode = str(source_mode_override or req.source_mode or "selected")
-    if source_mode == "folder" and req.recursive:
-        batch_source_mode = "folder_recursive"
-    else:
-        batch_source_mode = source_mode
-    media_paths = collect_apply_media_paths(
-        source_mode=batch_source_mode,
+    result = service_create_apply_batch(
+        template_id=template_id,
+        name=req.name,
+        source_mode=req.source_mode,
+        source_path=req.source_path,
         source_paths=req.source_paths,
-        source_path=req.source_path,
         recursive=req.recursive,
-        allowed_sections=allowed_sections,
-    )
-    name = str(req.name or "").strip() or f"{template['name']} batch"
-    batch_id = db.create_remotion_render_batch(
-        studio_template_id=int(template["id"]),
-        template_key=str(template["template_key"]),
-        name=name,
-        source_mode=batch_source_mode,
-        source_path=req.source_path,
         reaction_strategy=req.reaction_strategy,
         reaction_asset_id=req.reaction_asset_id,
         reaction_pool_id=req.reaction_pool_id,
-        parameter_values_json=req.parameter_values,
-        renderer_engine=renderer_engine,
-        render_profile=profile.key,
-        duration_limit_sec=duration_limit_sec,
-        start_offset_sec=start_offset_sec,
+        parameter_values=req.parameter_values,
+        renderer_engine=req.renderer_engine,
+        render_profile=req.render_profile,
+        duration_limit_sec=req.duration_limit_sec,
+        start_offset_sec=req.start_offset_sec,
         full_length=req.full_length,
+        start=req.start,
+        base_url=_base_url(request),
+        source_mode_override=source_mode_override,
     )
     created_jobs: list[dict[str, Any]] = []
-    for main_workspace_path in media_paths:
-        reaction_asset_id = choose_reaction_asset(
-            reaction_strategy=req.reaction_strategy,
-            reaction_asset_id=req.reaction_asset_id,
-            reaction_pool_id=req.reaction_pool_id,
-        )
-        recipe = parameterized_recipe_from_template(
-            definition,
-            main_workspace_path=main_workspace_path,
-            reaction_asset_id=reaction_asset_id,
-            parameter_values=req.parameter_values,
-            studio_template_id=int(template["id"]),
-            template_version=int(template["version"]),
-        )
-        resolved_studio_recipe(
-            recipe,
-            base_url=_base_url(request),
-            require_reaction=True,
-            render_profile=profile.key,
-            duration_limit_sec=duration_limit_sec,
-            start_offset_sec=start_offset_sec,
-            full_length=req.full_length,
-        )
-        project_id = db.create_studio_project(
-            workspace_item_key=None,
-            main_workspace_path=main_workspace_path,
-            template_key=str(template["template_key"]),
-            reaction_asset_id=reaction_asset_id,
-            recipe_json=recipe,
-            studio_template_id=int(template["id"]),
-            reaction_pool_id=req.reaction_pool_id,
-        )
-        job_id = db.create_remotion_render_job(
-            project_id,
-            renderer_engine=renderer_engine,
-            render_profile=profile.key,
-            duration_limit_sec=duration_limit_sec,
-            start_offset_sec=start_offset_sec,
-            full_length=req.full_length,
-        )
-        _temp_path, final_path = build_batch_remotion_output_paths(
-            main_workspace_path,
-            str(template["template_key"]),
-            job_id,
-        )
-        db.update_remotion_render_job_output(job_id, str(final_path))
-        db.create_remotion_render_batch_item(
-            batch_id=batch_id,
-            studio_project_id=project_id,
-            render_job_id=job_id,
-            main_workspace_path=main_workspace_path,
-        )
-        job = db.get_remotion_render_job(job_id)
+    for job_id in result["job_ids"]:
+        job = db.get_remotion_render_job(int(job_id))
         if job is not None:
             created_jobs.append(_render_job_payload(job))
-    db.sync_remotion_render_batch(batch_id)
-    queue = None
-    if req.start:
-        queue = start_remotion_render_queue(_base_url(request))
-    batch = db.get_remotion_render_batch(batch_id)
+    batch = db.get_remotion_render_batch(int(result["batch_id"]))
     assert batch is not None
     return {
         "batch": _batch_payload(batch, include_items=True),
         "jobs": created_jobs,
-        "queue": queue,
+        "queue": result["queue"],
     }
 
 
@@ -795,7 +720,7 @@ def studio_render_batch_start(batch_id: int, request: Request) -> dict[str, Any]
     row = db.get_remotion_render_batch(batch_id)
     if row is None:
         raise _fail(FileNotFoundError("Render batch не найден."), 404)
-    queue = start_remotion_render_queue(_base_url(request))
+    queue = start_studio_render_queue(_base_url(request))
     updated = db.get_remotion_render_batch(batch_id)
     assert updated is not None
     return {"batch": _batch_payload(updated, include_items=True), "queue": queue}
@@ -823,7 +748,7 @@ def studio_render_batch_retry_failed(batch_id: int, request: Request) -> dict[st
     if row is None:
         raise _fail(FileNotFoundError("Render batch не найден."), 404)
     retried = db.retry_failed_remotion_render_batch(batch_id)
-    queue = start_remotion_render_queue(_base_url(request)) if retried else None
+    queue = start_studio_render_queue(_base_url(request)) if retried else None
     updated = db.get_remotion_render_batch(batch_id)
     assert updated is not None
     return {
@@ -836,13 +761,13 @@ def studio_render_batch_retry_failed(batch_id: int, request: Request) -> dict[st
 @router.get("/render-queue/status")
 def studio_render_queue_status() -> dict[str, Any]:
     db.init_db()
-    return {"queue": remotion_render_queue_status()}
+    return {"queue": studio_render_queue_status_worker()}
 
 
 @router.post("/render-queue/recover")
 def studio_render_queue_recover() -> dict[str, Any]:
     db.init_db()
-    return recover_remotion_render_queue()
+    return recover_studio_render_queue_worker()
 
 
 @router.get("/render-jobs/completed")
@@ -1059,7 +984,7 @@ def studio_project_render(project_id: int, request: Request) -> JSONResponse:
             job_id,
         )
         db.update_remotion_render_job_output(job_id, str(final_path))
-        queue = start_remotion_render_queue(_base_url(request))
+        queue = start_studio_render_queue(_base_url(request))
         row = db.get_remotion_render_job(job_id)
         assert row is not None
         return JSONResponse(
@@ -1101,7 +1026,7 @@ def studio_render_job_retry(job_id: int, request: Request) -> dict[str, Any]:
     if row is None:
         raise _fail(FileNotFoundError("Remotion render job не найден."), 404)
     retried = db.retry_remotion_render_job(job_id)
-    queue = start_remotion_render_queue(_base_url(request)) if retried else None
+    queue = start_studio_render_queue(_base_url(request)) if retried else None
     updated = db.get_remotion_render_job(job_id)
     assert updated is not None
     return {

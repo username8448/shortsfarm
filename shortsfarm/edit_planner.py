@@ -7,18 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from . import db
-from .config import output_dir
 from .render_profiles import DEFAULT_RENDER_ENGINE, DEFAULT_RENDER_PROFILE
-from .services import safe_filename
-from .studio import (
-    build_batch_remotion_output_paths,
-    parameterized_recipe_from_template,
+from .studio_service import create_edit_render_graph
+from .studio_templates import (
+    normalize_template_definition,
+    reaction_required_for_definition,
 )
-from .studio_templates import normalize_template_definition
 from .workspace_fs import (
-    build_edit_output_path,
     get_workspace_root,
-    workspace_source_relative_path,
 )
 
 
@@ -69,26 +65,14 @@ def _resolve_profile(profile_id: int) -> Any:
     return profile
 
 
-def _resolve_template(profile: Any, template_id: int | None) -> Any:
-    resolved_id = template_id if template_id is not None else profile["default_template_id"]
-    if resolved_id is None:
-        raise ValueError("У channel profile не выбран default template.")
-    template = db.get_edit_template(int(resolved_id))
-    if template is None:
-        raise ValueError("Edit template не найден.")
-    if not bool(template["enabled"]):
-        raise ValueError("Edit template отключён.")
-    return template
-
-
-def _resolve_studio_template(profile: Any, studio_template_id: int | None) -> Any | None:
+def _resolve_studio_template(profile: Any, studio_template_id: int | None) -> Any:
     resolved_id = (
         studio_template_id
         if studio_template_id is not None
         else profile["default_studio_template_id"]
     )
     if resolved_id is None:
-        return None
+        raise ValueError("У channel profile не выбран default Studio template.")
     template = db.get_studio_template(int(resolved_id))
     if template is None:
         raise ValueError("Studio template не найден.")
@@ -182,114 +166,14 @@ def plan_edit_job_for_workspace_item(
     parsed_type, parsed_id = parse_workspace_item_key(item_key)
     normalized_item_key = f"{parsed_type}:{parsed_id}"
 
+    if template_id is not None:
+        raise ValueError("Legacy templates are no longer supported.")
+
     studio_template = _resolve_studio_template(profile, studio_template_id)
-    if studio_template is not None:
-        existing = db.find_existing_studio_edit_job(
-            normalized_item_key,
-            int(profile["id"]),
-            int(studio_template["id"]),
-            include_done=not force_new,
-        )
-        if existing is not None:
-            return {
-                "item_key": normalized_item_key,
-                "status": "existing",
-                "job": _job_dict(existing),
-            }
-
-        item_type, item_id, item, input_path = _resolve_workspace_item(normalized_item_key)
-        reaction = _resolve_reaction(profile, reaction_asset_id)
-        main_workspace_path = _workspace_relative_path(input_path)
-        try:
-            definition = normalize_template_definition(
-                json.loads(str(studio_template["definition_json"]))
-            )
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Studio template definition_json invalid: {exc.msg}") from exc
-        recipe = parameterized_recipe_from_template(
-            definition,
-            main_workspace_path=main_workspace_path,
-            reaction_asset_id=int(reaction["id"]) if reaction is not None else None,
-            parameter_values=parameter_values or {},
-            studio_template_id=int(studio_template["id"]),
-            template_version=int(studio_template["version"]),
-        )
-        source_path = str(item.get("source_path") or "")
-        project_id = db.create_studio_project(
-            workspace_item_key=normalized_item_key,
-            main_workspace_path=main_workspace_path,
-            template_key=str(studio_template["template_key"]),
-            reaction_asset_id=int(reaction["id"]) if reaction is not None else None,
-            reaction_pool_id=profile["reaction_pool_id"],
-            studio_template_id=int(studio_template["id"]),
-            recipe_json=recipe,
-        )
-        render_job_id = db.create_remotion_render_job(
-            project_id,
-            output_path=None,
-            renderer_engine=renderer_engine,
-            render_profile=render_profile,
-            duration_limit_sec=duration_limit_sec,
-            start_offset_sec=start_offset_sec,
-            full_length=full_length,
-        )
-        _tmp_path, output_path = build_batch_remotion_output_paths(
-            main_workspace_path,
-            str(studio_template["template_key"]),
-            render_job_id,
-        )
-        db.update_remotion_render_job_output(render_job_id, str(output_path))
-        job_id = db.create_edit_job(
-            workspace_item_key=normalized_item_key,
-            channel_profile_id=int(profile["id"]),
-            template_id=None,
-            studio_template_id=int(studio_template["id"]),
-            studio_project_id=project_id,
-            remotion_render_job_id=render_job_id,
-            reaction_asset_id=int(reaction["id"]) if reaction is not None else None,
-            input_path=str(input_path),
-            output_path=str(output_path),
-            renderer="remotion",
-            recipe_json={
-                **recipe,
-                "workspace": {
-                    "item_key": normalized_item_key,
-                    "item_type": item_type,
-                    "item_id": item_id,
-                    "main_input_path": str(input_path),
-                    "source_path": source_path,
-                },
-                "channel_profile": {
-                    "id": int(profile["id"]),
-                    "name": str(profile["name"]),
-                },
-                "output": {"path": str(output_path)},
-                "remotion": {
-                    "studio_project_id": project_id,
-                    "render_job_id": render_job_id,
-                    "renderer_engine": renderer_engine,
-                    "render_profile": render_profile,
-                    "duration_limit_sec": duration_limit_sec,
-                    "start_offset_sec": start_offset_sec,
-                    "full_length": bool(full_length),
-                },
-            },
-        )
-        job = db.get_edit_job(job_id)
-        if job is None:
-            raise RuntimeError("Edit job создан, но не найден.")
-        return {
-            "item_key": normalized_item_key,
-            "status": "created",
-            "job": _job_dict(job),
-        }
-
-    template = _resolve_template(profile, template_id)
-
-    existing = db.find_existing_edit_job(
+    existing = db.find_existing_studio_edit_job(
         normalized_item_key,
         int(profile["id"]),
-        int(template["id"]),
+        int(studio_template["id"]),
         include_done=not force_new,
     )
     if existing is not None:
@@ -300,85 +184,37 @@ def plan_edit_job_for_workspace_item(
         }
 
     item_type, item_id, item, input_path = _resolve_workspace_item(normalized_item_key)
-    reaction = _resolve_reaction(profile, reaction_asset_id)
-    renderer = str(template["renderer"] or "ffmpeg")
-
-    job_id = db.create_edit_job(
-        workspace_item_key=normalized_item_key,
-        channel_profile_id=int(profile["id"]),
-        template_id=int(template["id"]),
-        reaction_asset_id=int(reaction["id"]) if reaction is not None else None,
-        input_path=str(input_path),
-        renderer=renderer,
-    )
-    source_path = str(item.get("source_path") or "")
-    source_relative_path = workspace_source_relative_path(source_path)
-    if source_relative_path is not None:
-        output_path = build_edit_output_path(
-            source_relative_path,
-            item_type,
-            item_id,
-            job_id,
-            create=False,
-        ).resolve()
-    else:
-        template_key = safe_filename(
-            str(template["key"] or f"template_{template['id']}")
-        )
-        output_path = (
-            output_dir()
-            / "edited"
-            / template_key
-            / (
-                f"{item_type}_{item_id}__profile_{int(profile['id'])}"
-                f"__job_{job_id}.mp4"
-            )
-        ).resolve()
     try:
-        template_recipe = json.loads(str(template["recipe_json"]))
+        definition = normalize_template_definition(
+            json.loads(str(studio_template["definition_json"]))
+        )
     except json.JSONDecodeError as exc:
-        db.mark_edit_job_failed(job_id, f"Template recipe_json invalid: {exc.msg}")
-        raise ValueError(f"Template recipe_json invalid: {exc.msg}") from exc
-
-    recipe = {
-        "version": 1,
-        "template": {
-            "id": int(template["id"]),
-            "key": str(template["key"]),
-            "renderer": renderer,
-            "recipe": template_recipe,
-        },
-        "workspace": {
-            "item_key": normalized_item_key,
-            "item_type": item_type,
-            "item_id": item_id,
-            "main_input_path": str(input_path),
-            "source_path": source_path,
-        },
-        "channel_profile": {
-            "id": int(profile["id"]),
-            "name": str(profile["name"]),
-        },
-        "reaction": {
-            "asset_id": int(reaction["id"]) if reaction is not None else None,
-            "file_path": (
-                str(Path(str(reaction["file_path"])).expanduser().resolve())
-                if reaction is not None
-                else None
-            ),
-        },
-        "output": {"path": str(output_path)},
-    }
-    if not db.update_edit_job_plan(
-        job_id,
+        raise ValueError(f"Studio template definition_json invalid: {exc.msg}") from exc
+    reaction_needed = reaction_required_for_definition(definition, parameter_values or {})
+    reaction = _resolve_reaction(profile, reaction_asset_id) if reaction_needed else None
+    if reaction_needed and reaction is None:
+        raise ValueError("Для выбранного Studio template требуется reaction asset или reaction pool.")
+    source_path = str(item.get("source_path") or "")
+    graph = create_edit_render_graph(
+        workspace_item_key=normalized_item_key,
+        item_type=item_type,
+        item_id=item_id,
         input_path=str(input_path),
-        output_path=str(output_path),
-        recipe_json=recipe,
-    ):
-        raise RuntimeError("Edit job создан, но не удалось сохранить materialized recipe.")
-    job = db.get_edit_job(job_id)
-    if job is None:
-        raise RuntimeError("Edit job создан, но не найден.")
+        source_path=source_path,
+        channel_profile_id=int(profile["id"]),
+        channel_profile_name=str(profile["name"]),
+        studio_template_id=int(studio_template["id"]),
+        reaction_asset_id=int(reaction["id"]) if reaction is not None else None,
+        reaction_pool_id=profile["reaction_pool_id"],
+        main_workspace_path=_workspace_relative_path(input_path),
+        parameter_values=parameter_values or {},
+        renderer_engine=renderer_engine,
+        render_profile=render_profile,
+        duration_limit_sec=duration_limit_sec,
+        start_offset_sec=start_offset_sec,
+        full_length=full_length,
+    )
+    job = graph["job"]
     return {
         "item_key": normalized_item_key,
         "status": "created",
