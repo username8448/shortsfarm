@@ -804,7 +804,11 @@ def test_shorts_pipeline_ui_is_registered():
     assert 'id="v-split"' in html
     assert 'id="queue-overview"' in queue_html
     assert 'data-queue-filter="source"' in queue_html
-    assert 'data-queue-filter="jobs"' in queue_html
+    assert 'data-queue-filter="split"' in queue_html
+    assert 'data-queue-filter="prepare"' in queue_html
+    assert 'data-queue-filter="render"' in queue_html
+    assert 'data-queue-filter="review"' in queue_html
+    assert 'data-queue-filter="publish"' in queue_html
     assert 'data-queue-filter="missing"' in queue_html
     assert 'data-queue-filter="deleted"' in queue_html
     assert 'data-queue-view="table"' in queue_html
@@ -837,7 +841,7 @@ def test_shorts_pipeline_ui_is_registered():
     assert "openManagedFileInStudio" not in js
     assert "Открыть в Нарезке" not in js
     assert 'data-v="tags"' in html
-    assert 'data-v="editing"' in html
+    assert 'data-v="editing"' not in html
     assert 'data-v="studio"' in html
     assert "/api/shorts-pipeline/plan" in js
     assert "/api/shorts-pipeline/runs" in js
@@ -847,7 +851,7 @@ def test_shorts_pipeline_ui_is_registered():
     assert "Завершить с ошибками" in js
     assert "Запустить цикл" in js
     assert "renderQueuePipelineRuns" in js
-    assert "Монтаж / Remotion render" in js
+    assert "Studio render" in js
     assert 'id="videos-bulk-toolbar"' not in html
     assert 'id="queue-sources-bulk-toolbar"' in html
     assert "/api/videos/bulk-delete" in js

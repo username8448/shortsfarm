@@ -560,7 +560,6 @@ const VIEW_TITLES = {
   'storage-profiles': 'Профили',
   'storage-profile': 'Профиль',
   integrations: 'Интеграции',
-  editing: 'Монтаж',
   studio: 'Template Studio',
   settings: 'Настройки',
 };
@@ -583,6 +582,7 @@ let pendingVideoDeleteIds = [];
 let queueQuickFilter = 'all';
 let queueKindFilter = 'all';
 let queueStatusFilter = 'all';
+let queueReviewFilter = 'all';
 let queueSourceStateFilter = 'all';
 let queueIncludeDeleted = false;
 let queueSearchQuery = '';
@@ -612,21 +612,16 @@ let publishBatchSize = 3;
 let editingPublishScheduleGroupId = null;
 let editingPublishScheduleJobIds = [];
 let editingPublishScheduleInitial = null;
-let currentEditingTab = 'reactions';
 let editingReactions = [];
 let editingPools = [];
 let editingStudioTemplates = [];
 let editingProfiles = [];
-let editingPoolItems = [];
 let editingAccounts = [];
 let editingJobs = [];
 let editingJobFilter = 'all';
 let editingJobReviewFilter = 'all';
 let selectedEditingJobIds = new Set();
 let editingPreviewJobId = null;
-let editingReactionId = null;
-let editingPoolId = null;
-let editingProfileId = null;
 let storageProfiles = [];
 let currentStorageProfileId = null;
 let currentStorageProfile = null;
@@ -801,6 +796,7 @@ function activateView(id, btn) {
 
 function nav(id, btn) {
   if (id === 'clips') id = 'queue';
+  if (id === 'editing') id = 'studio';
   if (id === 'videos') {
     openQueueSources();
     return;
@@ -820,7 +816,6 @@ function nav(id, btn) {
     loadStorageProfiles();
   }
   if (id === 'integrations') loadIntegrationsView();
-  if (id === 'editing') loadEditingView();
   if (id === 'settings') loadSettingsView();
 }
 
@@ -1221,7 +1216,7 @@ function pipelineRunStageText(run) {
   const summary = run?.summary || {};
   if (run.status === 'queued') return 'Ожидает запуска';
   if (run.status === 'splitting') return 'Нарезка исходников';
-  if (run.status === 'rendering') return progress?.message || 'Монтаж / Remotion render';
+  if (run.status === 'rendering') return progress?.message || 'Studio render';
   if (run.status === 'syncing_profile') return 'Синхронизация с профилями по тегам';
   if (run.status === 'done' && (Number(summary.failed || 0) > 0 || run.error)) return 'Готово с ошибками';
   if (run.status === 'done') return 'Готово';
@@ -2229,6 +2224,7 @@ async function loadJobs() {
     const params = new URLSearchParams();
     if (queueKindFilter !== 'all') params.set('kind', queueKindFilter);
     if (queueStatusFilter !== 'all') params.set('status', queueStatusFilter);
+    if (queueReviewFilter !== 'all') params.set('review_status', queueReviewFilter);
     if (queueSourceStateFilter !== 'all') params.set('source_state', queueSourceStateFilter);
     if (queueIncludeDeleted) params.set('include_deleted', 'true');
     if (queueSearchQuery) params.set('q', queueSearchQuery);
@@ -2240,6 +2236,7 @@ async function loadJobs() {
     ]);
     lastJobs = data.jobs || [];
     lastQueueItems = queueData.items || [];
+    editingJobs = lastQueueItems.filter(item => item.kind === 'render');
     lastVideos = lastQueueItems
       .filter(item => item.kind === 'source')
       .map(queueVideoFromItem);
@@ -2273,25 +2270,31 @@ function renderJobCounts(counts) {
   }
 }
 function renderQueueCounts(counts) {
-  for (const key of ['all','source','jobs','errors','missing','deleted']) {
+  for (const key of ['all','source','jobs','split','prepare','render','review','publish','errors','missing','deleted']) {
     const el = document.getElementById('queue-cnt-' + key);
     if (el) el.textContent = counts[key] || '';
   }
 }
 function queueFilterConfig(name) {
   const key = String(name || 'all');
-  if (key === 'source') return {kind: 'source', status: 'all', sourceState: 'all', includeDeleted: false};
-  if (key === 'jobs') return {kind: 'jobs', status: 'all', sourceState: 'all', includeDeleted: false};
-  if (key === 'errors') return {kind: 'all', status: 'failed', sourceState: 'all', includeDeleted: false};
-  if (key === 'missing') return {kind: 'source', status: 'all', sourceState: 'missing_or_moved', includeDeleted: false};
-  if (key === 'deleted') return {kind: 'source', status: 'all', sourceState: 'hidden_deleted', includeDeleted: true};
-  return {kind: 'all', status: 'all', sourceState: 'all', includeDeleted: false};
+  if (key === 'source') return {kind: 'source', status: 'all', review: 'all', sourceState: 'all', includeDeleted: false};
+  if (key === 'jobs') return {kind: 'jobs', status: 'all', review: 'all', sourceState: 'all', includeDeleted: false};
+  if (key === 'split') return {kind: 'split', status: 'all', review: 'all', sourceState: 'all', includeDeleted: false};
+  if (key === 'prepare') return {kind: 'jobs', status: 'preparing', review: 'all', sourceState: 'all', includeDeleted: false};
+  if (key === 'render') return {kind: 'render', status: 'all', review: 'all', sourceState: 'all', includeDeleted: false};
+  if (key === 'review') return {kind: 'render', status: 'done', review: 'pending', sourceState: 'all', includeDeleted: false};
+  if (key === 'publish') return {kind: 'publish', status: 'all', review: 'all', sourceState: 'all', includeDeleted: false};
+  if (key === 'errors') return {kind: 'all', status: 'failed', review: 'all', sourceState: 'all', includeDeleted: false};
+  if (key === 'missing') return {kind: 'source', status: 'all', review: 'all', sourceState: 'missing_or_moved', includeDeleted: false};
+  if (key === 'deleted') return {kind: 'source', status: 'all', review: 'all', sourceState: 'hidden_deleted', includeDeleted: true};
+  return {kind: 'all', status: 'all', review: 'all', sourceState: 'all', includeDeleted: false};
 }
 function setQueueQuickFilter(name) {
   queueQuickFilter = String(name || 'all');
   const config = queueFilterConfig(queueQuickFilter);
   queueKindFilter = config.kind;
   queueStatusFilter = config.status;
+  queueReviewFilter = config.review;
   queueSourceStateFilter = config.sourceState;
   queueIncludeDeleted = config.includeDeleted;
   document.querySelectorAll('[data-queue-filter]').forEach(btn => {
@@ -2318,6 +2321,7 @@ function filterJobs(tab, status) {
   queueQuickFilter = status === 'failed' ? 'errors' : 'jobs';
   queueKindFilter = 'jobs';
   queueStatusFilter = status || 'all';
+  queueReviewFilter = 'all';
   queueSourceStateFilter = 'all';
   queueIncludeDeleted = false;
   if (tab) {
@@ -2361,6 +2365,46 @@ function queueProgressBar(item) {
   const cls = item.status === 'failed' ? 'pf-err' : value >= 100 ? 'pf-ok' : 'pf-info';
   return `<div class="pbar-row"><span class="mono dim">${value}%</span></div><div class="pbar"><div class="pf ${cls}" style="width:${value}%"></div></div>`;
 }
+function openStudioTemplate(templateId) {
+  const id = Number(templateId || 0);
+  if (!id) {
+    showToast('Studio template не найден', 'err');
+    return;
+  }
+  const url = new URL(window.location.href);
+  url.searchParams.set('template', String(id));
+  url.searchParams.delete('batch');
+  url.searchParams.delete('project');
+  window.history.replaceState({}, '', url);
+  nav('studio', document.querySelector('[data-v="studio"]'));
+}
+async function openQueueLinkedProfile(youtubeAccountId, channelProfileName = '') {
+  try {
+    if (!storageProfiles.length) {
+      const data = await api.get('/api/storage-profiles');
+      storageProfiles = data.items || [];
+    }
+    const accountId = Number(youtubeAccountId || 0);
+    const name = String(channelProfileName || '').trim().toLowerCase();
+    const profile = storageProfiles.find(item =>
+      accountId
+      && (item.service_links || []).some(link =>
+        link.platform === 'youtube'
+        && Number(link.external_account_id || 0) === accountId
+      )
+    ) || storageProfiles.find(item =>
+      name && String(item.effective_name || item.name || '').trim().toLowerCase() === name
+    );
+    if (profile) {
+      await openStorageProfile(Number(profile.id));
+      return;
+    }
+    nav('storage-profiles', document.querySelector('[data-v="storage-profiles"]'));
+    showToast('Локальный профиль для этой задачи не найден. Открыл раздел «Профили».');
+  } catch (err) {
+    showToast(err.message || 'Не удалось открыть профиль', 'err');
+  }
+}
 function queueItemActions(item) {
   const actions = [];
   if (item.kind === 'source') {
@@ -2372,6 +2416,22 @@ function queueItemActions(item) {
     if (item.source_hidden) actions.push(`<button class="btn-secondary" onclick="event.stopPropagation();restoreVideoSource(${videoId})">Восстановить</button>`);
     actions.push(`<button class="btn-danger" onclick="event.stopPropagation();deleteAllClipsForVideo(${videoId}, this.dataset.title)" data-title="${esc(item.title || '')}">Удалить все клипы</button>`);
     actions.push(`<button class="btn-danger" onclick="event.stopPropagation();openVideoDeleteDialog([${videoId}])">Удалить родительское видео</button>`);
+  } else if (item.kind === 'render') {
+    const jobId = Number(item.job_id);
+    const finalPath = item.edited_path || item.output_path;
+    if (item.status === 'done') {
+      actions.push(`<button class="btn-mini" onclick="event.stopPropagation();toggleEditingJobPreview(${jobId})">${editingPreviewJobId === jobId ? 'Скрыть preview' : 'Preview'}</button>`);
+      if (finalPath) actions.push(webPlayerButton(finalPath, 'Смотреть'));
+      actions.push(`<button class="btn-primary" onclick="event.stopPropagation();setEditingJobReview(${jobId}, 'approved')">Одобрить</button>`);
+      actions.push(`<button class="btn-danger" onclick="event.stopPropagation();setEditingJobReview(${jobId}, 'rejected')">Отклонить</button>`);
+    }
+    if (item.status === 'queued') actions.push(`<button class="btn-mini" onclick="event.stopPropagation();renderEditingJob(${jobId})">Рендер</button>`);
+    if (['failed','cancelled'].includes(item.status)) actions.push(`<button class="btn-mini" onclick="event.stopPropagation();renderEditingJob(${jobId}, true)">Рендер заново</button>`);
+    if (['queued','failed'].includes(item.status)) actions.push(`<button class="btn-danger" onclick="event.stopPropagation();cancelEditingJob(${jobId})">Отменить</button>`);
+    if (['failed','cancelled'].includes(item.status)) actions.push(`<button class="btn-secondary" onclick="event.stopPropagation();retryEditingJob(${jobId})">Повторить</button>`);
+    if (item.output_dir) actions.push(outputFolderButton(item.output_dir, 'Папка'));
+    if (item.studio_template_id) actions.push(`<button class="btn-mini" onclick="event.stopPropagation();openStudioTemplate(${Number(item.studio_template_id)})">Template</button>`);
+    if (item.channel_profile_id || item.youtube_account_id) actions.push(`<button class="btn-mini" data-account="${esc(item.youtube_account_id || '')}" data-name="${esc(item.channel_profile_name || '')}" onclick="event.stopPropagation();openQueueLinkedProfile(this.dataset.account, this.dataset.name)">Профиль</button>`);
   } else {
     if (item.video_id) actions.push(`<button class="btn-mini" onclick="event.stopPropagation();openQueueClipsForVideo(${Number(item.video_id)})">Клипы</button>`);
     if (item.output_dir) actions.push(outputFolderButton(item.output_dir, 'Папка'));
@@ -2385,6 +2445,42 @@ function toggleQueueItemExpanded(itemId) {
   renderQueueItems('jobs-table', lastQueueItems);
 }
 function queueItemDetails(item) {
+  if (item.kind === 'render') {
+    const jobId = Number(item.job_id);
+    const review = item.review_status || 'pending';
+    const finalPath = item.edited_path || item.output_path || '';
+    const previewOpen = item.status === 'done' && editingPreviewJobId === jobId;
+    const preview = previewOpen
+      ? `<div class="editing-review-panel">
+          <div class="editing-video-wrap"><video controls preload="metadata" src="/api/editing/jobs/${jobId}/media"></video></div>
+          <div class="editing-review-controls">
+            <div class="selection-title">Проверка результата</div>
+            <div class="mono dim">Рендер: ${badge(item.status)} · Проверка: ${badge(review)}</div>
+            <label class="field"><span class="field-lbl">Комментарий</span><textarea id="editing-review-note-${jobId}" rows="5" placeholder="Почему одобрено или что нужно переделать">${esc(item.review_note || '')}</textarea></label>
+            <div class="row-actions">
+              <button class="btn-primary" onclick="setEditingJobReview(${jobId}, 'approved')">Одобрить</button>
+              <button class="btn-danger" onclick="setEditingJobReview(${jobId}, 'rejected')">Отклонить</button>
+              ${review !== 'pending' ? `<button class="btn-secondary" onclick="resetEditingJobReview(${jobId})">Сбросить проверку</button>` : ''}
+            </div>
+          </div>
+        </div>`
+      : '';
+    return `<div class="queue-item-details">
+      <div class="inspector-kv compact">
+        <div><b>Edit job</b><span class="mono">#${jobId}</span></div>
+        <div><b>Workspace</b><span class="mono">${esc(item.workspace_item_key || '—')}</span></div>
+        <div><b>Профиль</b><span>${esc(item.channel_profile_name || `#${item.channel_profile_id || '—'}`)}</span></div>
+        <div><b>Template</b><span>${esc(item.template_name || item.template_key || '—')}</span></div>
+        <div><b>Reaction</b><span>${esc(item.reaction_asset_name || 'без реакции / pool')}</span></div>
+        <div><b>Renderer</b><span class="mono">${esc(item.renderer || '—')}</span></div>
+        <div><b>Review</b><span>${badge(review)}</span></div>
+      </div>
+      ${finalPath ? `<div class="mono dim">Результат: ${esc(finalPath)}</div>` : ''}
+      ${item.error ? `<div class="err">Ошибка: ${esc(shortErrorText(item.error))}</div>` : ''}
+      ${queueItemActions(item)}
+      ${preview}
+    </div>`;
+  }
   const jobs = item.jobs || [];
   const jobsHtml = jobs.length
     ? `<div class="queue-linked-jobs">${jobs.map(job => `<span class="badge b-dim">split #${esc(job.id)} · ${esc(job.status)}</span>`).join('')}</div>`
@@ -2414,7 +2510,7 @@ function renderQueueItems(targetId, rows) {
       return `<article class="queue-card ${expanded ? 'expanded' : ''} ${selected ? 'selected' : ''}" onclick="toggleQueueItemExpanded('${esc(item.id)}')">
         <div class="queue-card-thumb">${sourceCheck}${videoThumb(item.source_path || '', item.title || item.id)}</div>
         <div class="queue-card-body">
-          <div class="queue-card-top">${queueItemKindBadge(item)}${badge(item.status)}${queueSourceStateBadge(item)}</div>
+          <div class="queue-card-top">${queueItemKindBadge(item)}${badge(item.status)}${item.kind === 'render' ? badge(item.review_status || 'pending') : ''}${queueSourceStateBadge(item)}</div>
           <div class="queue-card-title" title="${esc(item.title || '')}">${esc(item.title || item.id)}</div>
           <div class="mono dim ov">${esc(shortPath(item.source_path || item.output_dir || '—'))}</div>
           ${queueProgressBar(item)}
@@ -2434,7 +2530,11 @@ function renderQueueItems(targetId, rows) {
     const counts = item.kind === 'source'
       ? `метки ${Number(item.counts?.marks || 0)} · сегм. ${Number(item.counts?.segments || 0)} · клипы ${Number(item.counts?.clips || 0)}`
       : Object.entries(item.counts || {}).map(([key, value]) => `${esc(key)} ${esc(value)}`).join(' · ');
-    return `<tr class="queue-row ${expanded ? 'expanded' : ''}" data-kind="${esc(item.kind)}" onclick="toggleQueueItemExpanded('${esc(item.id)}')"><td>${checkbox}</td><td><div class="video-name-cell">${videoThumb(item.source_path || '', item.title || item.id)}<div style="min-width:0;flex:1"><div class="mono txt ov">${esc(item.title || item.id)}</div><div class="mono dim">#${esc(item.id)}</div></div></div></td><td>${queueItemKindBadge(item)}</td><td><div class="status-stack">${badge(item.status)}${queueSourceStateBadge(item)}</div></td><td><span class="mono dim ov" title="${esc(item.source_path || item.output_dir || '')}">${esc(shortPath(item.source_path || item.output_dir || '—'))}</span>${item.output_dir ? `<div class="mono dim ov">Output: ${esc(shortPath(item.output_dir))}</div>` : ''}</td><td class="mono mid">${esc(counts || '—')}</td><td>${queueProgressBar(item)}</td><td>${queueItemActions(item)}</td></tr>${expanded ? `<tr class="queue-details-row"><td></td><td colspan="7">${queueItemDetails(item)}</td></tr>` : ''}`;
+    const statusStack = `${badge(item.status)}${item.kind === 'render' ? badge(item.review_status || 'pending') : ''}${queueSourceStateBadge(item)}`;
+    const subtitle = item.kind === 'render'
+      ? `${item.channel_profile_name ? esc(item.channel_profile_name) + ' · ' : ''}${esc(item.template_key || item.template_name || '')}`
+      : `#${esc(item.id)}`;
+    return `<tr class="queue-row ${expanded ? 'expanded' : ''}" data-kind="${esc(item.kind)}" onclick="toggleQueueItemExpanded('${esc(item.id)}')"><td>${checkbox}</td><td><div class="video-name-cell">${videoThumb(item.source_path || '', item.title || item.id)}<div style="min-width:0;flex:1"><div class="mono txt ov">${esc(item.title || item.id)}</div><div class="mono dim">${subtitle}</div></div></div></td><td>${queueItemKindBadge(item)}</td><td><div class="status-stack">${statusStack}</div></td><td><span class="mono dim ov" title="${esc(item.source_path || item.output_dir || '')}">${esc(shortPath(item.source_path || item.output_dir || '—'))}</span>${item.output_dir ? `<div class="mono dim ov">Output: ${esc(shortPath(item.output_dir))}</div>` : ''}</td><td class="mono mid">${esc(counts || '—')}</td><td>${queueProgressBar(item)}</td><td>${queueItemActions(item)}</td></tr>${expanded ? `<tr class="queue-details-row"><td></td><td colspan="7">${queueItemDetails(item)}</td></tr>` : ''}`;
   }).join('')}</tbody></table></div>`;
   renderQueueSourceBulkToolbar();
 }
@@ -3114,6 +3214,7 @@ async function loadStorageProfileDetail(profileId = currentStorageProfileId) {
       api.get(`/api/storage-profiles/${Number(profileId)}/youtube/videos?limit=200`).catch(() => ({videos: []})),
       loadStorageYoutubeAccounts().catch(() => null),
       loadCatalogTags().catch(() => null),
+      loadEditingSupportData().catch(() => null),
     ]);
     currentStorageProfile = data.profile;
     currentStorageProfileId = Number(data.profile.id);
@@ -3904,6 +4005,113 @@ async function saveStorageProfilePublishSettings() {
     showStorageProfileError(err.message || 'Не удалось сохранить настройки публикации профиля');
   }
 }
+function storageProfileChannelProfile(profile = currentStorageProfile) {
+  const youtube = storageProfileYoutubeLink(profile);
+  const accountId = Number(youtube?.external_account_id || youtube?.youtube_account?.id || 0);
+  const effectiveName = String(storageProfileName(profile) || '').trim().toLowerCase();
+  const handle = String(storageProfileHandle(profile) || '').trim().toLowerCase();
+  return editingProfiles.find(item =>
+    accountId && Number(item.youtube_account_id || 0) === accountId
+  ) || editingProfiles.find(item => {
+    const name = String(item.name || '').trim().toLowerCase();
+    return name && (name === effectiveName || name === handle);
+  }) || null;
+}
+function storageProfileChannelSettingsPanel(profile = currentStorageProfile) {
+  const channelProfile = storageProfileChannelProfile(profile);
+  const youtube = storageProfileYoutubeLink(profile);
+  const linkedAccountId = Number(youtube?.external_account_id || youtube?.youtube_account?.id || 0);
+  const selectedAccountId = Number(channelProfile?.youtube_account_id || linkedAccountId || storageYoutubeAccounts[0]?.id || 0);
+  const selectedTemplateId = Number(channelProfile?.default_studio_template_id || 0);
+  const selectedPoolId = Number(channelProfile?.reaction_pool_id || 0);
+  const accountRows = (storageYoutubeAccounts.length ? storageYoutubeAccounts : editingAccounts).filter(account => (account.status || 'active') === 'active');
+  const accountOptions = accountRows.map(account => `<option value="${Number(account.id)}"${Number(account.id) === selectedAccountId ? ' selected' : ''}>${esc(storageAccountTitle(account))}</option>`).join('');
+  const templateOptions = activeStudioEditingTemplates().map(item => {
+    const id = Number(item.studio_template_id || item.id);
+    return `<option value="${id}"${id === selectedTemplateId ? ' selected' : ''}>${esc(item.name || item.key)} · ${esc(item.key || '')} v${Number(item.version || 1)}</option>`;
+  }).join('');
+  const poolOptions = editingPools.map(pool => `<option value="${Number(pool.id)}"${Number(pool.id) === selectedPoolId ? ' selected' : ''}>${esc(pool.name)}${pool.item_count ? ` · ${Number(pool.item_count)}` : ''}</option>`).join('');
+  const title = channelProfile
+    ? `Channel profile #${Number(channelProfile.id)}`
+    : 'Channel profile будет создан при сохранении';
+  const disabledHint = channelProfile?.enabled === false
+    ? '<div class="mono warn">Этот channel profile сейчас отключён. Включите его, чтобы новые render-задачи могли использовать настройки.</div>'
+    : '';
+  return `<div class="storage-channel-settings compact-panel">
+    <div class="storage-tag-panel-head">
+      <div>
+        <div class="storage-section-title inline-title">Обработка канала</div>
+        <div class="mono dim">${esc(title)} · Studio template, пул реакций и publish defaults для render-задач этого профиля.</div>
+      </div>
+      <div class="row-actions">
+        ${selectedTemplateId ? `<button class="btn-mini" onclick="openStudioTemplate(${selectedTemplateId})">Редактировать шаблон</button>` : ''}
+        <button class="btn-mini" onclick="openQueueForChannelProfile()">Открыть render-очередь</button>
+      </div>
+    </div>
+    ${disabledHint}
+    <div class="field-grid">
+      <div class="field"><label class="field-lbl">Название channel profile</label><input id="storage-channel-profile-name" type="text" value="${esc(channelProfile?.name || storageProfileName(profile) || '')}"></div>
+      <div class="field"><label class="field-lbl">YouTube аккаунт</label><select id="storage-channel-profile-account"><option value="">Без YouTube</option>${accountOptions}</select></div>
+      <div class="field"><label class="field-lbl">Studio template по умолчанию</label><select id="storage-channel-profile-template"><option value="">Не выбран</option>${templateOptions}</select></div>
+      <div class="field"><label class="field-lbl">Пул реакций</label><select id="storage-channel-profile-pool"><option value="">Без пула реакций</option>${poolOptions}</select></div>
+      <div class="field"><label class="field-lbl">Видимость по умолчанию</label><select id="storage-channel-profile-privacy">
+        <option value=""${!channelProfile?.default_privacy ? ' selected' : ''}>из настроек публикации</option>
+        <option value="public"${channelProfile?.default_privacy === 'public' ? ' selected' : ''}>public</option>
+        <option value="unlisted"${channelProfile?.default_privacy === 'unlisted' ? ' selected' : ''}>unlisted</option>
+        <option value="private"${channelProfile?.default_privacy === 'private' ? ' selected' : ''}>private</option>
+      </select></div>
+      <div class="field"><label class="field-lbl">ID категории</label><input id="storage-channel-profile-category" type="text" value="${esc(channelProfile?.default_category_id || '')}" placeholder="22"></div>
+    </div>
+    <div class="field-grid">
+      <div class="field"><label class="field-lbl">Шаблон title</label><input id="storage-channel-profile-title-template" type="text" value="${esc(channelProfile?.title_template || '')}" placeholder="{title}"></div>
+      <div class="field"><label class="field-lbl">Шаблон tags</label><input id="storage-channel-profile-tags-template" type="text" value="${esc(channelProfile?.tags_template || '')}" placeholder="shorts, {profile}"></div>
+    </div>
+    <div class="field"><label class="field-lbl">Шаблон description</label><textarea id="storage-channel-profile-description-template" rows="3">${esc(channelProfile?.description_template || '')}</textarea></div>
+    <label class="toggle-label"><input id="storage-channel-profile-enabled" type="checkbox" ${channelProfile?.enabled === false ? '' : 'checked'}> Channel profile включён</label>
+  </div>`;
+}
+function readStorageProfileChannelSettingsForm() {
+  return {
+    name: document.getElementById('storage-channel-profile-name')?.value.trim() || storageProfileName(currentStorageProfile) || 'Channel profile',
+    youtube_account_id: editingOptionalId(document.getElementById('storage-channel-profile-account')?.value),
+    default_studio_template_id: editingOptionalId(document.getElementById('storage-channel-profile-template')?.value),
+    reaction_pool_id: editingOptionalId(document.getElementById('storage-channel-profile-pool')?.value),
+    title_template: document.getElementById('storage-channel-profile-title-template')?.value || null,
+    description_template: document.getElementById('storage-channel-profile-description-template')?.value || null,
+    tags_template: document.getElementById('storage-channel-profile-tags-template')?.value || null,
+    default_privacy: document.getElementById('storage-channel-profile-privacy')?.value || null,
+    default_category_id: document.getElementById('storage-channel-profile-category')?.value.trim() || null,
+    enabled: Boolean(document.getElementById('storage-channel-profile-enabled')?.checked),
+  };
+}
+async function saveStorageProfileChannelSettings() {
+  if (!currentStorageProfileId) return;
+  try {
+    const existing = storageProfileChannelProfile();
+    const body = readStorageProfileChannelSettingsForm();
+    const data = existing
+      ? await api.patch(`/api/editing/channel-profiles/${Number(existing.id)}`, body)
+      : await api.post('/api/editing/channel-profiles', body);
+    const item = data.item;
+    if (item) {
+      const id = Number(item.id);
+      editingProfiles = editingProfiles.filter(profile => Number(profile.id) !== id).concat([item]);
+    }
+    showToast(existing ? 'Настройки обработки профиля сохранены' : 'Channel profile создан');
+    renderStorageProfileDetail();
+  } catch (err) {
+    showStorageProfileError(err.message || 'Не удалось сохранить настройки обработки профиля');
+  }
+}
+async function openQueueForChannelProfile() {
+  const profile = storageProfileChannelProfile();
+  const query = profile?.name || storageProfileName(currentStorageProfile) || '';
+  queueSearchQuery = query;
+  const input = document.getElementById('queue-search-input');
+  if (input) input.value = query;
+  nav('queue', document.querySelector('[data-v="queue"]'));
+  setQueueQuickFilter('render');
+}
 function storageProfilePublishJobsPanel() {
   if (!storageProfilePublishJobs.length) {
     return '<div class="storage-profile-jobs empty">Задач публикации для этого профиля пока нет.</div>';
@@ -4218,6 +4426,7 @@ function storageProfileDrawerButton(section, label) {
 function storageProfileDrawerTitle(section) {
   const titles = {
     publish: 'Настройки публикации',
+    processing: 'Обработка канала',
     tags: 'Теги профиля',
     youtube: 'YouTube и оформление',
     profile: 'Локальные данные',
@@ -4227,6 +4436,7 @@ function storageProfileDrawerTitle(section) {
   return titles[section] || 'Настройки';
 }
 function storageProfileDrawerBody(profile) {
+  if (storageProfileDrawerSection === 'processing') return storageProfileChannelSettingsPanel(profile);
   if (storageProfileDrawerSection === 'tags') return storageProfileTagRulesPanel(profile);
   if (storageProfileDrawerSection === 'youtube') return storageProfileServiceLinks(profile);
   if (storageProfileDrawerSection === 'profile') return storageProfileLocalEditPanel(profile);
@@ -4239,6 +4449,9 @@ function storageProfileDrawerBody(profile) {
 function storageProfileDrawerFooter() {
   if (storageProfileDrawerSection === 'publish') {
     return `<button class="btn-primary" onclick="saveStorageProfilePublishSettings()">Сохранить публикацию</button><button class="btn-secondary" onclick="closeStorageProfileDrawer()">Закрыть</button>`;
+  }
+  if (storageProfileDrawerSection === 'processing') {
+    return `<button class="btn-primary" onclick="saveStorageProfileChannelSettings()">Сохранить обработку</button><button class="btn-secondary" onclick="closeStorageProfileDrawer()">Закрыть</button>`;
   }
   if (storageProfileDrawerSection === 'profile') {
     return `<button class="btn-primary" onclick="saveStorageProfile()">Сохранить профиль</button><button class="btn-secondary" onclick="closeStorageProfileDrawer()">Закрыть</button>`;
@@ -4255,6 +4468,7 @@ function renderStorageProfileDrawer(profile) {
     </div>
     <div class="storage-drawer-nav">
       ${storageProfileDrawerButton('publish', 'Публикация')}
+      ${storageProfileDrawerButton('processing', 'Обработка')}
       ${storageProfileDrawerButton('tags', 'Теги')}
       ${storageProfileDrawerButton('youtube', 'YouTube')}
       ${storageProfileDrawerButton('profile', 'Профиль')}
@@ -4304,6 +4518,7 @@ function renderStorageProfileDetail() {
       </div>
       <div class="row-actions storage-profile-head-actions">
         <button class="btn-secondary" onclick="openStorageProfileVideoPicker()">Добавить видео</button>
+        <button class="btn-mini" onclick="openStorageProfileDrawer('processing')">Обработка</button>
         <button class="btn-mini" onclick="openStorageProfileDrawer('tags')">Теги</button>
         <button class="btn-mini" onclick="openStorageProfileDrawer('publish')">Настройки</button>
       </div>
@@ -4617,7 +4832,7 @@ function renderWorkspaceEditingControls() {
   planBtn.disabled = workspaceEditingState.busy || !workspaceEditingState.selectedProfileId || selectedCount === 0;
   stateEl.textContent = profiles.length
     ? `Выбрано элементов workspace: ${selectedCount}. Задача создаётся без запуска рендера.`
-    : 'Создайте профиль канала в разделе «Монтаж».';
+    : 'Создайте профиль канала в «Профили» → «Обработка».';
 }
 
 function resolveWorkspaceEditingTemplate() {
@@ -4723,7 +4938,7 @@ async function planSelectedWorkspaceEditing() {
     }
     await loadEditingJobs(true);
   } catch (err) {
-    showToast(err.message || 'Не удалось добавить в очередь монтажа', 'err');
+    showToast(err.message || 'Не удалось добавить в очередь рендера', 'err');
   } finally {
     workspaceEditingState.busy = false;
     renderWorkspaceEditingControls();
@@ -6928,11 +7143,6 @@ function handleOAuthEvent(payload) {
   if (currentView === 'storage-profile') loadStorageProfileDetail(currentStorageProfileId);
 }
 
-function editingError(message = '') {
-  if (message) showInlineError('editing-error', message);
-  else hideInlineError('editing-error');
-}
-
 function editingOptionalId(value) {
   return value ? Number(value) : null;
 }
@@ -6948,384 +7158,26 @@ function activeStudioEditingTemplates() {
   return studioTemplateOptions(editingStudioTemplates);
 }
 
-function setEditingTab(id, btn) {
-  currentEditingTab = id;
-  document.querySelectorAll('[data-editing-tab]').forEach(item => item.classList.remove('on'));
-  if (btn) btn.classList.add('on');
-  document.querySelectorAll('.editing-tab').forEach(item => item.classList.remove('on'));
-  document.getElementById('editing-' + id)?.classList.add('on');
-  if (id === 'jobs') loadEditingJobs(true);
-}
-
-async function loadEditingView(options = {}) {
-  const {silent = false} = options;
-  if (!silent) editingError('');
-  try {
-    const [reactionsData, poolsData, templatesData, profilesData, accountsData, jobsData] = await Promise.all([
-      api.get('/api/editing/reactions'),
-      api.get('/api/editing/reaction-pools'),
-      api.get('/api/studio/templates?status=active'),
-      api.get('/api/editing/channel-profiles'),
-      api.get('/api/publish/youtube/accounts'),
-      api.get('/api/editing/jobs?limit=200'),
-    ]);
-    editingReactions = reactionsData.items || [];
-    editingPools = poolsData.items || [];
-    editingStudioTemplates = studioTemplateOptions(templatesData.items || []);
-    editingProfiles = profilesData.items || [];
-    editingAccounts = accountsData.accounts || [];
-    editingJobs = jobsData.items || [];
-    if (editingReactionId && !editingReactions.some(item => Number(item.id) === Number(editingReactionId))) editingReactionId = null;
-    if (editingPoolId && !editingPools.some(item => Number(item.id) === Number(editingPoolId))) editingPoolId = null;
-    if (editingProfileId && !editingProfiles.some(item => Number(item.id) === Number(editingProfileId))) editingProfileId = null;
-    if (!editingPoolId && editingPools.length) editingPoolId = Number(editingPools[0].id);
-    if (editingPoolId) await loadEditingPoolItems(editingPoolId, true);
-    else editingPoolItems = [];
-    renderEditingView();
-  } catch (err) {
-    if (!silent) editingError(err.message || 'Не удалось загрузить настройки монтажа');
-  }
-}
-
-function renderEditingView() {
-  renderEditingReactions();
-  renderEditingPools();
-  renderEditingPoolItems();
-  renderEditingProfiles();
-  renderEditingJobs();
-  renderEditingSelects();
-}
-
-function renderEditingReactions() {
-  const el = document.getElementById('editing-reactions-list');
-  if (!el) return;
-  const query = document.getElementById('editing-reaction-search')?.value.trim().toLowerCase() || '';
-  const rows = editingReactions.filter(item => !query || ['name','tags','mood','language','file_path'].some(field => String(item[field] || '').toLowerCase().includes(query)));
-  if (!rows.length) {
-    el.innerHTML = '<div class="empty">Файлы реакций пока не добавлены.</div>';
-    return;
-  }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Название / файл</th><th>Теги</th><th>Состояние</th></tr></thead><tbody>${rows.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingReactionId) ? 'active' : ''}" onclick="selectEditingReaction(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><span class="editing-path mono dim" title="${esc(item.file_path)}">${esc(shortPath(item.file_path))}</span></td><td class="mono dim">${esc(item.tags || '—')}<br>${esc([item.mood,item.language].filter(Boolean).join(' · ') || '')}</td><td><div class="status-stack">${badge(item.enabled ? 'active' : 'disabled')}${badge(item.file_exists ? 'ok' : 'error')}</div></td></tr>`).join('')}</tbody></table>`;
-}
-
-function newEditingReaction() {
-  editingReactionId = null;
-  document.getElementById('editing-reaction-title').textContent = 'Новая реакция';
-  ['editing-reaction-name','editing-reaction-path','editing-reaction-tags','editing-reaction-mood','editing-reaction-language'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = '';
-  });
-  document.getElementById('editing-reaction-enabled').checked = true;
-  document.getElementById('editing-reaction-disable').style.display = 'none';
-  renderEditingReactions();
-}
-
-function selectEditingReaction(assetId) {
-  const item = editingReactions.find(row => Number(row.id) === Number(assetId));
-  if (!item) return;
-  editingReactionId = Number(item.id);
-  document.getElementById('editing-reaction-title').textContent = `Reaction #${item.id}`;
-  document.getElementById('editing-reaction-name').value = item.name || '';
-  document.getElementById('editing-reaction-path').value = item.file_path || '';
-  document.getElementById('editing-reaction-tags').value = item.tags || '';
-  document.getElementById('editing-reaction-mood').value = item.mood || '';
-  document.getElementById('editing-reaction-language').value = item.language || '';
-  document.getElementById('editing-reaction-enabled').checked = Boolean(item.enabled);
-  document.getElementById('editing-reaction-disable').style.display = item.enabled ? 'inline-flex' : 'none';
-  renderEditingReactions();
-}
-
-async function pickEditingReactionFile() {
-  editingError('');
-  const path = await pickLocalPath({
-    kind: 'file',
-    title: 'Выберите reaction-видео',
-    buttonId: 'editing-reaction-path-pick-btn',
-    errorId: 'editing-error',
-  });
-  if (!path) return;
-  const pathInput = document.getElementById('editing-reaction-path');
-  if (pathInput) pathInput.value = path;
-  const nameInput = document.getElementById('editing-reaction-name');
-  if (nameInput && !nameInput.value.trim()) {
-    nameInput.value = fileNameFromPath(path);
-  }
-}
-
-async function saveEditingReaction() {
-  editingError('');
-  const wasExisting = Boolean(editingReactionId);
-  const body = {
-    name: document.getElementById('editing-reaction-name')?.value.trim() || '',
-    file_path: document.getElementById('editing-reaction-path')?.value.trim() || '',
-    tags: document.getElementById('editing-reaction-tags')?.value.trim() || null,
-    mood: document.getElementById('editing-reaction-mood')?.value.trim() || null,
-    language: document.getElementById('editing-reaction-language')?.value.trim() || null,
-    enabled: Boolean(document.getElementById('editing-reaction-enabled')?.checked),
-  };
-  try {
-    const data = editingReactionId
-      ? await api.patch(`/api/editing/reactions/${editingReactionId}`, body)
-      : await api.post('/api/editing/reactions', body);
-    editingReactionId = Number(data.item.id);
-    showToast(wasExisting ? 'Сохранено' : 'Создано');
-    await loadEditingView({silent: true});
-    selectEditingReaction(editingReactionId);
-  } catch (err) {
-    editingError(err.message || 'Не удалось сохранить реакцию');
-  }
-}
-
-async function disableEditingReaction() {
-  if (!editingReactionId) return;
-  try {
-    await api.post(`/api/editing/reactions/${editingReactionId}/disable`, {});
-    showToast('Реакция отключена');
-    await loadEditingView({silent: true});
-    selectEditingReaction(editingReactionId);
-  } catch (err) {
-    editingError(err.message || 'Не удалось отключить реакцию');
-  }
-}
-
-async function pickEditingImportFolder() {
-  editingError('');
-  const path = await pickLocalPath({
-    kind: 'directory',
-    title: 'Выберите папку с reaction-видео',
-    buttonId: 'editing-import-folder-pick-btn',
-    errorId: 'editing-error',
-  });
-  if (!path) return;
-  const input = document.getElementById('editing-import-folder');
-  if (input) input.value = path;
-}
-
-async function importEditingReactions() {
-  editingError('');
-  try {
-    const data = await api.post('/api/editing/reactions/import-folder', {
-      folder_path: document.getElementById('editing-import-folder')?.value.trim() || '',
-      recursive: Boolean(document.getElementById('editing-import-recursive')?.checked),
-      tags: document.getElementById('editing-import-tags')?.value.trim() || null,
-      mood: document.getElementById('editing-import-mood')?.value.trim() || null,
-      language: document.getElementById('editing-import-language')?.value.trim() || null,
-    });
-    document.getElementById('editing-import-result').textContent = `Создано: ${data.created} · пропущено: ${data.skipped} · ошибок: ${data.errors}`;
-    showToast(`Импортировано: ${data.created}`);
-    await loadEditingView({silent: true});
-  } catch (err) {
-    editingError(err.message || 'Не удалось импортировать папку');
-  }
-}
-
-function renderEditingPools() {
-  const el = document.getElementById('editing-pools-list');
-  if (!el) return;
-  if (!editingPools.length) {
-    el.innerHTML = '<div class="empty">Пулы реакций пока не созданы.</div>';
-    return;
-  }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Название</th><th>Элементы</th><th>Статус</th></tr></thead><tbody>${editingPools.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingPoolId) ? 'active' : ''}" onclick="selectEditingPool(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.description || '')}</div></td><td class="mono txt">${item.item_count || 0}</td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
-}
-
-function newEditingPool() {
-  editingPoolId = null;
-  editingPoolItems = [];
-  document.getElementById('editing-pool-title').textContent = 'Новый пул';
-  document.getElementById('editing-pool-name').value = '';
-  document.getElementById('editing-pool-description').value = '';
-  document.getElementById('editing-pool-enabled').checked = true;
-  renderEditingPools();
-  renderEditingPoolItems();
-}
-
-async function selectEditingPool(poolId) {
-  const item = editingPools.find(row => Number(row.id) === Number(poolId));
-  if (!item) return;
-  editingPoolId = Number(item.id);
-  document.getElementById('editing-pool-title').textContent = `Пул #${item.id}`;
-  document.getElementById('editing-pool-name').value = item.name || '';
-  document.getElementById('editing-pool-description').value = item.description || '';
-  document.getElementById('editing-pool-enabled').checked = Boolean(item.enabled);
-  await loadEditingPoolItems(editingPoolId);
-  renderEditingPools();
-}
-
-async function loadEditingPoolItems(poolId, silent = false) {
-  try {
-    const data = await api.get(`/api/editing/reaction-pools/${Number(poolId)}/items`);
-    editingPoolItems = data.items || [];
-    renderEditingPoolItems();
-  } catch (err) {
-    editingPoolItems = [];
-    if (!silent) editingError(err.message || 'Не удалось загрузить элементы пула');
-  }
-}
-
-async function saveEditingPool() {
-  editingError('');
-  const body = {
-    name: document.getElementById('editing-pool-name')?.value.trim() || '',
-    description: document.getElementById('editing-pool-description')?.value.trim() || null,
-    enabled: Boolean(document.getElementById('editing-pool-enabled')?.checked),
-  };
-  try {
-    const data = editingPoolId
-      ? await api.patch(`/api/editing/reaction-pools/${editingPoolId}`, body)
-      : await api.post('/api/editing/reaction-pools', body);
-    editingPoolId = Number(data.item.id);
-    showToast('Пул сохранён');
-    await loadEditingView({silent: true});
-    await selectEditingPool(editingPoolId);
-  } catch (err) {
-    editingError(err.message || 'Не удалось сохранить пул');
-  }
-}
-
-function renderEditingSelects() {
-  const assetSelect = document.getElementById('editing-pool-asset');
-  if (assetSelect) assetSelect.innerHTML = `<option value="">Выберите файл реакции</option>${editingReactions.filter(item => item.enabled).map(item => `<option value="${item.id}">${esc(item.name)}${item.file_exists ? '' : ' · файл отсутствует'}</option>`).join('')}`;
-  const accountSelect = document.getElementById('editing-profile-account');
-  if (accountSelect) accountSelect.innerHTML = `<option value="">Без YouTube аккаунта</option>${editingAccounts.filter(item => item.status === 'active').map(item => `<option value="${item.id}">${esc(item.channel_title || item.display_name || `Аккаунт #${item.id}`)}</option>`).join('')}`;
-  const templateSelect = document.getElementById('editing-profile-template');
-  if (templateSelect) templateSelect.innerHTML = `<option value="">Без Studio template по умолчанию</option>${activeStudioEditingTemplates().map(item => `<option value="${item.studio_template_id || item.id}">${esc(item.name)} · ${esc(item.key)} v${Number(item.version || 1)}</option>`).join('')}`;
-  const poolSelect = document.getElementById('editing-profile-pool');
-  if (poolSelect) poolSelect.innerHTML = `<option value="">Без пула реакций</option>${editingPools.map(item => `<option value="${item.id}">${esc(item.name)}</option>`).join('')}`;
-}
-
-function renderEditingPoolItems() {
-  const el = document.getElementById('editing-pool-items');
-  const addBtn = document.getElementById('editing-pool-add-item');
-  if (addBtn) addBtn.disabled = !editingPoolId;
-  if (!el) return;
-  if (!editingPoolId) {
-    el.innerHTML = '<div class="empty">Сначала выберите или создайте пул.</div>';
-    return;
-  }
-  if (!editingPoolItems.length) {
-    el.innerHTML = '<div class="empty">В этом пуле пока нет реакций.</div>';
-    return;
-  }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>Реакция</th><th>Вес</th><th>Файл</th><th></th></tr></thead><tbody>${editingPoolItems.map(item => `<tr><td><div class="mono txt">${esc(item.asset_name)}</div><div class="mono dim">${esc(item.tags || '')}</div></td><td class="mono txt">${item.weight}</td><td>${badge(item.file_exists ? 'ok' : 'error')}</td><td><button class="btn-danger" onclick="removeEditingPoolItem(${Number(item.reaction_asset_id)})">Удалить</button></td></tr>`).join('')}</tbody></table>`;
-}
-
-async function addEditingPoolItem() {
-  if (!editingPoolId) return;
-  const assetId = editingOptionalId(document.getElementById('editing-pool-asset')?.value);
-  if (!assetId) {
-    editingError('Выберите файл реакции.');
-    return;
-  }
-  try {
-    const data = await api.post(`/api/editing/reaction-pools/${editingPoolId}/items`, {
-      reaction_asset_id: assetId,
-      weight: Number(document.getElementById('editing-pool-weight')?.value) || 1,
-    });
-    editingPoolItems = data.items || [];
-    showToast('Реакция добавлена в пул');
-    await loadEditingView({silent: true});
-  } catch (err) {
-    editingError(err.message || 'Не удалось добавить реакцию в пул');
-  }
-}
-
-async function removeEditingPoolItem(assetId) {
-  if (!editingPoolId) return;
-  try {
-    await api.del(`/api/editing/reaction-pools/${editingPoolId}/items/${Number(assetId)}`);
-    showToast('Реакция удалена из пула');
-    await loadEditingView({silent: true});
-  } catch (err) {
-    editingError(err.message || 'Не удалось удалить реакцию из пула');
-  }
-}
-
-function renderEditingProfiles() {
-  const el = document.getElementById('editing-profiles-list');
-  if (!el) return;
-  if (!editingProfiles.length) {
-    el.innerHTML = '<div class="empty">Профилей каналов пока нет.</div>';
-    return;
-  }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Профиль / канал</th><th>Studio template / пул</th><th>Статус</th></tr></thead><tbody>${editingProfiles.map(item => `<tr class="editing-list-row ${Number(item.id) === Number(editingProfileId) ? 'active' : ''}" onclick="selectEditingProfile(${Number(item.id)})"><td class="mono dim">#${item.id}</td><td><div class="mono txt">${esc(item.name)}</div><div class="mono dim">${esc(item.youtube_channel_title || item.youtube_display_name || 'без YouTube аккаунта')}</div></td><td><div class="mono dim">${esc(item.default_studio_template_name || item.default_template_name || 'без шаблона')}</div><div class="mono dim">${esc(item.reaction_pool_name || 'без пула')}</div></td><td>${badge(item.enabled ? 'active' : 'disabled')}</td></tr>`).join('')}</tbody></table>`;
-}
-
-function newEditingProfile() {
-  editingProfileId = null;
-  document.getElementById('editing-profile-title').textContent = 'Новый профиль';
-  ['editing-profile-name','editing-profile-title-template','editing-profile-description-template','editing-profile-tags-template'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = '';
-  });
-  document.getElementById('editing-profile-account').value = '';
-  document.getElementById('editing-profile-template').value = '';
-  document.getElementById('editing-profile-pool').value = '';
-  document.getElementById('editing-profile-privacy').value = '';
-  document.getElementById('editing-profile-category').value = '22';
-  document.getElementById('editing-profile-enabled').checked = true;
-  document.getElementById('editing-profile-disable').style.display = 'none';
-  renderEditingProfiles();
-}
-
-function selectEditingProfile(profileId) {
-  const item = editingProfiles.find(row => Number(row.id) === Number(profileId));
-  if (!item) return;
-  editingProfileId = Number(item.id);
-  document.getElementById('editing-profile-title').textContent = `Профиль #${item.id}`;
-  document.getElementById('editing-profile-name').value = item.name || '';
-  document.getElementById('editing-profile-account').value = item.youtube_account_id || '';
-  document.getElementById('editing-profile-template').value = item.default_studio_template_id || '';
-  document.getElementById('editing-profile-pool').value = item.reaction_pool_id || '';
-  document.getElementById('editing-profile-title-template').value = item.title_template || '';
-  document.getElementById('editing-profile-description-template').value = item.description_template || '';
-  document.getElementById('editing-profile-tags-template').value = item.tags_template || '';
-  document.getElementById('editing-profile-privacy').value = item.default_privacy || '';
-  document.getElementById('editing-profile-category').value = item.default_category_id || '';
-  document.getElementById('editing-profile-enabled').checked = Boolean(item.enabled);
-  document.getElementById('editing-profile-disable').style.display = item.enabled ? 'inline-flex' : 'none';
-  renderEditingProfiles();
-}
-
-async function saveEditingProfile() {
-  editingError('');
-  const wasExisting = Boolean(editingProfileId);
-  const body = {
-    name: document.getElementById('editing-profile-name')?.value.trim() || '',
-    youtube_account_id: editingOptionalId(document.getElementById('editing-profile-account')?.value),
-    default_studio_template_id: editingOptionalId(document.getElementById('editing-profile-template')?.value),
-    reaction_pool_id: editingOptionalId(document.getElementById('editing-profile-pool')?.value),
-    title_template: document.getElementById('editing-profile-title-template')?.value || null,
-    description_template: document.getElementById('editing-profile-description-template')?.value || null,
-    tags_template: document.getElementById('editing-profile-tags-template')?.value || null,
-    default_privacy: document.getElementById('editing-profile-privacy')?.value || null,
-    default_category_id: document.getElementById('editing-profile-category')?.value.trim() || null,
-    enabled: Boolean(document.getElementById('editing-profile-enabled')?.checked),
-  };
-  try {
-    const data = editingProfileId
-      ? await api.patch(`/api/editing/channel-profiles/${editingProfileId}`, body)
-      : await api.post('/api/editing/channel-profiles', body);
-    editingProfileId = Number(data.item.id);
-    showToast(wasExisting ? 'Сохранено' : 'Создано');
-    await loadEditingView({silent: true});
-    selectEditingProfile(editingProfileId);
-  } catch (err) {
-    editingError(err.message || 'Не удалось сохранить профиль');
-  }
-}
-
-async function disableEditingProfile() {
-  if (!editingProfileId) return;
-  try {
-    await api.post(`/api/editing/channel-profiles/${editingProfileId}/disable`, {});
-    showToast('Профиль отключён');
-    await loadEditingView({silent: true});
-    selectEditingProfile(editingProfileId);
-  } catch (err) {
-    editingError(err.message || 'Не удалось отключить профиль');
+async function loadEditingSupportData() {
+  const [poolsData, templatesData, profilesData, accountsData] = await Promise.all([
+    api.get('/api/editing/reaction-pools').catch(() => ({items: []})),
+    api.get('/api/studio/templates?status=active').catch(() => ({items: []})),
+    api.get('/api/editing/channel-profiles').catch(() => ({items: []})),
+    api.get('/api/publish/youtube/accounts').catch(() => ({accounts: []})),
+  ]);
+  editingPools = poolsData.items || [];
+  editingStudioTemplates = studioTemplateOptions(templatesData.items || []);
+  editingProfiles = profilesData.items || [];
+  editingAccounts = accountsData.accounts || [];
+  if (storageYoutubeAccounts.length) {
+    const known = new Map(editingAccounts.map(account => [Number(account.id), account]));
+    storageYoutubeAccounts.forEach(account => known.set(Number(account.id), account));
+    editingAccounts = Array.from(known.values());
   }
 }
 
 function getVisibleEditingJobs() {
+  editingJobs = lastQueueItems.filter(item => item.kind === 'render');
   const byRender = editingJobFilter === 'all'
     ? editingJobs
     : editingJobs.filter(job => job.status === editingJobFilter);
@@ -7338,18 +7190,18 @@ function filterEditingJobs(tab, status) {
   editingJobFilter = status || 'all';
   document.querySelectorAll('[data-edit-job-filter]').forEach(item => item.classList.remove('on'));
   if (tab) tab.classList.add('on');
-  renderEditingJobs();
+  renderQueueItems('jobs-table', lastQueueItems);
 }
 
 function filterEditingJobsByReview(status) {
   editingJobReviewFilter = status || 'all';
-  renderEditingJobs();
+  renderQueueItems('jobs-table', lastQueueItems);
 }
 
 function toggleEditingJobPreview(jobId) {
   const id = Number(jobId);
   editingPreviewJobId = editingPreviewJobId === id ? null : id;
-  renderEditingJobs();
+  renderQueueItems('jobs-table', lastQueueItems);
 }
 
 function toggleEditingJobSelection(jobId, checked) {
@@ -7361,111 +7213,76 @@ function toggleEditingJobSelection(jobId, checked) {
 
 function toggleAllVisibleEditingJobs(checked) {
   getVisibleEditingJobs().forEach(job => {
-    const id = Number(job.id);
+    const id = editingQueueJobId(job);
     if (checked) selectedEditingJobIds.add(id);
     else selectedEditingJobIds.delete(id);
   });
-  renderEditingJobs();
+  renderQueueItems('jobs-table', lastQueueItems);
 }
 
 function renderEditingJobSelectionState() {
   document.querySelectorAll('[data-editing-selected-count]').forEach(el => {
     el.textContent = selectedEditingJobIds.size
-      ? `Выбрано задач монтажа: ${selectedEditingJobIds.size}`
+      ? `Выбрано render-задач: ${selectedEditingJobIds.size}`
       : '';
   });
 }
 
-function selectedEditingJobs() {
-  return Array.from(selectedEditingJobIds)
-    .map(id => editingJobs.find(job => Number(job.id) === Number(id)))
-    .filter(Boolean);
+function editingQueueJobId(job) {
+  return Number(job?.job_id || job?.id || 0);
 }
 
-function renderEditingJobs() {
-  const el = document.getElementById('editing-jobs-list');
-  if (!el) return;
-  const rows = getVisibleEditingJobs();
-  selectedEditingJobIds = new Set(
-    Array.from(selectedEditingJobIds)
-      .filter(id => editingJobs.some(job => Number(job.id) === Number(id)))
-  );
-  if (!rows.length) {
-    el.innerHTML = '<div class="empty">В этом фильтре пока нет задач монтажа.</div>';
-    return;
-  }
-  const allVisibleSelected = rows.every(job => selectedEditingJobIds.has(Number(job.id)));
-  el.innerHTML = `<div class="workspace-selected-line mono dim" data-editing-selected-count></div><div style="overflow:auto"><table class="tbl editing-jobs-table"><thead><tr><th><input type="checkbox" ${allVisibleSelected ? 'checked' : ''} onchange="toggleAllVisibleEditingJobs(this.checked)"></th><th>#</th><th>Workspace</th><th>Профиль</th><th>Шаблон</th><th>Реакция</th><th>Статус</th><th>Проверка</th><th>Результат</th><th>Ошибка</th><th>Действия</th></tr></thead><tbody>${rows.map(job => {
-    const selected = selectedEditingJobIds.has(Number(job.id));
-    const canCancel = ['queued','failed'].includes(job.status);
-    const canRetry = ['failed','cancelled'].includes(job.status);
-    const canRender = job.status === 'queued';
-    const canForceRender = ['failed','cancelled'].includes(job.status);
-    const isDone = job.status === 'done';
-    const previewOpen = isDone && editingPreviewJobId === Number(job.id);
-    const finalPath = job.edited_path
-      ? `<div>${badge('done')} <span class="mono txt ov" title="${esc(job.edited_path)}">${esc(shortPath(job.edited_path))}</span></div>`
-      : '';
-    const review = job.review_status || 'pending';
-    const doneActions = isDone
-      ? `<button class="btn-mini${previewOpen ? ' on' : ''}" onclick="toggleEditingJobPreview(${Number(job.id)})">${previewOpen ? 'Скрыть предпросмотр' : 'Показать предпросмотр'}</button>${webPlayerButton(job.edited_path || job.output_path, 'Смотреть')}<button class="btn-mini" onclick="openEditingJobFolder(${Number(job.id)})">Открыть папку</button><button class="btn-primary" onclick="setEditingJobReview(${Number(job.id)}, 'approved')">Одобрить</button><button class="btn-danger" onclick="setEditingJobReview(${Number(job.id)}, 'rejected')">Отклонить</button>`
-      : '';
-    const reviewNote = job.review_note
-      ? `<div class="mono dim ov" title="${esc(job.review_note)}">${esc(shortErrorText(job.review_note))}</div>`
-      : '';
-    const previewRow = previewOpen
-      ? `<tr class="editing-preview-row"><td colspan="11"><div class="editing-review-panel"><div class="editing-video-wrap"><video controls preload="metadata" src="/api/editing/jobs/${Number(job.id)}/media"></video></div><div class="editing-review-controls"><div class="selection-title">Ручная проверка результата</div><div class="mono dim">Рендер: ${badge(job.status)} · Проверка: ${badge(review)}</div><label class="field"><span class="field-lbl">Комментарий</span><textarea id="editing-review-note-${Number(job.id)}" rows="5" placeholder="Почему одобрено или что нужно переделать">${esc(job.review_note || '')}</textarea></label><div class="row-actions"><button class="btn-primary" onclick="setEditingJobReview(${Number(job.id)}, 'approved')">Одобрить</button><button class="btn-danger" onclick="setEditingJobReview(${Number(job.id)}, 'rejected')">Отклонить</button>${review !== 'pending' ? `<button class="btn-secondary" onclick="resetEditingJobReview(${Number(job.id)})">Сбросить проверку</button>` : ''}</div>${review === 'approved' ? '<div class="ok-line">Готов к публикации. Подключение к YouTube будет в следующем этапе.</div>' : ''}</div></div></td></tr>`
-      : '';
-    return `<tr><td><input type="checkbox" ${selected ? 'checked' : ''} onclick="toggleEditingJobSelection(${Number(job.id)}, this.checked)"></td><td class="mono dim">#${job.id}</td><td class="mono txt">${esc(job.workspace_item_key)}</td><td class="mono mid">${esc(job.channel_profile_name || `#${job.channel_profile_id || '—'}`)}</td><td><div class="mono txt">${esc(job.template_name || `#${job.template_id || '—'}`)}</div><div class="mono dim">${esc(job.template_key || '')}</div></td><td class="mono mid">${esc(job.reaction_asset_name || 'без реакции')}</td><td>${badge(job.status)}</td><td>${badge(review)}${reviewNote}</td><td><span class="mono dim ov" title="${esc(job.output_path || '')}">${esc(shortPath(job.output_path || '—'))}</span>${finalPath}</td><td><span class="mono err ov" title="${esc(job.error || '')}">${esc(shortErrorText(job.error || ''))}</span></td><td><div class="row-actions">${doneActions}${canRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)})">Рендер</button>` : ''}${canForceRender ? `<button class="btn-mini" onclick="renderEditingJob(${Number(job.id)}, true)">Рендер заново</button>` : ''}${canCancel ? `<button class="btn-danger" onclick="cancelEditingJob(${Number(job.id)})">Отменить</button>` : ''}${canRetry ? `<button class="btn-secondary" onclick="retryEditingJob(${Number(job.id)})">Повторить</button>` : ''}</div></td></tr>${previewRow}`;
-  }).join('')}</tbody></table></div>`;
-  renderEditingJobSelectionState();
+function selectedEditingJobs() {
+  const jobs = getVisibleEditingJobs();
+  return Array.from(selectedEditingJobIds)
+    .map(id => jobs.find(job => editingQueueJobId(job) === Number(id)))
+    .filter(Boolean);
 }
 
 async function loadEditingJobs(silent = false) {
   try {
-    const data = await api.get('/api/editing/jobs?limit=200');
-    editingJobs = data.items || [];
+    await loadJobs();
+    editingJobs = lastQueueItems.filter(item => item.kind === 'render');
     if (
       editingPreviewJobId !== null
       && !editingJobs.some(
-        job => Number(job.id) === editingPreviewJobId && job.status === 'done'
+        job => editingQueueJobId(job) === editingPreviewJobId && job.status === 'done'
       )
     ) {
       editingPreviewJobId = null;
     }
-    renderEditingJobs();
   } catch (err) {
-    if (!silent) editingError(err.message || 'Не удалось загрузить очередь монтажа');
+    if (!silent) showToast(err.message || 'Не удалось загрузить render-очередь', 'err');
   }
 }
 
 async function cancelEditingJob(jobId) {
   try {
     await api.post(`/api/editing/jobs/${Number(jobId)}/cancel`, {});
-    showToast(`Задача монтажа #${jobId} отменена`);
+    showToast(`Render-задача #${jobId} отменена`);
     await loadEditingJobs();
   } catch (err) {
-    editingError(err.message || `Не удалось отменить задачу монтажа #${jobId}`);
+    showToast(err.message || `Не удалось отменить render-задачу #${jobId}`, 'err');
   }
 }
 
 async function retryEditingJob(jobId) {
   try {
     await api.post(`/api/editing/jobs/${Number(jobId)}/retry`, {});
-    showToast(`Задача монтажа #${jobId} возвращена в очередь`);
+    showToast(`Render-задача #${jobId} возвращена в очередь`);
     await loadEditingJobs();
   } catch (err) {
-    editingError(err.message || `Не удалось повторить задачу монтажа #${jobId}`);
+    showToast(err.message || `Не удалось повторить render-задачу #${jobId}`, 'err');
   }
 }
 
 async function renderEditingJob(jobId, force = false) {
   try {
     await api.post(`/api/editing/jobs/${Number(jobId)}/render`, {force: Boolean(force)});
-    showToast(`Задача монтажа #${jobId} отрендерена`);
+    showToast(`Render-задача #${jobId} запущена`);
     await loadEditingJobs(true);
   } catch (err) {
-    editingError(err.message || `Не удалось отрендерить задачу монтажа #${jobId}`);
+    showToast(err.message || `Не удалось запустить render-задачу #${jobId}`, 'err');
     await loadEditingJobs(true);
   }
 }
@@ -7473,7 +7290,7 @@ async function renderEditingJob(jobId, force = false) {
 function editingJobReviewNote(jobId) {
   const field = document.getElementById(`editing-review-note-${Number(jobId)}`);
   if (field) return field.value;
-  const job = editingJobs.find(item => Number(item.id) === Number(jobId));
+  const job = getVisibleEditingJobs().find(item => editingQueueJobId(item) === Number(jobId));
   return job?.review_note || '';
 }
 
@@ -7484,9 +7301,9 @@ function openEditingJobResult(jobId) {
 async function openEditingJobMpv(jobId) {
   try {
     await api.post(`/api/editing/jobs/${Number(jobId)}/open`, {});
-    showToast(`Задача монтажа #${jobId} открыта в mpv`);
+    showToast(`Render-задача #${jobId} открыта в mpv`);
   } catch (err) {
-    editingError(err.message || `Не удалось открыть задачу монтажа #${jobId} в mpv`);
+    showToast(err.message || `Не удалось открыть render-задачу #${jobId} в mpv`, 'err');
   }
 }
 
@@ -7495,7 +7312,7 @@ async function openEditingJobFolder(jobId) {
     const data = await api.get(`/api/editing/jobs/${Number(jobId)}/folder`);
     await goToOutputFolder(data.path);
   } catch (err) {
-    editingError(err.message || `Не удалось открыть папку задачи монтажа #${jobId}`);
+    showToast(err.message || `Не удалось открыть папку render-задачи #${jobId}`, 'err');
   }
 }
 
@@ -7507,22 +7324,22 @@ async function setEditingJobReview(jobId, reviewStatus) {
     });
     showToast(
       reviewStatus === 'approved'
-        ? `Задача монтажа #${jobId} одобрена`
-        : `Задача монтажа #${jobId} отклонена`
+        ? `Render-задача #${jobId} одобрена`
+        : `Render-задача #${jobId} отклонена`
     );
     await loadEditingJobs(true);
   } catch (err) {
-    editingError(err.message || `Не удалось изменить проверку задачи монтажа #${jobId}`);
+    showToast(err.message || `Не удалось изменить проверку render-задачи #${jobId}`, 'err');
   }
 }
 
 async function resetEditingJobReview(jobId) {
   try {
     await api.post(`/api/editing/jobs/${Number(jobId)}/reset-review`, {});
-    showToast(`Проверка задачи монтажа #${jobId} сброшена`);
+    showToast(`Проверка render-задачи #${jobId} сброшена`);
     await loadEditingJobs(true);
   } catch (err) {
-    editingError(err.message || `Не удалось сбросить проверку задачи монтажа #${jobId}`);
+    showToast(err.message || `Не удалось сбросить проверку render-задачи #${jobId}`, 'err');
   }
 }
 
@@ -7535,19 +7352,19 @@ async function runEditingWorker(limit) {
     );
     await loadEditingJobs(true);
   } catch (err) {
-    editingError(err.message || 'Не удалось запустить edit worker');
+    showToast(err.message || 'Не удалось запустить Studio queue', 'err');
   }
 }
 
 async function renderSelectedEditingJobs() {
   const jobs = selectedEditingJobs();
   if (!jobs.length) {
-    editingError('Выберите задачи монтажа для рендера.');
+    showToast('Выберите render-задачи для запуска.', 'err');
     return;
   }
   try {
     const data = await api.post('/api/editing/jobs/bulk-render', {
-      job_ids: jobs.map(job => Number(job.id)),
+      job_ids: jobs.map(editingQueueJobId),
       force: false,
     });
     const summary = data.summary || {};
@@ -7557,7 +7374,7 @@ async function renderSelectedEditingJobs() {
     );
     await loadEditingJobs(true);
   } catch (err) {
-    editingError(err.message || 'Не удалось отрендерить выбранные задачи монтажа');
+    showToast(err.message || 'Не удалось запустить выбранные render-задачи', 'err');
   }
 }
 
@@ -7567,11 +7384,11 @@ async function retryFailedEditingJobs() {
     ? selected
     : getVisibleEditingJobs().filter(job => ['failed','cancelled'].includes(job.status));
   if (!jobs.length) {
-    editingError('Нет ошибочных или отменённых задач монтажа для повтора.');
+    showToast('Нет ошибочных или отменённых render-задач для повтора.', 'err');
     return;
   }
   const results = await Promise.allSettled(
-    jobs.map(job => api.post(`/api/editing/jobs/${Number(job.id)}/retry`, {}))
+    jobs.map(job => api.post(`/api/editing/jobs/${editingQueueJobId(job)}/retry`, {}))
   );
   const errors = results.filter(result => result.status === 'rejected').length;
   showToast(`Возвращено в очередь: ${results.length - errors}, ошибок: ${errors}`, errors ? 'err' : 'ok');
@@ -7581,11 +7398,11 @@ async function retryFailedEditingJobs() {
 async function cancelSelectedEditingJobs() {
   const jobs = selectedEditingJobs().filter(job => ['queued','failed'].includes(job.status));
   if (!jobs.length) {
-    editingError('Выберите задачи монтажа в очереди или с ошибкой для отмены.');
+    showToast('Выберите render-задачи в очереди или с ошибкой для отмены.', 'err');
     return;
   }
   const results = await Promise.allSettled(
-    jobs.map(job => api.post(`/api/editing/jobs/${Number(job.id)}/cancel`, {}))
+    jobs.map(job => api.post(`/api/editing/jobs/${editingQueueJobId(job)}/cancel`, {}))
   );
   const errors = results.filter(result => result.status === 'rejected').length;
   showToast(`Отменено: ${results.length - errors}, ошибок: ${errors}`, errors ? 'err' : 'ok');
@@ -7635,6 +7452,9 @@ Object.assign(window, {
   openStorageProfileDrawer,
   closeStorageProfileDrawer,
   openStorageProfileVideoPicker,
+  saveStorageProfileChannelSettings,
+  openQueueForChannelProfile,
+  openStudioTemplate,
   openYouTubeSettings,
   openStorageProfile,
 });

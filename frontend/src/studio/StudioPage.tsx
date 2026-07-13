@@ -20,6 +20,8 @@ import {RulesPanel} from './RulesPanel';
 import {SlotsPanel} from './SlotsPanel';
 import {TemplatesPage} from './TemplatesPage';
 import {TestMediaPanel} from './TestMediaPanel';
+import {ReactionsPage} from './ReactionsPage';
+import {ReactionPoolsPage} from './ReactionPoolsPage';
 import {VideoWorkbenchPage} from '../workbench/VideoWorkbenchPage';
 import {
   createDefaultRecipe,
@@ -34,7 +36,7 @@ import {
   type TemplateStatus,
 } from './template';
 
-type StudioMode = 'templates' | 'builder' | 'test' | 'apply' | 'workbench';
+type StudioMode = 'templates' | 'builder' | 'reactions' | 'reaction-pools' | 'test' | 'apply' | 'workbench';
 
 const cloneDefinition = (value: TemplateDefinition): TemplateDefinition =>
   JSON.parse(JSON.stringify(value)) as TemplateDefinition;
@@ -109,6 +111,15 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   const refreshPipelines = async () => {
     const data = await studioApi.pipelines();
     setPipelines(data.items);
+  };
+
+  const refreshReactionsAndPools = async () => {
+    const [reactionData, poolData] = await Promise.all([
+      studioApi.reactions(),
+      studioApi.reactionPools(),
+    ]);
+    setReactions(reactionData.items);
+    setPools(poolData.items);
   };
 
   useEffect(() => {
@@ -353,7 +364,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
     setReactionPoolId(id);
     if (id) {
       const pool = pools.find((item) => item.id === id);
-      selectReaction(pool?.items[0]?.asset_id ?? null);
+      selectReaction(pool?.items?.[0]?.asset_id ?? null);
     }
   };
 
@@ -408,10 +419,7 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
   };
 
   const openReactions = () => {
-    const host = window as typeof window & {
-      nav?: (id: string, element: Element | null) => void;
-    };
-    host.nav?.('editing', document.querySelector('[data-v="editing"]'));
+    setMode('reactions');
   };
 
   const openMainPanelUrl = useMemo(() => {
@@ -497,6 +505,8 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
       <nav className="ts-tabs">
         <button className={mode === 'templates' ? 'active' : ''} onClick={() => setMode('templates')}>Шаблоны</button>
         <button className={mode === 'builder' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('builder')}>Конструктор шаблона</button>
+        <button className={mode === 'reactions' ? 'active' : ''} onClick={() => setMode('reactions')}>Реакции</button>
+        <button className={mode === 'reaction-pools' ? 'active' : ''} onClick={() => setMode('reaction-pools')}>Пулы реакций</button>
         <button className={mode === 'test' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('test')}>Тестовый рендер</button>
         <button className={mode === 'apply' ? 'active' : ''} disabled={!selectedTemplate} onClick={() => setMode('apply')}>Apply Template</button>
         <button className={mode === 'workbench' ? 'active' : ''} onClick={() => setMode('workbench')}>Video Workbench</button>
@@ -578,6 +588,14 @@ export const StudioPage = ({embedded = false}: {embedded?: boolean}) => {
             </section>
           </div>
         </div>
+      ) : null}
+
+      {mode === 'reactions' ? (
+        <ReactionsPage onChanged={refreshReactionsAndPools} />
+      ) : null}
+
+      {mode === 'reaction-pools' ? (
+        <ReactionPoolsPage reactions={reactions} onChanged={refreshReactionsAndPools} />
       ) : null}
 
       {mode === 'test' && selectedTemplate && definition ? (

@@ -25,18 +25,39 @@ export type MediaSection = {
 export type ReactionItem = {
   id: number;
   name: string;
+  file_path?: string;
   duration_sec: number | null;
   tags?: string | null;
-  available: boolean;
+  mood?: string | null;
+  language?: string | null;
+  enabled?: boolean;
+  file_exists?: boolean;
+  available?: boolean;
   unavailable_reason?: string;
   url?: string;
+};
+
+export type ReactionPoolItem = {
+  item_id: number;
+  pool_id: number;
+  reaction_asset_id: number;
+  weight: number;
+  enabled: boolean;
+  asset_name: string;
+  file_path: string;
+  tags?: string | null;
+  mood?: string | null;
+  language?: string | null;
+  file_exists: boolean;
 };
 
 export type ReactionPool = {
   id: number;
   name: string;
   description?: string | null;
-  items: Array<{asset_id: number; name: string; weight: number}>;
+  enabled?: boolean;
+  item_count?: number;
+  items?: Array<{asset_id: number; name: string; weight: number}>;
 };
 
 export type StudioProject = {
@@ -284,6 +305,50 @@ export const studioApi = {
   applySources: () => request<{sections: MediaSection[]; folders: ApplySourceFolder[]}>('/api/studio/apply/sources'),
   reactions: () => request<{items: ReactionItem[]}>('/api/studio/reactions'),
   reactionPools: () => request<{items: ReactionPool[]}>('/api/studio/reaction-pools'),
+  reactionAssetsForManagement: () => request<{items: ReactionItem[]; count: number}>('/api/editing/reactions'),
+  createReactionAsset: (body: Partial<ReactionItem>) => request<{item: ReactionItem}>('/api/editing/reactions', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+  updateReactionAsset: (id: number, body: Partial<ReactionItem>) => request<{item: ReactionItem}>(`/api/editing/reactions/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  }),
+  disableReactionAsset: (id: number) => request<{item: ReactionItem}>(`/api/editing/reactions/${id}/disable`, {
+    method: 'POST',
+    body: '{}',
+  }),
+  importReactionFolder: (body: {
+    folder_path: string;
+    recursive: boolean;
+    tags?: string | null;
+    mood?: string | null;
+    language?: string | null;
+  }) => request<{created: number; skipped: number; errors: number; items: Array<ReactionItem | {file_path: string; error: string}>}>('/api/editing/reactions/import-folder', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+  reactionPoolsForManagement: () => request<{items: ReactionPool[]; count: number}>('/api/editing/reaction-pools'),
+  createReactionPool: (body: {name: string; description?: string | null; enabled: boolean}) => request<{item: ReactionPool}>('/api/editing/reaction-pools', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }),
+  updateReactionPool: (id: number, body: {name?: string; description?: string | null; enabled?: boolean}) => request<{item: ReactionPool}>(`/api/editing/reaction-pools/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+  }),
+  reactionPoolItems: (id: number) => request<{items: ReactionPoolItem[]; count: number}>(`/api/editing/reaction-pools/${id}/items`),
+  upsertReactionPoolItem: (poolId: number, reactionAssetId: number, weight: number) => request<{items: ReactionPoolItem[]}>(`/api/editing/reaction-pools/${poolId}/items`, {
+    method: 'POST',
+    body: JSON.stringify({reaction_asset_id: reactionAssetId, weight}),
+  }),
+  removeReactionPoolItem: (poolId: number, reactionAssetId: number) => request<{items: ReactionPoolItem[]}>(`/api/editing/reaction-pools/${poolId}/items/${reactionAssetId}`, {
+    method: 'DELETE',
+  }),
+  pickLocalPath: (kind: 'file' | 'directory', title: string) => request<{selected: boolean; path: string}>('/api/local-dialogs/pick', {
+    method: 'POST',
+    body: JSON.stringify({kind, title}),
+  }),
   renderProfiles: () => request<{
     default_engine: RenderJob['renderer_engine'];
     default_profile: string;

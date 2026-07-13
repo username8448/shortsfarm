@@ -33,6 +33,7 @@ env/
 node_modules/
 dist/
 build/
+installer/windows/output/
 
 # Editor
 .vscode/

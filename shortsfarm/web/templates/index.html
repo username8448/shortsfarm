@@ -28,7 +28,6 @@
       <button class="nb" data-v="tags" onclick="nav('tags', this)"><i class="ti ti-tags"></i><span>Теги</span></button>
       <button class="nb" data-v="storage-profiles" onclick="nav('storage-profiles', this)"><i class="ti ti-user-square-rounded"></i><span>Профили</span></button>
       <button class="nb" data-v="integrations" onclick="nav('integrations', this)"><i class="ti ti-plug-connected"></i><span>Интеграции</span></button>
-      <button class="nb" data-v="editing" onclick="nav('editing', this)"><i class="ti ti-layout-collage"></i><span>Монтаж</span></button>
       <button class="nb" data-v="studio" onclick="nav('studio', this)"><i class="ti ti-movie"></i><span>Template Studio</span></button>
       <button class="nb" data-v="settings" onclick="nav('settings', this)"><i class="ti ti-settings"></i><span>Настройки</span></button>
     </nav>
@@ -191,7 +190,11 @@
           <div class="tabs queue-filter-tabs">
             <button class="tab on" data-queue-filter="all" onclick="setQueueQuickFilter('all')">Все<span class="cnt" id="queue-cnt-all"></span></button>
             <button class="tab" data-queue-filter="source" onclick="setQueueQuickFilter('source')">Источники<span class="cnt" id="queue-cnt-source"></span></button>
-            <button class="tab" data-queue-filter="jobs" onclick="setQueueQuickFilter('jobs')">Задачи<span class="cnt" id="queue-cnt-jobs"></span></button>
+            <button class="tab" data-queue-filter="split" onclick="setQueueQuickFilter('split')">Нарезка<span class="cnt" id="queue-cnt-split"></span></button>
+            <button class="tab" data-queue-filter="prepare" onclick="setQueueQuickFilter('prepare')">Подготовка<span class="cnt" id="queue-cnt-prepare"></span></button>
+            <button class="tab" data-queue-filter="render" onclick="setQueueQuickFilter('render')">Рендер<span class="cnt" id="queue-cnt-render"></span></button>
+            <button class="tab" data-queue-filter="review" onclick="setQueueQuickFilter('review')">Требует проверки<span class="cnt" id="queue-cnt-review"></span></button>
+            <button class="tab" data-queue-filter="publish" onclick="setQueueQuickFilter('publish')">Публикация<span class="cnt" id="queue-cnt-publish"></span></button>
             <button class="tab" data-queue-filter="errors" onclick="setQueueQuickFilter('errors')">Ошибки<span class="cnt" id="queue-cnt-errors"></span></button>
             <button class="tab" data-queue-filter="missing" onclick="setQueueQuickFilter('missing')">Missing/перемещённые<span class="cnt" id="queue-cnt-missing"></span></button>
             <button class="tab" data-queue-filter="deleted" onclick="setQueueQuickFilter('deleted')">Удалённые/скрытые<span class="cnt" id="queue-cnt-deleted"></span></button>
@@ -297,7 +300,7 @@
                 </div>
                 <label class="toggle-label workspace-youtube-toggle"><input id="workspace-editing-force-new" type="checkbox"> Создать заново</label>
                 <div id="workspace-editing-template-params" class="workspace-editing-params"></div>
-                <button class="btn-secondary" id="workspace-editing-plan-btn" onclick="planSelectedWorkspaceEditing()">Добавить в очередь монтажа</button>
+                <button class="btn-secondary" id="workspace-editing-plan-btn" onclick="planSelectedWorkspaceEditing()">Добавить в очередь рендера</button>
                 <div id="workspace-editing-state" class="mono dim workspace-youtube-state"></div>
               </div>
               <div class="workspace-profile-publish-note">
@@ -452,154 +455,6 @@
         </div>
         <div id="integrations-accounts-list"></div>
       </section>
-    </div>
-
-    <div id="v-editing" class="v">
-      <div class="ph"><h1>Монтаж</h1><p>реакции, пулы, профили каналов и очередь монтажа — шаблоны редактируются в Template Studio</p></div>
-      <div class="tabs">
-        <button class="tab on" data-editing-tab="reactions" onclick="setEditingTab('reactions', this)">Реакции</button>
-        <button class="tab" data-editing-tab="pools" onclick="setEditingTab('pools', this)">Пулы реакций</button>
-        <button class="tab" data-editing-tab="profiles" onclick="setEditingTab('profiles', this)">Профили каналов</button>
-        <button class="tab" data-editing-tab="jobs" onclick="setEditingTab('jobs', this)">Очередь монтажа</button>
-      </div>
-      <div class="action-row" style="margin-bottom:12px">
-        <button class="btn-secondary" onclick="nav('studio', document.querySelector('[data-v=&quot;studio&quot;]'))">Открыть Template Studio</button>
-        <span class="settings-meta">Template Studio — единый реестр и редактор шаблонов для Apply Template, Монтажа и Конвейера.</span>
-      </div>
-      <div id="editing-error" class="err-line" style="display:none;margin-bottom:10px"></div>
-
-      <div id="editing-reactions" class="editing-tab on">
-        <div class="editing-layout">
-          <div class="box">
-            <div class="box-head"><span>Файлы реакций</span><div class="row-actions"><input id="editing-reaction-search" class="compact-input" type="text" placeholder="Поиск" oninput="renderEditingReactions()"><button class="btn-secondary" onclick="newEditingReaction()">Добавить реакцию</button></div></div>
-            <div id="editing-reactions-list"></div>
-          </div>
-          <div class="editing-side">
-            <div class="box">
-              <div class="box-head"><span id="editing-reaction-title">Новая реакция</span></div>
-              <div class="form-body">
-                <div class="field"><label class="field-lbl">Название</label><input id="editing-reaction-name" type="text"></div>
-                <div class="field"><label class="field-lbl">Путь к файлу</label><div class="path-pick-row"><input id="editing-reaction-path" type="text" placeholder="/path/to/reaction.mp4"><button class="btn-secondary" id="editing-reaction-path-pick-btn" onclick="pickEditingReactionFile()">Выбрать…</button></div></div>
-                <div class="field-grid">
-                  <div class="field"><label class="field-lbl">Теги</label><input id="editing-reaction-tags" type="text"></div>
-                  <div class="field"><label class="field-lbl">Настроение</label><input id="editing-reaction-mood" type="text"></div>
-                </div>
-                <div class="field"><label class="field-lbl">Язык</label><input id="editing-reaction-language" type="text" placeholder="ru"></div>
-                <div class="toggles"><label class="toggle-label"><input id="editing-reaction-enabled" type="checkbox" checked> Активна</label></div>
-                <div class="action-row"><button class="btn-primary" onclick="saveEditingReaction()">Сохранить</button><button class="btn-danger" id="editing-reaction-disable" style="display:none" onclick="disableEditingReaction()">Отключить</button></div>
-              </div>
-            </div>
-            <div class="box">
-              <div class="box-head">Импорт папки</div>
-              <div class="form-body">
-                <div class="field"><label class="field-lbl">Папка</label><div class="path-pick-row"><input id="editing-import-folder" type="text" placeholder="/path/to/reactions"><button class="btn-secondary" id="editing-import-folder-pick-btn" onclick="pickEditingImportFolder()">Выбрать папку…</button></div></div>
-                <div class="field-grid">
-                  <div class="field"><label class="field-lbl">Теги</label><input id="editing-import-tags" type="text" value="reaction"></div>
-                  <div class="field"><label class="field-lbl">Настроение</label><input id="editing-import-mood" type="text"></div>
-                </div>
-                <div class="field"><label class="field-lbl">Язык</label><input id="editing-import-language" type="text" value="ru"></div>
-                <div class="toggles"><label class="toggle-label"><input id="editing-import-recursive" type="checkbox" checked> Включая вложенные папки</label></div>
-                <button class="btn-secondary" onclick="importEditingReactions()">Импортировать папку</button>
-                <div id="editing-import-result" class="settings-meta"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div id="editing-pools" class="editing-tab">
-        <div class="editing-layout">
-          <div class="box">
-            <div class="box-head"><span>Пулы реакций</span><button class="btn-secondary" onclick="newEditingPool()">Создать пул</button></div>
-            <div id="editing-pools-list"></div>
-          </div>
-          <div class="editing-side">
-            <div class="box">
-              <div class="box-head"><span id="editing-pool-title">Новый пул</span></div>
-              <div class="form-body">
-                <div class="field"><label class="field-lbl">Название</label><input id="editing-pool-name" type="text"></div>
-                <div class="field"><label class="field-lbl">Описание</label><textarea id="editing-pool-description" rows="3"></textarea></div>
-                <div class="toggles"><label class="toggle-label"><input id="editing-pool-enabled" type="checkbox" checked> Активен</label></div>
-                <button class="btn-primary" onclick="saveEditingPool()">Сохранить пул</button>
-              </div>
-            </div>
-            <div class="box">
-              <div class="box-head">Элементы пула</div>
-              <div class="form-body">
-                <div class="field-grid">
-                  <div class="field"><label class="field-lbl">Файл реакции</label><select id="editing-pool-asset"></select></div>
-                  <div class="field"><label class="field-lbl">Вес выбора</label><input id="editing-pool-weight" type="number" min="1" value="1"></div>
-                </div>
-                <button class="btn-secondary" id="editing-pool-add-item" onclick="addEditingPoolItem()">Добавить / обновить</button>
-              </div>
-              <div id="editing-pool-items"></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div id="editing-profiles" class="editing-tab">
-        <div class="editing-layout">
-          <div class="box">
-            <div class="box-head"><span>Профили каналов</span><button class="btn-secondary" onclick="newEditingProfile()">Создать профиль</button></div>
-            <div id="editing-profiles-list"></div>
-          </div>
-          <div class="box">
-            <div class="box-head"><span id="editing-profile-title">Новый профиль</span></div>
-            <div class="form-body editing-wide-form">
-              <div class="field"><label class="field-lbl">Название</label><input id="editing-profile-name" type="text"></div>
-              <div class="field"><label class="field-lbl">YouTube аккаунт</label><select id="editing-profile-account"></select></div>
-              <div class="field-grid">
-                <div class="field"><label class="field-lbl">Шаблон по умолчанию</label><select id="editing-profile-template"></select></div>
-                <div class="field"><label class="field-lbl">Пул реакций</label><select id="editing-profile-pool"></select></div>
-              </div>
-              <div class="field"><label class="field-lbl">Шаблон заголовка</label><input id="editing-profile-title-template" type="text" placeholder="{title} #shorts"></div>
-              <div class="field"><label class="field-lbl">Шаблон описания</label><textarea id="editing-profile-description-template" rows="3"></textarea></div>
-              <div class="field"><label class="field-lbl">Шаблон тегов</label><input id="editing-profile-tags-template" type="text" placeholder="shorts,funny,reaction"></div>
-              <div class="field-grid">
-                <div class="field"><label class="field-lbl">Видимость</label><select id="editing-profile-privacy"><option value="">Не задано</option><option value="private">private · приватно</option><option value="unlisted">unlisted · по ссылке</option><option value="public">public · публично</option></select></div>
-                <div class="field"><label class="field-lbl">ID категории</label><input id="editing-profile-category" type="text" value="22"></div>
-              </div>
-              <div class="toggles"><label class="toggle-label"><input id="editing-profile-enabled" type="checkbox" checked> Активен</label></div>
-              <div class="action-row"><button class="btn-primary" onclick="saveEditingProfile()">Сохранить профиль</button><button class="btn-danger" id="editing-profile-disable" style="display:none" onclick="disableEditingProfile()">Отключить</button></div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div id="editing-jobs" class="editing-tab">
-        <div class="box">
-          <div class="box-head">
-            <span>Очередь монтажа</span>
-            <div class="row-actions">
-              <button class="btn-mini" onclick="loadEditingJobs()">Обновить</button>
-              <button class="btn-mini" onclick="runEditingWorker(1)">Рендер 1</button>
-              <button class="btn-mini" onclick="runEditingWorker(3)">Рендер 3</button>
-              <button class="btn-primary" onclick="renderSelectedEditingJobs()">Рендер выбранных</button>
-              <button class="btn-secondary" onclick="retryFailedEditingJobs()">Повторить ошибки</button>
-              <button class="btn-danger" onclick="cancelSelectedEditingJobs()">Отменить выбранные</button>
-            </div>
-          </div>
-          <div class="tabs compact-tabs editing-jobs-tabs">
-            <button class="tab on" data-edit-job-filter="all" onclick="filterEditingJobs(this,'all')">Все</button>
-            <button class="tab" data-edit-job-filter="queued" onclick="filterEditingJobs(this,'queued')">В очереди</button>
-            <button class="tab" data-edit-job-filter="rendering" onclick="filterEditingJobs(this,'rendering')">Рендерится</button>
-            <button class="tab" data-edit-job-filter="done" onclick="filterEditingJobs(this,'done')">Готово</button>
-            <button class="tab" data-edit-job-filter="failed" onclick="filterEditingJobs(this,'failed')">Ошибки</button>
-            <button class="tab" data-edit-job-filter="cancelled" onclick="filterEditingJobs(this,'cancelled')">Отменено</button>
-            <label class="editing-review-filter">
-              <span>Проверка</span>
-              <select onchange="filterEditingJobsByReview(this.value)">
-                <option value="all">Все</option>
-                <option value="pending">pending</option>
-                <option value="approved">approved</option>
-                <option value="rejected">rejected</option>
-              </select>
-            </label>
-          </div>
-          <div id="editing-jobs-list"></div>
-        </div>
-      </div>
     </div>
 
     <div id="v-settings" class="v">

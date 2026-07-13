@@ -4132,22 +4132,49 @@ def _queue_split_item(job: dict[str, Any], source: dict[str, Any] | None) -> dic
 
 
 def _queue_render_item(row: Any, workspace_items: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    job = _edit_job_dict(row)
     item_key = str(_row(row, "workspace_item_key", "") or "")
     workspace_item = workspace_items.get(item_key) or {}
     video_id = workspace_item.get("video_id")
-    title = _row(row, "template_name", "") or _row(row, "template_key", "") or f"Render #{int(row['id'])}"
+    title = (
+        job.get("template_name")
+        or job.get("template_key")
+        or f"Studio render #{int(row['id'])}"
+    )
+    output_path = job.get("output_path") or ""
+    edited_path = job.get("edited_path") or ""
+    progress = job.get("remotion_progress_percent")
+    if progress is None:
+        progress = _queue_progress_for_status(job.get("status") or "")
     return {
         "kind": "render",
-        "kind_label": "Render",
+        "kind_label": "Studio render",
         "id": f"render:{int(row['id'])}",
         "job_id": int(row["id"]),
         "video_id": video_id,
         "title": title,
-        "status": _row(row, "status", "") or "",
-        "status_label": _row(row, "status", "") or "",
-        "progress": _queue_progress_for_status(_row(row, "status", "")),
+        "status": job.get("status") or "",
+        "status_label": job.get("status") or "",
+        "progress": int(progress or 0),
+        "workspace_item_key": item_key,
+        "channel_profile_id": job.get("channel_profile_id"),
+        "channel_profile_name": job.get("channel_profile_name") or "",
+        "youtube_account_id": _row(row, "channel_profile_youtube_account_id"),
+        "studio_template_id": job.get("studio_template_id"),
+        "studio_project_id": job.get("studio_project_id"),
+        "remotion_render_job_id": job.get("remotion_render_job_id"),
+        "template_name": job.get("template_name") or "",
+        "template_key": job.get("template_key") or "",
+        "reaction_asset_id": job.get("reaction_asset_id"),
+        "reaction_asset_name": job.get("reaction_asset_name") or "",
+        "renderer": job.get("renderer") or "",
+        "review_status": job.get("review_status") or "pending",
+        "review_note": job.get("review_note") or "",
+        "reviewed_at": job.get("reviewed_at"),
+        "output_path": output_path,
+        "edited_path": edited_path,
         "source_path": workspace_item.get("source_path", ""),
-        "output_dir": str(Path(str(_row(row, "output_path", "") or "")).parent) if _row(row, "output_path", "") else "",
+        "output_dir": str(Path(str(output_path)).parent) if output_path else "",
         "source_state": "ok",
         "source_state_label": "",
         "source_file_exists": bool(workspace_item.get("file_exists", False)),
@@ -4155,13 +4182,18 @@ def _queue_render_item(row: Any, workspace_items: dict[str, dict[str, Any]]) -> 
         "source_deleted": bool(workspace_item.get("source_deleted", False)),
         "source_hidden": False,
         "counts": {},
-        "error": _row(row, "error", "") or "",
-        "created_at": _row(row, "created_at"),
-        "started_at": _row(row, "started_at"),
-        "finished_at": _row(row, "finished_at"),
+        "error": job.get("error") or "",
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
         "actions": {
             "show_clips": video_id is not None,
-            "open_output": bool(_row(row, "output_path", "")),
+            "open_output": bool(output_path),
+            "watch": bool(edited_path or output_path),
+            "render": job.get("status") == "queued",
+            "retry": job.get("status") in {"failed", "cancelled"},
+            "cancel": job.get("status") in {"queued", "failed"},
+            "review": job.get("status") == "done",
         },
     }
 
@@ -4203,7 +4235,12 @@ def _queue_item_matches(item: dict[str, Any], *, q: str) -> bool:
         return True
     haystack = " ".join(
         str(item.get(key) or "")
-        for key in ("id", "kind_label", "title", "status", "source_path", "output_dir", "source_state_label", "error")
+        for key in (
+            "id", "kind_label", "title", "status", "source_path", "output_dir",
+            "source_state_label", "error", "workspace_item_key",
+            "channel_profile_name", "template_name", "template_key",
+            "reaction_asset_name", "review_status",
+        )
     ).lower()
     return all(part in haystack for part in query.split())
 
@@ -4212,6 +4249,7 @@ def _queue_item_matches(item: dict[str, Any], *, q: str) -> bool:
 def queue_items(
     kind: str | None = None,
     status: str | None = None,
+    review_status: str | None = None,
     source_state: str | None = None,
     q: str = "",
     include_deleted: bool = False,
@@ -4253,7 +4291,14 @@ def queue_items(
         if normalized_kind in {"all", "job", "jobs", "render"}:
             items.extend(
                 _queue_render_item(row, workspace_items)
-                for row in db.list_edit_jobs_with_details(limit=200)
+                for row in db.list_edit_jobs_with_details(
+                    review_status=(
+                        review_status
+                        if review_status and review_status != "all"
+                        else None
+                    ),
+                    limit=200,
+                )
             )
         if normalized_kind in {"all", "job", "jobs", "publish"}:
             items.extend(
@@ -4263,6 +4308,12 @@ def queue_items(
 
         if status and status != "all":
             items = [item for item in items if str(item.get("status") or "") == status]
+        if review_status and review_status != "all":
+            items = [
+                item for item in items
+                if item.get("kind") == "render"
+                and str(item.get("review_status") or "pending") == review_status
+            ]
         if source_state and source_state != "all":
             items = [item for item in items if str(item.get("source_state") or "") == source_state]
         items = [item for item in items if _queue_item_matches(item, q=q)]
@@ -4274,6 +4325,16 @@ def queue_items(
                 "all": len(items),
                 "source": sum(1 for item in items if item["kind"] == "source"),
                 "jobs": sum(1 for item in items if item["kind"] != "source"),
+                "split": sum(1 for item in items if item["kind"] == "split"),
+                "prepare": sum(1 for item in items if item.get("status") in {"preparing", "prepared"}),
+                "render": sum(1 for item in items if item["kind"] == "render"),
+                "publish": sum(1 for item in items if item["kind"] == "publish"),
+                "review": sum(
+                    1 for item in items
+                    if item["kind"] == "render"
+                    and item.get("status") == "done"
+                    and str(item.get("review_status") or "pending") == "pending"
+                ),
                 "errors": sum(1 for item in items if item.get("status") == "failed" or item.get("error")),
                 "missing": sum(1 for item in items if item.get("source_state") == "missing_or_moved"),
                 "deleted": sum(1 for item in items if item.get("source_state") == "hidden_deleted"),

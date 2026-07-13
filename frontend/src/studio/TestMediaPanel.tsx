@@ -40,7 +40,7 @@ export const TestMediaPanel = ({
         <span>Пул реакций · необязательно</span>
         <select value={reactionPoolId ?? ''} onChange={(event) => onPool(event.target.value ? Number(event.target.value) : null)}>
           <option value="">Без пула</option>
-          {pools.map((pool) => <option value={pool.id} key={pool.id}>{pool.name} · {pool.items.length}</option>)}
+          {pools.map((pool) => <option value={pool.id} key={pool.id}>{pool.name} · {pool.items?.length || 0}</option>)}
         </select>
       </label>
       <label>
@@ -56,8 +56,8 @@ export const TestMediaPanel = ({
     {!reactions.some((item) => item.available) ? (
       <div className="reaction-empty">
         <strong>Файлы реакций не добавлены</strong>
-        <p>Добавьте reaction в разделе Монтаж → Реакции.</p>
-        <button onClick={onOpenReactions}>Открыть раздел Монтаж</button>
+        <p>Добавьте reaction во вкладке Template Studio → Реакции.</p>
+        <button onClick={onOpenReactions}>Открыть реакции в Studio</button>
       </div>
     ) : null}
     <div className="sample-media-list">

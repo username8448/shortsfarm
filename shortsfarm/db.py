@@ -5798,6 +5798,7 @@ def list_edit_jobs_with_details(
             SELECT
                 ej.*,
                 cp.name AS channel_profile_name,
+                cp.youtube_account_id AS channel_profile_youtube_account_id,
                 et.name AS template_name,
                 et.key AS template_key,
                 st.name AS studio_template_name,

@@ -400,7 +400,7 @@ export const ApplyTemplatePanel = ({
             <select value={reactionPoolId ?? ''} onChange={(event) => setReactionPoolId(event.target.value ? Number(event.target.value) : null)}>
               <option value="">Не выбран</option>
               {pools.map((pool) => (
-                <option value={pool.id} key={pool.id}>{pool.name} · {pool.items.length}</option>
+                <option value={pool.id} key={pool.id}>{pool.name} · {pool.items?.length || 0}</option>
               ))}
             </select>
           </label>
