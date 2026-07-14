@@ -68,6 +68,7 @@ def _patch_prepare_ffmpeg(monkeypatch):
 
 def test_workspace_api_lists_segments_even_without_clips(video_in_db, tmp_path):
     from shortsfarm.web import api
+    from shortsfarm.web import storage_profiles_api
     segment_id = _make_segment(video_in_db, tmp_path)
 
     data = api.workspace_clips()
@@ -354,6 +355,7 @@ def test_video_child_clips_delete_keeps_parent(video_in_db, tmp_path):
 def test_videos_bulk_delete_keeps_profile_items_by_default(video_in_db, tmp_path):
     from shortsfarm import db
     from shortsfarm.web import api
+    from shortsfarm.web import storage_profiles_api
     from shortsfarm.web.schemas import LocalStorageProfileItemCreateRequest, VideoBulkDeleteRequest
     from shortsfarm.workspace_fs import set_workspace_root
 
@@ -376,7 +378,7 @@ def test_videos_bulk_delete_keeps_profile_items_by_default(video_in_db, tmp_path
         status="done",
     )
     profile_id = db.create_local_storage_profile(name="Profile")
-    api.local_storage_profile_item_add(
+    storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path="edits/main/final.mp4"),
     )
@@ -390,6 +392,7 @@ def test_videos_bulk_delete_keeps_profile_items_by_default(video_in_db, tmp_path
 def test_videos_bulk_delete_can_remove_related_profile_items(video_in_db, tmp_path):
     from shortsfarm import db
     from shortsfarm.web import api
+    from shortsfarm.web import storage_profiles_api
     from shortsfarm.web.schemas import LocalStorageProfileItemCreateRequest, VideoBulkDeleteRequest
     from shortsfarm.workspace_fs import set_workspace_root
 
@@ -415,11 +418,11 @@ def test_videos_bulk_delete_can_remove_related_profile_items(video_in_db, tmp_pa
         status="done",
     )
     profile_id = db.create_local_storage_profile(name="Profile")
-    api.local_storage_profile_item_add(
+    storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path="edits/main/final.mp4"),
     )
-    api.local_storage_profile_item_add(
+    storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path="edits/other/final.mp4"),
     )

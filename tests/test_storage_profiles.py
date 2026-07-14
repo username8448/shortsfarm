@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
+from shortsfarm.web import storage_profiles_api
+
 
 def _workspace(tmp_path: Path) -> Path:
     from shortsfarm.workspace_fs import set_workspace_root
@@ -20,11 +22,10 @@ def _video(root: Path, relative: str, content: bytes = b"video") -> Path:
 
 
 def _profile_id(name: str = "Local Shorts") -> int:
-    from shortsfarm.web import api
     from shortsfarm.web.schemas import LocalStorageProfileCreateRequest
 
     return int(
-        api.local_storage_profile_create(
+        storage_profiles_api.local_storage_profile_create(
             LocalStorageProfileCreateRequest(name=name)
         )["profile"]["id"]
     )
@@ -128,7 +129,7 @@ def test_storage_profile_create_update_and_list(tmp_path):
         LocalStorageProfileUpdateRequest,
     )
 
-    data = api.local_storage_profile_create(
+    data = storage_profiles_api.local_storage_profile_create(
         LocalStorageProfileCreateRequest(
             name="Gaming Shorts",
             description="Локальная витрина",
@@ -138,7 +139,7 @@ def test_storage_profile_create_update_and_list(tmp_path):
     )
     profile_id = data["profile"]["id"]
 
-    updated = api.local_storage_profile_update(
+    updated = storage_profiles_api.local_storage_profile_update(
         profile_id,
         LocalStorageProfileUpdateRequest(
             name="Gaming Shorts RU",
@@ -146,7 +147,7 @@ def test_storage_profile_create_update_and_list(tmp_path):
             avatar_initials="gs",
         ),
     )["profile"]
-    listed = api.local_storage_profiles()["items"]
+    listed = storage_profiles_api.local_storage_profiles()["items"]
 
     assert updated["name"] == "Gaming Shorts RU"
     assert updated["handle"] == "gaming-ru"
@@ -172,7 +173,7 @@ def test_storage_profile_youtube_link_and_unlink(tmp_path):
     assert link["external_account_id"] == account_id
     assert link["display_name"] == "Shorts Channel"
     assert link["youtube_account"]["channel_title"] == "Shorts Channel"
-    listed = api.local_storage_profiles()["items"]
+    listed = storage_profiles_api.local_storage_profiles()["items"]
     listed_profile = next(item for item in listed if item["id"] == profile_id)
     assert listed_profile["service_links"][0]["external_account_id"] == account_id
 
@@ -227,7 +228,7 @@ def test_storage_profile_manual_name_override_wins_over_youtube_branding(tmp_pat
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
 
-    updated = api.local_storage_profile_update(
+    updated = storage_profiles_api.local_storage_profile_update(
         profile_id,
         LocalStorageProfileUpdateRequest(name="Manual Profile Name"),
     )["profile"]
@@ -241,7 +242,7 @@ def test_storage_profile_manual_name_override_wins_over_youtube_branding(tmp_pat
         metadata_synced_at=db.now_utc(),
         metadata_sync_error=None,
     )
-    detail = api.local_storage_profile_detail(profile_id)["profile"]
+    detail = storage_profiles_api.local_storage_profile_detail(profile_id)["profile"]
 
     assert detail["effective_name"] == "Manual Profile Name"
     assert detail["effective_avatar_url"] == "https://img.example/two.jpg"
@@ -267,7 +268,7 @@ def test_storage_profile_field_overrides_can_return_to_youtube(tmp_path):
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
 
-    local = api.local_storage_profile_update(
+    local = storage_profiles_api.local_storage_profile_update(
         profile_id,
         LocalStorageProfileUpdateRequest(
             name="Manual Name",
@@ -279,7 +280,7 @@ def test_storage_profile_field_overrides_can_return_to_youtube(tmp_path):
     assert local["youtube_branding"]["overrides"]["name"] is True
     assert local["youtube_branding"]["overrides"]["avatar"] is True
 
-    reset = api.local_storage_profile_update(
+    reset = storage_profiles_api.local_storage_profile_update(
         profile_id,
         LocalStorageProfileUpdateRequest(name_override=False, avatar_override=False),
     )["profile"]
@@ -305,7 +306,7 @@ def test_storage_profile_youtube_branding_disabled_uses_local_values(tmp_path):
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
 
-    profile = api.local_storage_profile_update(
+    profile = storage_profiles_api.local_storage_profile_update(
         profile_id,
         LocalStorageProfileUpdateRequest(youtube_branding_sync_enabled=False),
     )["profile"]
@@ -334,7 +335,7 @@ def test_youtube_account_sync_updates_linked_profile_branding(monkeypatch, tmp_p
     )
 
     result = api.youtube_account_sync_metadata(account_id)
-    profile = api.local_storage_profile_detail(profile_id)["profile"]
+    profile = storage_profiles_api.local_storage_profile_detail(profile_id)["profile"]
 
     assert result["status"] == "ok"
     assert result["branding_profiles"] == 1
@@ -476,8 +477,8 @@ def test_youtube_account_sync_updates_multiple_linked_profiles(monkeypatch, tmp_
 
     assert result["status"] == "ok"
     assert result["branding_profiles"] == 2
-    assert api.local_storage_profile_detail(first_profile_id)["profile"]["effective_name"] == "Synced Official"
-    assert api.local_storage_profile_detail(second_profile_id)["profile"]["effective_name"] == "Synced Official"
+    assert storage_profiles_api.local_storage_profile_detail(first_profile_id)["profile"]["effective_name"] == "Synced Official"
+    assert storage_profiles_api.local_storage_profile_detail(second_profile_id)["profile"]["effective_name"] == "Synced Official"
 
 
 def test_storage_profile_youtube_link_updates_existing_link(tmp_path):
@@ -542,7 +543,7 @@ def test_storage_profile_publish_settings_persist_and_apply_defaults(tmp_path):
 
     assert linked["service_links"][0]["settings_json"]
 
-    item = api.local_storage_profile_item_add(
+    item = storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
@@ -617,7 +618,7 @@ def test_storage_profile_youtube_enqueue_creates_publish_job(tmp_path):
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
-    item = api.local_storage_profile_item_add(
+    item = storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(
             workspace_path=relative,
@@ -660,7 +661,7 @@ def test_storage_profile_youtube_enqueue_requires_linked_account(tmp_path):
     relative = "ready/channel/final.mp4"
     _video(root, relative)
     profile_id = _profile_id()
-    item = api.local_storage_profile_item_add(
+    item = storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
@@ -692,7 +693,7 @@ def test_storage_profile_youtube_enqueue_reuses_existing_job(tmp_path):
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
-    item = api.local_storage_profile_item_add(
+    item = storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
@@ -724,7 +725,7 @@ def test_storage_profile_youtube_enqueue_rejects_other_account(tmp_path):
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=linked_id),
     )
-    item = api.local_storage_profile_item_add(
+    item = storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
@@ -755,7 +756,7 @@ def test_storage_profile_auto_import_adds_matching_ready_videos(tmp_path):
     _video(root, "ready/channel/three.mp4")
     _video(root, "published/channel/four.mp4")
     profile_id = int(
-        api.local_storage_profile_create(
+        storage_profiles_api.local_storage_profile_create(
             LocalStorageProfileCreateRequest(
                 name="Auto Profile",
                 auto_import_enabled=True,
@@ -765,7 +766,7 @@ def test_storage_profile_auto_import_adds_matching_ready_videos(tmp_path):
         )["profile"]["id"]
     )
 
-    data = api.local_storage_profile_auto_import_run(
+    data = storage_profiles_api.local_storage_profile_auto_import_run(
         profile_id,
         LocalStorageProfileAutoImportRunRequest(),
     )
@@ -784,11 +785,11 @@ def test_storage_profile_auto_import_disabled_requires_force(tmp_path):
     _video(root, "ready/channel/one.mp4")
     profile_id = _profile_id()
 
-    disabled = api.local_storage_profile_auto_import_run(
+    disabled = storage_profiles_api.local_storage_profile_auto_import_run(
         profile_id,
         LocalStorageProfileAutoImportRunRequest(),
     )
-    forced = api.local_storage_profile_auto_import_run(
+    forced = storage_profiles_api.local_storage_profile_auto_import_run(
         profile_id,
         LocalStorageProfileAutoImportRunRequest(force=True),
     )
@@ -888,7 +889,7 @@ def test_storage_profile_youtube_sync_fetches_channel_inventory(monkeypatch, tmp
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
-    item = api.local_storage_profile_item_add(
+    item = storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
@@ -929,11 +930,11 @@ def test_storage_profile_adds_ready_video_from_allowed_folders(tmp_path, folder)
     _video(root, relative)
     profile_id = _profile_id()
 
-    data = api.local_storage_profile_item_add(
+    data = storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative),
     )
-    detail = api.local_storage_profile_detail(profile_id)
+    detail = storage_profiles_api.local_storage_profile_detail(profile_id)
 
     assert data["item"]["workspace_path"] == relative
     assert data["item"]["file_exists"] is True
@@ -950,15 +951,15 @@ def test_storage_profile_duplicate_video_updates_existing_item(tmp_path):
     _video(root, relative)
     profile_id = _profile_id()
 
-    first = api.local_storage_profile_item_add(
+    first = storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative, title="Old"),
     )["item"]
-    second = api.local_storage_profile_item_add(
+    second = storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative, title="New"),
     )["item"]
-    detail = api.local_storage_profile_detail(profile_id)
+    detail = storage_profiles_api.local_storage_profile_detail(profile_id)
 
     assert second["id"] == first["id"]
     assert detail["profile"]["item_count"] == 1
@@ -982,7 +983,7 @@ def test_storage_profile_rejects_non_ready_workspace_sections(tmp_path, relative
     profile_id = _profile_id()
 
     with pytest.raises(HTTPException) as exc:
-        api.local_storage_profile_item_add(
+        storage_profiles_api.local_storage_profile_item_add(
             profile_id,
             LocalStorageProfileItemCreateRequest(workspace_path=relative),
         )
@@ -1008,7 +1009,7 @@ def test_storage_profile_rejects_unsafe_paths(tmp_path, bad_path):
     profile_id = _profile_id()
 
     with pytest.raises(HTTPException):
-        api.local_storage_profile_item_add(
+        storage_profiles_api.local_storage_profile_item_add(
             profile_id,
             LocalStorageProfileItemCreateRequest(workspace_path=bad_path),
         )
@@ -1025,7 +1026,7 @@ def test_storage_profile_rejects_non_video_inside_ready_folder(tmp_path):
     profile_id = _profile_id()
 
     with pytest.raises(HTTPException) as exc:
-        api.local_storage_profile_item_add(
+        storage_profiles_api.local_storage_profile_item_add(
             profile_id,
             LocalStorageProfileItemCreateRequest(workspace_path="ready/note.txt"),
         )
@@ -1047,7 +1048,7 @@ def test_storage_profile_rejects_symlink(tmp_path):
     profile_id = _profile_id()
 
     with pytest.raises(HTTPException) as exc:
-        api.local_storage_profile_item_add(
+        storage_profiles_api.local_storage_profile_item_add(
             profile_id,
             LocalStorageProfileItemCreateRequest(workspace_path="ready/link.mp4"),
         )
@@ -1065,7 +1066,7 @@ def test_storage_profile_ready_videos_lists_only_allowed_video_folders(tmp_path)
     _video(root, "sources/raw.mp4")
     (root / "ready" / "note.txt").write_text("not video", encoding="utf-8")
 
-    data = api.local_storage_profile_ready_videos()
+    data = storage_profiles_api.local_storage_profile_ready_videos()
     paths = {item["workspace_path"] for item in data["items"]}
 
     assert {"edits/one.mp4", "ready/two.mov", "published/three.mkv"} <= paths
@@ -1097,7 +1098,7 @@ def test_channel_tag_is_created_reconciled_and_removed_from_profile_rules(tmp_pa
     assert channel_rules[0]["tag"]["color"] == "#f59e0b"
 
     extra = db.ensure_channel_tag_for_account(account_id=999, display_name="Wrong Channel")
-    api.local_storage_profile_tag_rules_update(
+    storage_profiles_api.local_storage_profile_tag_rules_update(
         profile_id,
         LocalStorageProfileTagRulesRequest(
             include_tag_ids=[channel_rules[0]["tag_id"], int(extra["id"])],
@@ -1105,7 +1106,7 @@ def test_channel_tag_is_created_reconciled_and_removed_from_profile_rules(tmp_pa
             tag_match_mode="any",
         ),
     )
-    detail = api.local_storage_profile_detail(profile_id)["profile"]
+    detail = storage_profiles_api.local_storage_profile_detail(profile_id)["profile"]
     channel_slugs = [
         rule["tag"]["slug"] for rule in detail["tag_rules"]
         if rule["tag"]["kind"] == "channel"
@@ -1193,7 +1194,7 @@ def test_profile_tag_sync_any_all_and_exclude(tmp_path):
     ))
 
     profile_any = _profile_id("Anime Profile")
-    api.local_storage_profile_tag_rules_update(
+    storage_profiles_api.local_storage_profile_tag_rules_update(
         profile_any,
         LocalStorageProfileTagRulesRequest(
             include_tag_ids=[anime["id"]],
@@ -1201,12 +1202,12 @@ def test_profile_tag_sync_any_all_and_exclude(tmp_path):
             tag_match_mode="any",
         ),
     )
-    synced_any = api.local_storage_profile_tag_sync_run(profile_any)
+    synced_any = storage_profiles_api.local_storage_profile_tag_sync_run(profile_any)
     assert synced_any["summary"]["matched"] == 1
     assert {item["workspace_path"] for item in synced_any["items"]} == {"ready/channel/anime.mp4"}
 
     profile_all = _profile_id("Anime Film Profile")
-    api.local_storage_profile_tag_rules_update(
+    storage_profiles_api.local_storage_profile_tag_rules_update(
         profile_all,
         LocalStorageProfileTagRulesRequest(
             include_tag_ids=[anime["id"], film["id"]],
@@ -1214,7 +1215,7 @@ def test_profile_tag_sync_any_all_and_exclude(tmp_path):
             tag_match_mode="all",
         ),
     )
-    synced_all = api.local_storage_profile_tag_sync_run(profile_all)
+    synced_all = storage_profiles_api.local_storage_profile_tag_sync_run(profile_all)
     assert synced_all["summary"]["matched"] == 1
     assert {item["workspace_path"] for item in synced_all["items"]} == {"ready/channel/anime-film.mp4"}
 
@@ -1236,7 +1237,7 @@ def test_storage_profile_youtube_enqueue_requires_status_ready_tag(tmp_path):
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
-    item = api.local_storage_profile_item_add(
+    item = storage_profiles_api.local_storage_profile_item_add(
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative),
     )["item"]
