@@ -1254,12 +1254,16 @@ def test_storage_profile_youtube_enqueue_requires_status_ready_tag(tmp_path):
 
 def test_storage_profiles_ui_is_registered():
     root = Path(__file__).resolve().parents[1]
-    html = (root / "shortsfarm" / "web" / "templates" / "index.html").read_text(encoding="utf-8")
+    index_html = (root / "shortsfarm" / "web" / "templates" / "index.html").read_text(encoding="utf-8")
+    tags_partial = (root / "shortsfarm" / "web" / "templates" / "views" / "tags.html").read_text(encoding="utf-8")
+    html = index_html.replace('{% include "views/tags.html" %}', tags_partial)
     js = (root / "shortsfarm" / "web" / "static" / "app.js").read_text(encoding="utf-8")
+    tags_js = (root / "shortsfarm" / "web" / "static" / "js" / "features" / "tags.js").read_text(encoding="utf-8")
     css = (root / "shortsfarm" / "web" / "static" / "style.css").read_text(encoding="utf-8")
 
     assert 'data-v="storage-profiles"' in html
     assert 'data-v="tags"' in html
+    assert '{% include "views/tags.html" %}' in index_html
     assert 'data-v="integrations"' in html
     assert 'data-v="publish"' not in html
     assert 'id="v-publish"' not in html
@@ -1305,9 +1309,9 @@ def test_storage_profiles_ui_is_registered():
     assert "storageProfileMainContent(profile)" in js
     assert "renderStorageProfileDrawer(profile)" in js
     assert "openStorageProfileVideoPicker" in js
-    assert "openGlobalTagsView" in js
-    assert "loadTagsView" in js
-    assert "renderGlobalTagsManager" in js
+    assert "openGlobalTagsView" in tags_js
+    assert "loadTagsView" in tags_js
+    assert "renderGlobalTagsManager" in tags_js
     assert "searchParams.set('profile'" in js
     assert "/api/catalog/videos/search" in js
     assert "/api/catalog/videos/random" in js
@@ -1338,12 +1342,12 @@ def test_storage_profiles_ui_is_registered():
     assert "Настройки публикации профиля" in js
     assert "Теги профиля" in js
     assert "Случайные видео" in js
-    assert "Менеджер тегов" in js
-    assert "Добавить теги в видео" in js
-    assert "Поиск тегов" in js
-    assert "tags-create-color" in js
-    assert "updateCatalogTagColor" in js
-    assert "scope=all" in js
+    assert "Менеджер тегов" in tags_js
+    assert "Добавить теги в видео" in tags_js
+    assert "Поиск тегов" in tags_js
+    assert "tags-create-color" in tags_js
+    assert "updateCatalogTagColor" in tags_js
+    assert "scope=all" in tags_js
     assert "workspace-catalog-tags-panel" in js
     assert "workspace-filter-tag-select" in html
     assert "workspace-search-input" in html
@@ -1354,7 +1358,7 @@ def test_storage_profiles_ui_is_registered():
     assert "bulkAddCatalogTagToWorkspaceItems" in js
     assert "bulkRemoveCatalogTagFromWorkspaceItems" in js
     assert "createStorageCatalogTag" not in js
-    assert "assignTagToSelectedVideos" in js
+    assert "assignTagToSelectedVideos" in tags_js
     assert "Автоимпорт готовых видео" not in js
     assert "Синхронизировать YouTube" in js
     assert "Видео на YouTube" in js
@@ -1364,7 +1368,7 @@ def test_storage_profiles_ui_is_registered():
     assert "renderIntegrationsAccountsPanel" in js
     assert "prompt(" not in js
     assert "settings-oauth" not in js
-    assert "data-tag-color-id" in js
+    assert "data-tag-color-id" in tags_js
     assert "openTextActionModal" in js
     assert "openStorageProfilePickModal" in js
     create_integration_body = js.split("function createIntegrationOAuthProfile", 1)[1].split("function editIntegrationOAuthProfile", 1)[0]

@@ -295,20 +295,7 @@
       </section>
     </div>
 
-    <div id="v-tags" class="v">
-      <div class="ph"><h1>Теги</h1><p>глобальный каталог тегов для видео, профилей, каналов, жанров, тем и статусов</p></div>
-      <div id="tags-error" class="err-line" style="display:none;margin-bottom:14px"></div>
-      <section class="box">
-        <div class="box-head">
-          <span>Менеджер тегов</span>
-          <div class="row-actions">
-            <button class="btn-secondary" onclick="createGlobalCatalogTag()">Создать тег</button>
-            <button class="btn-mini" onclick="loadTagsView()">Обновить</button>
-          </div>
-        </div>
-        <div id="tags-manager"></div>
-      </section>
-    </div>
+    {% include "views/tags.html" %}
 
     <div id="v-storage-profiles" class="v">
       <div class="ph"><h1>Профили</h1><p>локальные витрины готового Shorts-контента без копирования файлов</p></div>
@@ -670,6 +657,7 @@ npm --prefix frontend run build</pre>
   </section>
 </div>
 <script src="/static/js/features/files.js?v={{ asset_version }}"></script>
+<script src="/static/js/features/tags.js?v={{ asset_version }}"></script>
 <script src="/static/app.js?v={{ asset_version }}"></script>
 {% if studio_built %}
 <link rel="stylesheet" href="/studio/assets/studio.css">

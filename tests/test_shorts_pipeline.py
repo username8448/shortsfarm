@@ -788,7 +788,8 @@ def test_shorts_pipeline_ui_is_registered():
     assert "Настройка цикла" in pipeline_html
     assert "Таймер" not in pipeline_html
     assert "YouTube" not in pipeline_html
-    queue_html = html.split('<div id="v-queue"', 1)[1].split('<div id="v-tags"', 1)[0]
+    queue_end_marker = '{% include "views/tags.html" %}'
+    queue_html = html.split('<div id="v-queue"', 1)[1].split(queue_end_marker, 1)[0]
     assert "Конвейер · полный цикл" in queue_html
     assert "Единая очередь · источники и задачи" in queue_html
     assert "техническая история нарезки" in queue_html
