@@ -1120,7 +1120,7 @@ def test_channel_tag_is_created_reconciled_and_removed_from_profile_rules(tmp_pa
 
 
 def test_catalog_tags_search_random_and_status_compat(tmp_path):
-    from shortsfarm.web import api
+    from shortsfarm.web import tags_api
     from shortsfarm.web.schemas import CatalogVideoTagsRequest, TagCreateRequest
 
     root = _workspace(tmp_path)
@@ -1128,18 +1128,18 @@ def test_catalog_tags_search_random_and_status_compat(tmp_path):
     _video(root, "edits/cinema/clip-two.mp4")
     _video(root, "sources/raw.mp4")
 
-    anime = api.tag_create(TagCreateRequest(name="аниме", color="#ff77aa"))["tag"]
-    ready = next(tag for tag in api.tags_list()["items"] if tag["slug"] == "status-ready")
-    api.catalog_video_tags_update(
+    anime = tags_api.tag_create(TagCreateRequest(name="аниме", color="#ff77aa"))["tag"]
+    ready = next(tag for tag in tags_api.tags_list()["items"] if tag["slug"] == "status-ready")
+    tags_api.catalog_video_tags_update(
         CatalogVideoTagsRequest(
             workspace_path="ready/anime/clip-one.mp4",
             tag_ids=[anime["id"], ready["id"]],
         )
     )
 
-    tags = api.catalog_video_tags("ready/anime/clip-one.mp4")["tags"]
+    tags = tags_api.catalog_video_tags("ready/anime/clip-one.mp4")["tags"]
     assert {tag["slug"] for tag in tags} >= {"аниме", "status-ready"}
-    raw_tags = api.catalog_video_tags_update(
+    raw_tags = tags_api.catalog_video_tags_update(
         CatalogVideoTagsRequest(
             workspace_path="sources/raw.mp4",
             tag_ids=[anime["id"]],
@@ -1147,23 +1147,24 @@ def test_catalog_tags_search_random_and_status_compat(tmp_path):
     )["tags"]
     assert {tag["slug"] for tag in raw_tags} == {"аниме"}
 
-    search = api.catalog_videos_search(q="аниме")["items"]
+    search = tags_api.catalog_videos_search(q="аниме")["items"]
     assert [item["workspace_path"] for item in search] == ["ready/anime/clip-one.mp4"]
     assert search[0]["is_publish_ready"] is True
-    all_scope_search = api.catalog_videos_search(q="raw", scope="all")["items"]
+    all_scope_search = tags_api.catalog_videos_search(q="raw", scope="all")["items"]
     assert [item["workspace_path"] for item in all_scope_search] == ["sources/raw.mp4"]
 
-    random_items = api.catalog_videos_random(limit=20)["items"]
+    random_items = tags_api.catalog_videos_random(limit=20)["items"]
     paths = {item["workspace_path"] for item in random_items}
     assert "ready/anime/clip-one.mp4" in paths
     assert "edits/cinema/clip-two.mp4" in paths
     assert "sources/raw.mp4" not in paths
-    all_random_paths = {item["workspace_path"] for item in api.catalog_videos_random(scope="all", limit=20)["items"]}
+    all_random_paths = {item["workspace_path"] for item in tags_api.catalog_videos_random(scope="all", limit=20)["items"]}
     assert "sources/raw.mp4" in all_random_paths
 
 
 def test_profile_tag_sync_any_all_and_exclude(tmp_path):
     from shortsfarm.web import api
+    from shortsfarm.web import tags_api
     from shortsfarm.web.schemas import (
         CatalogVideoTagsRequest,
         LocalStorageProfileTagRulesRequest,
@@ -1175,18 +1176,18 @@ def test_profile_tag_sync_any_all_and_exclude(tmp_path):
     _video(root, "ready/channel/anime-film.mp4")
     _video(root, "ready/channel/film.mp4")
 
-    anime = api.tag_create(TagCreateRequest(name="аниме"))["tag"]
-    film = api.tag_create(TagCreateRequest(name="кино"))["tag"]
-    ready = next(tag for tag in api.tags_list()["items"] if tag["slug"] == "status-ready")
-    api.catalog_video_tags_update(CatalogVideoTagsRequest(
+    anime = tags_api.tag_create(TagCreateRequest(name="аниме"))["tag"]
+    film = tags_api.tag_create(TagCreateRequest(name="кино"))["tag"]
+    ready = next(tag for tag in tags_api.tags_list()["items"] if tag["slug"] == "status-ready")
+    tags_api.catalog_video_tags_update(CatalogVideoTagsRequest(
         workspace_path="ready/channel/anime.mp4",
         tag_ids=[anime["id"], ready["id"]],
     ))
-    api.catalog_video_tags_update(CatalogVideoTagsRequest(
+    tags_api.catalog_video_tags_update(CatalogVideoTagsRequest(
         workspace_path="ready/channel/anime-film.mp4",
         tag_ids=[anime["id"], film["id"], ready["id"]],
     ))
-    api.catalog_video_tags_update(CatalogVideoTagsRequest(
+    tags_api.catalog_video_tags_update(CatalogVideoTagsRequest(
         workspace_path="ready/channel/film.mp4",
         tag_ids=[film["id"], ready["id"]],
     ))

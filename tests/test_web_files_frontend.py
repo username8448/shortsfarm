@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 INDEX_HTML = ROOT / "shortsfarm" / "web" / "templates" / "index.html"
 FILES_PARTIAL = ROOT / "shortsfarm" / "web" / "templates" / "views" / "files.html"
 APP_JS = ROOT / "shortsfarm" / "web" / "static" / "app.js"
+WEB_APP = ROOT / "shortsfarm" / "web" / "app.py"
 FILES_JS = ROOT / "shortsfarm" / "web" / "static" / "js" / "features" / "files.js"
 
 FILES_IDS = [
@@ -92,3 +93,16 @@ def test_files_js_boundary_and_public_handlers():
     assert re.search(r"\blet\s+api\s*=", files_js) is None
     assert "DOMContentLoaded" not in files_js
     assert "setInterval" not in files_js
+
+
+def test_files_asset_version_and_cross_feature_bridge_contracts():
+    app_py = WEB_APP.read_text(encoding="utf-8")
+    app_js = APP_JS.read_text(encoding="utf-8")
+    files_js = FILES_JS.read_text(encoding="utf-8")
+
+    assert '"static" / "js" / "features" / "files.js"' in app_py
+    assert "window.ShortsFarmFiles?.getWorkspaceRoot?.()" in app_js
+    assert "window.ShortsFarmFiles?.setWorkspaceRoot?.(root)" in app_js
+    assert "window.ShortsFarmFiles?.setWorkspaceRoot?.(data.workspace_root" in app_js
+    assert "window.ShortsFarmFiles = {" in files_js
+    assert "state" not in files_js.split("window.ShortsFarmFiles = {", 1)[1].split("};", 1)[0]
