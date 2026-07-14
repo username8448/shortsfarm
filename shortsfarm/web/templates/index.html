@@ -93,36 +93,7 @@
       </div>
     </div>
 
-    <div id="v-files" class="v">
-      <div class="ph"><h1>Файлы</h1><p>управляемая библиотека исходников и результатов внутри workspace_root</p></div>
-      <div id="files-setup" class="box" style="display:none"></div>
-      <div id="files-manager" style="display:none">
-        <div class="box files-head">
-          <div>
-            <div class="field-lbl">Рабочая папка</div>
-            <div id="files-root-path" class="mono txt"></div>
-          </div>
-          <div class="row-actions">
-            <button class="btn-mini" onclick="refreshManagedFiles()">Обновить</button>
-            <button class="btn-secondary" onclick="createManagedFolder('custom')">Новая папка</button>
-            <button class="btn-secondary" onclick="createManagedFolder('collection')">Новая коллекция</button>
-            <button class="btn-secondary" onclick="createManagedFolder('project')">Новый проект</button>
-            <button class="btn-primary" onclick="importManagedSource()">Импорт видео</button>
-          </div>
-        </div>
-        <div class="files-layout">
-          <aside class="box files-sidebar" id="files-sidebar"></aside>
-          <section class="box files-content">
-            <div class="files-toolbar">
-              <button class="btn-mini" onclick="managedFilesUp()">Вверх</button>
-              <div id="files-breadcrumbs" class="fs-breadcrumb"></div>
-            </div>
-            <div id="files-error" class="err-line" style="display:none"></div>
-            <div id="files-list"></div>
-          </section>
-        </div>
-      </div>
-    </div>
+    {% include "views/files.html" %}
 
     <div id="v-split" class="v">
       <div class="ph"><h1>Нарезка</h1><p>ffmpeg stream-copy без перекодирования; «План» только показывает будущие сегменты</p></div>
@@ -698,6 +669,7 @@ npm --prefix frontend run build</pre>
     </div>
   </section>
 </div>
+<script src="/static/js/features/files.js?v={{ asset_version }}"></script>
 <script src="/static/app.js?v={{ asset_version }}"></script>
 {% if studio_built %}
 <link rel="stylesheet" href="/studio/assets/studio.css">

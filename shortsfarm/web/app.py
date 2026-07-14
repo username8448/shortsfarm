@@ -21,6 +21,7 @@ FAVICON_PATH = WEB_DIR / "static" / "favicon.svg"
 def asset_version() -> int:
     return max(
         (WEB_DIR / "static" / "app.js").stat().st_mtime_ns,
+        (WEB_DIR / "static" / "js" / "features" / "files.js").stat().st_mtime_ns,
         (WEB_DIR / "static" / "style.css").stat().st_mtime_ns,
         (WEB_DIR / "static" / "vendor" / "tabler-icons" / "tabler-icons.min.css").stat().st_mtime_ns,
     )

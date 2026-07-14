@@ -782,7 +782,8 @@ def test_shorts_pipeline_ui_is_registered():
     assert (tabler_css.parent / "fonts" / "tabler-icons.woff2").is_file()
     assert 'data-v="pipeline"' in html
     assert 'id="v-pipeline"' in html
-    pipeline_html = html.split('<div id="v-pipeline"', 1)[1].split('<div id="v-files"', 1)[0]
+    pipeline_end_marker = '{% include "views/files.html" %}'
+    pipeline_html = html.split('<div id="v-pipeline"', 1)[1].split(pipeline_end_marker, 1)[0]
     assert "Конвейер" in pipeline_html
     assert "Настройка цикла" in pipeline_html
     assert "Таймер" not in pipeline_html
