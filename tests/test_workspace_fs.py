@@ -37,24 +37,24 @@ def test_workspace_root_setting_and_base_layout(tmp_path):
 
 def test_workspace_pick_directory_saves_selected_root(tmp_path, monkeypatch):
     from shortsfarm import db
-    from shortsfarm.web import api
+    from shortsfarm.web import files_api
 
     selected = tmp_path / "picked-workspace"
     saved_paths: list[str] = []
-    real_set_workspace_root = api.set_workspace_root
+    real_set_workspace_root = files_api.set_workspace_root
 
     def tracked_set_workspace_root(path):
         saved_paths.append(path)
         return real_set_workspace_root(path)
 
     monkeypatch.setattr(
-        api,
+        files_api,
         "pick_directory_dialog",
         lambda: str(selected),
     )
-    monkeypatch.setattr(api, "set_workspace_root", tracked_set_workspace_root)
+    monkeypatch.setattr(files_api, "set_workspace_root", tracked_set_workspace_root)
 
-    data = api.workspace_settings_pick_directory()
+    data = files_api.workspace_settings_pick_directory()
 
     assert data["selected"] is True
     assert saved_paths == [str(selected)]
@@ -63,23 +63,23 @@ def test_workspace_pick_directory_saves_selected_root(tmp_path, monkeypatch):
 
 
 def test_workspace_pick_directory_cancel_keeps_current_root(tmp_path, monkeypatch):
-    from shortsfarm.web import api
+    from shortsfarm.web import files_api
 
     current = _set_root(tmp_path, "current-workspace")
-    monkeypatch.setattr(api, "pick_directory_dialog", lambda: None)
+    monkeypatch.setattr(files_api, "pick_directory_dialog", lambda: None)
     monkeypatch.setattr(
-        api,
+        files_api,
         "set_workspace_root",
         lambda path: pytest.fail("set_workspace_root must not run after cancel"),
     )
 
-    data = api.workspace_settings_pick_directory()
+    data = files_api.workspace_settings_pick_directory()
 
     assert data == {
         "selected": False,
         "workspace_root": str(current.resolve()),
     }
-    assert api.workspace_settings_get()["workspace_root"] == str(current.resolve())
+    assert files_api.workspace_settings_get()["workspace_root"] == str(current.resolve())
 
 
 def test_workspace_pick_directory_unavailable_returns_http_409(monkeypatch):
@@ -87,32 +87,32 @@ def test_workspace_pick_directory_unavailable_returns_http_409(monkeypatch):
         UNAVAILABLE_MESSAGE,
         LocalDialogUnavailable,
     )
-    from shortsfarm.web import api
+    from shortsfarm.web import files_api
 
     def unavailable():
         raise LocalDialogUnavailable(UNAVAILABLE_MESSAGE)
 
-    monkeypatch.setattr(api, "pick_directory_dialog", unavailable)
+    monkeypatch.setattr(files_api, "pick_directory_dialog", unavailable)
 
     with pytest.raises(HTTPException) as exc:
-        api.workspace_settings_pick_directory()
+        files_api.workspace_settings_pick_directory()
 
     assert exc.value.status_code == 409
     assert exc.value.detail["message"] == UNAVAILABLE_MESSAGE
 
 
 def test_workspace_pick_directory_creates_layout(tmp_path, monkeypatch):
-    from shortsfarm.web import api
+    from shortsfarm.web import files_api
     from shortsfarm.workspace_fs import SYSTEM_FOLDERS
 
     selected = tmp_path / "picked-layout"
     monkeypatch.setattr(
-        api,
+        files_api,
         "pick_directory_dialog",
         lambda: str(selected),
     )
 
-    data = api.workspace_settings_pick_directory()
+    data = files_api.workspace_settings_pick_directory()
 
     assert data["exists"] is True
     assert set(data["layout"]) == set(SYSTEM_FOLDERS)
@@ -165,12 +165,12 @@ def test_local_dialog_pick_unavailable_returns_http_409(monkeypatch):
 
 
 def test_manual_workspace_settings_still_work(tmp_path):
-    from shortsfarm.web import api
+    from shortsfarm.web import files_api
     from shortsfarm.web.schemas import WorkspaceRootRequest
 
     manual = tmp_path / "manual-workspace"
 
-    data = api.workspace_settings_save(
+    data = files_api.workspace_settings_save(
         WorkspaceRootRequest(workspace_root=str(manual))
     )
 
@@ -404,14 +404,14 @@ def test_register_source_rejects_symlink_inside_sources(tmp_path):
 
 
 def test_register_source_api_rejects_video_from_cuts(tmp_path):
-    from shortsfarm.web import api
+    from shortsfarm.web import files_api
     from shortsfarm.web.schemas import FileRegisterSourceRequest
 
     root = _set_root(tmp_path)
     (root / "cuts" / "result.mp4").write_bytes(b"result")
 
     with pytest.raises(HTTPException) as exc:
-        api.files_register_source(
+        files_api.files_register_source(
             FileRegisterSourceRequest(path="cuts/result.mp4")
         )
 
@@ -489,7 +489,7 @@ def test_build_edit_output_path_preserves_sources_hierarchy(tmp_path):
 
 
 def test_files_api_settings_crud_import_and_register(tmp_path, monkeypatch):
-    from shortsfarm.web import api
+    from shortsfarm.web import files_api
     from shortsfarm.web.schemas import (
         FileFolderCreateRequest,
         FileImportSourceRequest,
@@ -500,13 +500,13 @@ def test_files_api_settings_crud_import_and_register(tmp_path, monkeypatch):
     )
 
     root = tmp_path / "api-workspace"
-    settings = api.workspace_settings_save(
+    settings = files_api.workspace_settings_save(
         WorkspaceRootRequest(workspace_root=str(root))
     )
     assert settings["workspace_root"] == str(root.resolve())
     assert settings["exists"] is True
 
-    created = api.files_folder_create(
+    created = files_api.files_folder_create(
         FileFolderCreateRequest(
             parent_path="sources",
             name="Автор",
@@ -514,14 +514,14 @@ def test_files_api_settings_crud_import_and_register(tmp_path, monkeypatch):
         )
     )
     assert created["path"] == "sources/Автор"
-    listed = api.files_list("sources")
+    listed = files_api.files_list("sources")
     assert listed["items"][0]["kind"] == "collection"
 
-    renamed = api.files_rename(
+    renamed = files_api.files_rename(
         FileRenameRequest(path="sources/Автор", new_name="Автор 2")
     )
     assert renamed["path"] == "sources/Автор 2"
-    api.files_folder_create(
+    files_api.files_folder_create(
         FileFolderCreateRequest(
             parent_path="sources",
             name="Архив",
@@ -532,7 +532,7 @@ def test_files_api_settings_crud_import_and_register(tmp_path, monkeypatch):
     external = tmp_path / "external.mp4"
     external.write_bytes(b"external")
     monkeypatch.setattr("shortsfarm.services.probe_duration", lambda path: 5.0)
-    imported = api.files_import_source(
+    imported = files_api.files_import_source(
         FileImportSourceRequest(
             source_path=str(external),
             target_folder="sources/Автор 2",
@@ -541,12 +541,12 @@ def test_files_api_settings_crud_import_and_register(tmp_path, monkeypatch):
     )
     assert imported["path"] == "sources/Автор 2/external.mp4"
 
-    registered = api.files_register_source(
+    registered = files_api.files_register_source(
         FileRegisterSourceRequest(path=imported["path"])
     )
     assert registered["video_id"] == imported["video_id"]
 
-    moved = api.files_move(
+    moved = files_api.files_move(
         FileMoveRequest(
             source_path=imported["path"],
             target_folder="sources/Архив",
@@ -554,9 +554,9 @@ def test_files_api_settings_crud_import_and_register(tmp_path, monkeypatch):
     )
     assert moved["path"] == "sources/Архив/external.mp4"
 
-    deleted = api.files_delete(moved["path"])
+    deleted = files_api.files_delete(moved["path"])
     assert deleted["deleted"] is True
-    assert api.files_delete("sources/Архив", recursive=True)["deleted"] is True
+    assert files_api.files_delete("sources/Архив", recursive=True)["deleted"] is True
     with pytest.raises(HTTPException) as exc:
-        api.files_delete("sources", recursive=True)
+        files_api.files_delete("sources", recursive=True)
     assert exc.value.status_code == 403
