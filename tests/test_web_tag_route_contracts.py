@@ -24,7 +24,6 @@ ADJACENT_NON_TAG_ROUTES = {
 }
 
 EXPECTED_TAG_MODULE = "shortsfarm.web.tags_api"
-FUTURE_TAG_MODULE = "shortsfarm.web.tags_api"
 
 
 def _route_map() -> dict[tuple[str, str], APIRoute]:
@@ -59,7 +58,7 @@ def test_adjacent_routes_exist_but_are_not_part_of_tags_contract() -> None:
         assert key not in TAG_ROUTE_CONTRACT
         assert route.name == endpoint_name
         assert route.include_in_schema is True
-        assert route.endpoint.__module__ != FUTURE_TAG_MODULE
+        assert route.endpoint.__module__ != EXPECTED_TAG_MODULE
 
 
 def test_app_has_no_duplicate_method_path_routes() -> None:
