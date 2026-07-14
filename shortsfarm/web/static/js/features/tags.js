@@ -5,17 +5,13 @@
     searchQuery: '',
     searchTimer: null,
     tagQuery: '',
-    fallbackCatalogTags: [],
   };
 
   const bridge = {
     getCurrentView: () => '',
-    getCatalogTags: () => state.fallbackCatalogTags,
-    setCatalogTags: items => {
-      state.fallbackCatalogTags = Array.isArray(items) ? items : [];
-      return state.fallbackCatalogTags;
-    },
-    loadCatalogTags: async () => state.fallbackCatalogTags,
+    getCatalogTags: () => [],
+    setCatalogTags: () => [],
+    loadCatalogTags: async () => [],
   };
 
   function configure(options = {}) {
@@ -36,14 +32,12 @@
 
   function setCatalogItems(items) {
     const next = Array.isArray(items) ? items : [];
-    const applied = bridge.setCatalogTags?.(next);
-    state.fallbackCatalogTags = Array.isArray(applied) ? applied : next;
+    bridge.setCatalogTags?.(next);
     return catalogItems();
   }
 
   async function refreshCatalogTags(options = {}) {
-    const items = await bridge.loadCatalogTags?.(options);
-    if (Array.isArray(items)) state.fallbackCatalogTags = items;
+    await bridge.loadCatalogTags?.(options);
     return catalogItems();
   }
 
@@ -395,7 +389,6 @@
       if (updatedItem?.title !== undefined) next.title = updatedItem.title || next.title;
       return next;
     });
-    if (currentView() === 'tags') renderGlobalTagsManager();
   }
 
   window.ShortsFarmTags = {

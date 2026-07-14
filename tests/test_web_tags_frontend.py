@@ -84,6 +84,7 @@ def test_tags_js_boundary_public_handlers_and_private_state() -> None:
     assert "window.ShortsFarmTags" in tags_js
     assert "configure(options = {})" in tags_js
     assert "syncCatalogVideoTags" in tags_js
+    assert "fallbackCatalogTags" not in tags_js
     assert "DOMContentLoaded" not in tags_js
     assert "setInterval" not in tags_js
     assert re.search(r"^\s*(import|export)\s", tags_js, re.MULTILINE) is None
@@ -114,3 +115,15 @@ def test_tags_bridge_contracts_are_wired_from_app_js() -> None:
     assert "if (id === 'tags') window.loadTagsView?.();" in app_js
     assert "window.ShortsFarmTags = {" in tags_js
     assert "state" not in tags_js.split("window.ShortsFarmTags = {", 1)[1].split("};", 1)[0]
+
+
+def test_tags_sync_updates_local_results_without_extra_render_or_cache() -> None:
+    tags_js = TAGS_JS.read_text(encoding="utf-8")
+
+    assert "getCatalogTags: () => []" in tags_js
+    assert "setCatalogTags: () => []" in tags_js
+    assert "loadCatalogTags: async () => []" in tags_js
+
+    sync_body = tags_js.split("function syncCatalogVideoTags", 1)[1].split("window.ShortsFarmTags", 1)[0]
+    assert "state.videoResults = state.videoResults.map" in sync_body
+    assert "renderGlobalTagsManager" not in sync_body
