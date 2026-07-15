@@ -1257,9 +1257,16 @@ def test_storage_profiles_ui_is_registered():
     root = Path(__file__).resolve().parents[1]
     index_html = (root / "shortsfarm" / "web" / "templates" / "index.html").read_text(encoding="utf-8")
     tags_partial = (root / "shortsfarm" / "web" / "templates" / "views" / "tags.html").read_text(encoding="utf-8")
-    html = index_html.replace('{% include "views/tags.html" %}', tags_partial)
+    storage_partial = (root / "shortsfarm" / "web" / "templates" / "views" / "storage_profiles.html").read_text(encoding="utf-8")
+    html = (
+        index_html
+        .replace('{% include "views/tags.html" %}', tags_partial)
+        .replace('{% include "views/storage_profiles.html" %}', storage_partial)
+    )
     js = (root / "shortsfarm" / "web" / "static" / "app.js").read_text(encoding="utf-8")
     tags_js = (root / "shortsfarm" / "web" / "static" / "js" / "features" / "tags.js").read_text(encoding="utf-8")
+    storage_js = (root / "shortsfarm" / "web" / "static" / "js" / "features" / "storage-profiles.js").read_text(encoding="utf-8")
+    storage_ui_js = storage_js + "\n" + js
     css = (root / "shortsfarm" / "web" / "static" / "style.css").read_text(encoding="utf-8")
 
     assert 'data-v="storage-profiles"' in html
@@ -1300,25 +1307,25 @@ def test_storage_profiles_ui_is_registered():
     assert "Теперь нажмите" in html
     assert "ui-text-modal" in html
     assert "storage-profile-pick-modal" in html
-    assert "storage-profile-card create-card" in js
-    assert "openStorageProfile(profileId" in js
-    assert "openStorageProfilesHub" in js
-    assert "storage-channel-compact" in js
-    assert "storage-profile-tabs" in js
-    assert "storage-profile-actionbar" in js
-    assert "storage-profile-drawer" in js
-    assert "storageProfileMainContent(profile)" in js
-    assert "renderStorageProfileDrawer(profile)" in js
-    assert "openStorageProfileVideoPicker" in js
+    assert "storage-profile-card create-card" in storage_js
+    assert "openStorageProfile(profileId" in storage_js
+    assert "openStorageProfilesHub" in storage_js
+    assert "storage-channel-compact" in storage_js
+    assert "storage-profile-tabs" in storage_js
+    assert "storage-profile-actionbar" in storage_ui_js
+    assert "storage-profile-drawer" in storage_js
+    assert "storageProfileMainContent(profile)" in storage_js
+    assert "renderStorageProfileDrawer(profile)" in storage_js
+    assert "openStorageProfileVideoPicker" in storage_js
     assert "openGlobalTagsView" in tags_js
     assert "loadTagsView" in tags_js
     assert "renderGlobalTagsManager" in tags_js
-    assert "searchParams.set('profile'" in js
-    assert "/api/catalog/videos/search" in js
-    assert "/api/catalog/videos/random" in js
+    assert "searchParams.set('profile'" in storage_js
+    assert "/api/catalog/videos/search" in storage_js
+    assert "/api/catalog/videos/random" in storage_js
     assert "/api/tags" in js
-    assert "/tag-rules" in js
-    assert "/tag-sync/run" in js
+    assert "/tag-rules" in storage_js
+    assert "/tag-sync/run" in storage_js
     assert "/youtube/link" in js
     assert "/youtube/enqueue" in js
     assert "/youtube/sync" in js
@@ -1330,19 +1337,19 @@ def test_storage_profiles_ui_is_registered():
     assert "Отвязать" in js
     assert "Обновить оформление с YouTube" in js
     assert "Автоматически брать оформление из YouTube" in js
-    assert "Вернуть имя из YouTube" in js
-    assert "Вернуть описание из YouTube" in js
-    assert "Вернуть фото YouTube" in js
-    assert "Вернуть шапку из YouTube" in js
+    assert "Вернуть имя из YouTube" in storage_ui_js
+    assert "Вернуть описание из YouTube" in storage_ui_js
+    assert "Вернуть фото YouTube" in storage_ui_js
+    assert "Вернуть шапку из YouTube" in storage_ui_js
     assert "linked_with_sync_error" in js
-    assert "storage-avatar-fallback" in js
-    assert "onerror=\"this.style.display='none'\"" in js
-    assert "effective_banner_url" in js
+    assert "storage-avatar-fallback" in storage_js
+    assert "onerror=\"this.style.display='none'\"" in storage_js
+    assert "effective_banner_url" in storage_js
     assert "setStorageProfileBrandingOverride" in js
     assert "Публикация YouTube" in js
     assert "Настройки публикации профиля" in js
-    assert "Теги профиля" in js
-    assert "Случайные видео" in js
+    assert "Теги профиля" in storage_js
+    assert "Случайные видео" in storage_js
     assert "Менеджер тегов" in tags_js
     assert "Добавить теги в видео" in tags_js
     assert "Поиск тегов" in tags_js
@@ -1358,11 +1365,11 @@ def test_storage_profiles_ui_is_registered():
     assert "workspaceFilterExcludeTagIds" in js
     assert "bulkAddCatalogTagToWorkspaceItems" in js
     assert "bulkRemoveCatalogTagFromWorkspaceItems" in js
-    assert "createStorageCatalogTag" not in js
+    assert "createStorageCatalogTag" not in storage_ui_js
     assert "assignTagToSelectedVideos" in tags_js
     assert "Автоимпорт готовых видео" not in js
     assert "Синхронизировать YouTube" in js
-    assert "Видео на YouTube" in js
+    assert "Видео на YouTube" in storage_ui_js
     assert "только на YouTube" in js
     assert "enqueueStorageProfileSelection" in js
     assert "loadIntegrationsView" in js
@@ -1389,8 +1396,9 @@ def test_storage_profiles_ui_is_registered():
     assert "setIntegrationDefaultOAuthProfile" in window_exports
     assert "deleteIntegrationOAuthProfile" in window_exports
     assert "disconnectYouTubeAccount" in window_exports
-    assert "openStorageProfile" in window_exports
-    assert "addWorkspaceItemToStorageProfile" in js
+    storage_window_exports = storage_js.split("Object.assign(window,", 1)[1].split("});", 1)[0]
+    assert "openStorageProfile" in storage_window_exports
+    assert "addWorkspaceItemToStorageProfile" in storage_window_exports
     assert "storage-youtube-controls" in css
     assert "storage-avatar-wrap" in css
     assert "storage-avatar-fallback" in css
@@ -1400,7 +1408,7 @@ def test_storage_profiles_ui_is_registered():
     assert "storage-profile-main-grid" in css
     assert "storage-video-grid-compact" in css
     assert "storage-profile-actionbar" in css
-    render_detail_body = js.split("function renderStorageProfileDetail()", 1)[1].split("async function saveStorageProfile", 1)[0]
+    render_detail_body = storage_js.split("function renderStorageProfileDetail()", 1)[1].split("async function saveStorageProfile", 1)[0]
     assert "${storageProfilePublishSettingsPanel()}" not in render_detail_body
     assert "${storageProfileTagRulesPanel(profile)}" not in render_detail_body
     assert "${storageProfileServiceLinks(profile)}" not in render_detail_body

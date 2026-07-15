@@ -624,23 +624,10 @@ let editingJobFilter = 'all';
 let editingJobReviewFilter = 'all';
 let selectedEditingJobIds = new Set();
 let editingPreviewJobId = null;
-let storageProfiles = [];
-let currentStorageProfileId = null;
-let currentStorageProfile = null;
-let storageProfileItems = [];
 let storageProfilePublishJobs = [];
 let storageProfileYoutubeVideos = [];
-let storageProfileActiveTab = 'publish';
-let storageProfileDrawerOpen = false;
-let storageProfileDrawerSection = 'publish';
 let catalogTags = [];
-let selectedStorageProfileItemIds = new Set();
-let storageProfileCandidates = [];
-let selectedStorageCandidatePaths = new Set();
-let storageCatalogSearchQuery = '';
-let storageCatalogSearchTimer = null;
 let storageYoutubeAccounts = [];
-let storageCandidatePickerOpen = false;
 let integrationsSearchQuery = '';
 let pipelineSources = [];
 let pipelineTemplates = [];
@@ -791,6 +778,10 @@ function nav(id, btn) {
     openQueueSources();
     return;
   }
+  if (id === 'storage-profiles') {
+    window.ShortsFarmStorageProfiles?.openStorageProfilesHub?.({replace: true});
+    return;
+  }
   activateView(id, btn);
   if (id === 'dashboard') loadDashboard();
   if (id === 'files') window.loadManagedFiles?.();
@@ -801,10 +792,6 @@ function nav(id, btn) {
     loadJobs();
   }
   if (id === 'tags') window.loadTagsView?.();
-  if (id === 'storage-profiles') {
-    window.history.replaceState({}, '', storageProfileUrl(null));
-    loadStorageProfiles();
-  }
   if (id === 'integrations') loadIntegrationsView();
   if (id === 'settings') loadSettingsView();
 }
@@ -1337,21 +1324,11 @@ function activateInitialViewFromQuery() {
   const params = new URLSearchParams(window.location.search);
   const profileId = Number(params.get('profile') || 0);
   if (profileId) {
-    openStorageProfile(profileId, {replace: true});
+    window.ShortsFarmStorageProfiles?.openStorageProfile?.(profileId, {replace: true});
     return;
   }
   if (params.has('batch') || params.has('project')) {
     nav('studio', document.querySelector('[data-v="studio"]'));
-  }
-}
-
-function handleProfileRouteFromLocation() {
-  const params = new URLSearchParams(window.location.search);
-  const profileId = Number(params.get('profile') || 0);
-  if (profileId) {
-    openStorageProfile(profileId, {replace: true});
-  } else if (currentView === 'storage-profile') {
-    openStorageProfilesHub({keepUrl: true});
   }
 }
 
@@ -2132,10 +2109,8 @@ function openStudioTemplate(templateId) {
 }
 async function openQueueLinkedProfile(youtubeAccountId, channelProfileName = '') {
   try {
-    if (!storageProfiles.length) {
-      const data = await api.get('/api/storage-profiles');
-      storageProfiles = data.items || [];
-    }
+    const storageProfilesFeature = window.ShortsFarmStorageProfiles;
+    const storageProfiles = await (storageProfilesFeature?.ensureStorageProfilesLoaded?.() || storageProfilesFeature?.loadStorageProfiles?.() || Promise.resolve([]));
     const accountId = Number(youtubeAccountId || 0);
     const name = String(channelProfileName || '').trim().toLowerCase();
     const profile = storageProfiles.find(item =>
@@ -2148,7 +2123,7 @@ async function openQueueLinkedProfile(youtubeAccountId, channelProfileName = '')
       name && String(item.effective_name || item.name || '').trim().toLowerCase() === name
     );
     if (profile) {
-      await openStorageProfile(Number(profile.id));
+      await window.ShortsFarmStorageProfiles?.openStorageProfile?.(Number(profile.id));
       return;
     }
     nav('storage-profiles', document.querySelector('[data-v="storage-profiles"]'));
@@ -2731,50 +2706,6 @@ function formatDurationSec(seconds) {
 function workspaceItemByKey(key) {
   return lastClips.find(item => item.id === key) || null;
 }
-const STORAGE_PROFILE_VIDEO_FOLDERS = ['edits', 'ready', 'published'];
-function isStorageProfileVideoPath(path) {
-  const text = String(path || '').trim();
-  return STORAGE_PROFILE_VIDEO_FOLDERS.includes(text.split('/')[0]);
-}
-async function workspacePathForStorageProfile(path) {
-  const relative = await workspaceMediaPathForPlayer(path);
-  if (!isStorageProfileVideoPath(relative)) {
-    throw new Error('В локальный профиль можно добавлять только готовые видео из Результатов монтажа, Готовых или Опубликованных.');
-  }
-  return relative;
-}
-function storageProfileById(id) {
-  return storageProfiles.find(profile => Number(profile.id) === Number(id)) || null;
-}
-function storageProfileName(profile) {
-  return profile?.effective_name || profile?.name || 'Профиль';
-}
-function storageProfileHandle(profile) {
-  return profile?.effective_handle || profile?.handle || `profile-${profile?.id || ''}`;
-}
-function storageProfileDescription(profile) {
-  return profile?.effective_description || profile?.description || 'Локальный профиль ShortsFarm для готового контента.';
-}
-function storageProfileInitials(profile) {
-  return profile?.effective_avatar_initials || profile?.avatar_initials || String(storageProfileName(profile) || 'SF').trim().slice(0, 2).toUpperCase();
-}
-function storageProfileAvatarHtml(profile, className = 'storage-profile-icon') {
-  const url = profile?.effective_avatar_url || profile?.avatar_url || '';
-  const bg = profile?.effective_avatar_color || profile?.avatar_color || '#3b82f6';
-  const initials = storageProfileInitials(profile);
-  const image = url
-    ? `<img class="storage-avatar-img" src="${esc(url)}" alt="" onerror="this.style.display='none'">`
-    : '';
-  return `<span class="${esc(className)} storage-avatar-wrap" style="--avatar-bg:${esc(bg)}">${image}<span class="storage-avatar-fallback">${esc(initials)}</span></span>`;
-}
-function storageProfileBannerStyle(profile) {
-  const url = profile?.effective_banner_url || profile?.banner_url || '';
-  const color = profile?.effective_banner_color || profile?.banner_color || '#111827';
-  const safeUrl = encodeURI(String(url || '')).replace(/[()'"]/g, encodeURIComponent);
-  return url
-    ? `background-color:${esc(color)};background-image:linear-gradient(180deg,rgba(2,6,23,.08),rgba(2,6,23,.38)),url(&quot;${esc(safeUrl)}&quot;);`
-    : `background:${esc(color)};`;
-}
 function tagPill(tag, options = {}) {
   if (!tag) return '';
   const cls = ['tag-pill'];
@@ -2851,141 +2782,7 @@ function updateWorkspaceItemCatalogTags(workspacePath, tags, updatedItem = null)
     }
   }
   window.ShortsFarmTags?.syncCatalogVideoTags?.(workspacePath, tags || [], updatedItem);
-  storageProfileCandidates = storageProfileCandidates.map(item => (
-    item.workspace_path === workspacePath ? {...item, tags: tags || [], is_publish_ready: (tags || []).some(tag => tag.slug === 'status-ready')} : item
-  ));
-}
-function storageProfileErrorTarget() {
-  return currentView === 'storage-profile' ? 'storage-profile-error' : 'storage-profiles-error';
-}
-function showStorageProfileError(message) {
-  showInlineError(storageProfileErrorTarget(), message);
-}
-function hideStorageProfileErrors() {
-  hideInlineError('storage-profiles-error');
-  hideInlineError('storage-profile-error');
-}
-function storageProfileUrl(profileId = null) {
-  const url = new URL(window.location.href);
-  url.searchParams.delete('batch');
-  url.searchParams.delete('project');
-  if (profileId) url.searchParams.set('profile', String(Number(profileId)));
-  else url.searchParams.delete('profile');
-  return `${url.pathname}${url.search}${url.hash}`;
-}
-function setStorageProfileRoute(profileId, options = {}) {
-  const nextUrl = storageProfileUrl(profileId);
-  if (options.replace) window.history.replaceState({}, '', nextUrl);
-  else window.history.pushState({}, '', nextUrl);
-}
-function storageProfileCard(profile) {
-  const active = currentView === 'storage-profile' && Number(profile.id) === Number(currentStorageProfileId);
-  const youtube = storageProfileYoutubeLink(profile);
-  return `<button class="storage-profile-card${active ? ' active' : ''}" onclick="selectStorageProfile(${Number(profile.id)})">
-    ${storageProfileAvatarHtml(profile, 'storage-profile-icon')}
-    <span class="storage-profile-card-title">${esc(storageProfileName(profile))}</span>
-    <span class="mono dim">@${esc(storageProfileHandle(profile))} · ${Number(profile.item_count || 0)} видео</span>
-    ${youtube ? `<span class="badge b-err"><i class="ti ti-brand-youtube"></i>${esc(youtube.display_name || 'YouTube')}</span>` : ''}
-    <span class="storage-profile-open-hint">Открыть профиль</span>
-  </button>`;
-}
-function renderStorageProfilesGrid() {
-  const el = document.getElementById('storage-profiles-grid');
-  if (!el) return;
-  el.innerHTML = `<button class="storage-profile-card create-card" onclick="createStorageProfile()">
-    <span class="storage-profile-plus">+</span>
-    <span class="storage-profile-card-title">Создать профиль</span>
-    <span class="mono dim">локальная витрина</span>
-  </button>${storageProfiles.map(storageProfileCard).join('')}`;
-}
-async function loadStorageProfiles(options = {}) {
-  hideStorageProfileErrors();
-  try {
-    const [data] = await Promise.all([
-      api.get('/api/storage-profiles'),
-      loadCatalogTags().catch(() => null),
-    ]);
-    storageProfiles = data.items || [];
-    if (options.selectId) currentStorageProfileId = Number(options.selectId);
-    if (currentStorageProfileId && !storageProfileById(currentStorageProfileId)) {
-      currentStorageProfileId = null;
-      currentStorageProfile = null;
-      storageProfileItems = [];
-    }
-    renderStorageProfilesGrid();
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось загрузить профили');
-  }
-}
-async function createStorageProfile() {
-  const name = await openTextActionModal({
-    title: 'Создать локальный профиль',
-    label: 'Название профиля',
-    placeholder: 'Например: Anime Shorts',
-    confirmText: 'Создать профиль',
-    validate: value => value ? '' : 'Введите название профиля.',
-  });
-  if (!name) return;
-  try {
-    const data = await api.post('/api/storage-profiles', {name});
-    const profile = data.profile;
-    showToast('Профиль создан');
-    await loadStorageProfiles({selectId: profile.id});
-    await openStorageProfile(profile.id);
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось создать профиль');
-  }
-}
-async function selectStorageProfile(profileId) {
-  await openStorageProfile(profileId);
-}
-async function openStorageProfile(profileId, options = {}) {
-  currentStorageProfileId = Number(profileId);
-  storageCandidatePickerOpen = false;
-  storageProfileActiveTab = options.tab || 'publish';
-  storageProfileDrawerOpen = false;
-  storageProfileDrawerSection = 'publish';
-  selectedStorageProfileItemIds.clear();
-  hideStorageProfileErrors();
-  activateView('storage-profile', document.querySelector('[data-v="storage-profiles"]'));
-  setStorageProfileRoute(currentStorageProfileId, {replace: Boolean(options.replace)});
-  await loadStorageProfileDetail(currentStorageProfileId);
-}
-async function openStorageProfilesHub(options = {}) {
-  hideStorageProfileErrors();
-  activateView('storage-profiles', document.querySelector('[data-v="storage-profiles"]'));
-  if (!options.keepUrl) {
-    const nextUrl = storageProfileUrl(null);
-    if (options.replace) window.history.replaceState({}, '', nextUrl);
-    else window.history.pushState({}, '', nextUrl);
-  }
-  await loadStorageProfiles();
-}
-async function loadStorageProfileDetail(profileId = currentStorageProfileId) {
-  if (!profileId) {
-    renderStorageProfileDetail();
-    return;
-  }
-  try {
-    const [data, jobsData, youtubeVideosData] = await Promise.all([
-      api.get(`/api/storage-profiles/${Number(profileId)}`),
-      api.get(`/api/storage-profiles/${Number(profileId)}/publish-jobs?limit=200`).catch(() => ({jobs: []})),
-      api.get(`/api/storage-profiles/${Number(profileId)}/youtube/videos?limit=200`).catch(() => ({videos: []})),
-      loadStorageYoutubeAccounts().catch(() => null),
-      loadCatalogTags().catch(() => null),
-      loadEditingSupportData().catch(() => null),
-    ]);
-    currentStorageProfile = data.profile;
-    currentStorageProfileId = Number(data.profile.id);
-    storageProfileItems = data.items || [];
-    storageProfilePublishJobs = jobsData.jobs || [];
-    storageProfileYoutubeVideos = youtubeVideosData.videos || [];
-    selectedStorageProfileItemIds = new Set(Array.from(selectedStorageProfileItemIds).filter(id => storageProfileItems.some(item => Number(item.id) === Number(id))));
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось загрузить профиль');
-  }
+  window.ShortsFarmStorageProfiles?.syncCatalogVideoTags?.(workspacePath, tags || [], updatedItem);
 }
 async function loadStorageYoutubeAccounts() {
   const data = await api.get('/api/publish/youtube/accounts');
@@ -3047,165 +2844,17 @@ function storageBrandingFieldActions(profile, field, localLabel, youtubeLabel) {
   const action = storageBrandingOverrideAction(profile, field, localLabel, youtubeLabel);
   return action ? `<div class="field-actions">${action}</div>` : '';
 }
-function setStorageProfileTab(tab) {
-  const allowed = new Set(['publish', 'videos', 'queue', 'youtube', 'errors']);
-  storageProfileActiveTab = allowed.has(tab) ? tab : 'publish';
-  renderStorageProfileDetail();
-}
-function openStorageProfileDrawer(section = 'publish') {
-  storageProfileDrawerOpen = true;
-  storageProfileDrawerSection = section || 'publish';
-  if (storageProfileDrawerSection === 'add-video') storageCandidatePickerOpen = true;
-  renderStorageProfileDetail();
-}
-function closeStorageProfileDrawer() {
-  if (storageProfileDrawerSection === 'add-video') {
-    storageCandidatePickerOpen = false;
-    selectedStorageCandidatePaths.clear();
-  }
-  storageProfileDrawerOpen = false;
-  renderStorageProfileDetail();
-}
-function storageProfileTabButton(id, label, count = null) {
-  const active = storageProfileActiveTab === id;
-  const countHtml = count === null || count === undefined ? '' : `<span>${Number(count) || 0}</span>`;
-  return `<button class="storage-profile-tab${active ? ' active' : ''}" onclick="setStorageProfileTab('${esc(id)}')">${esc(label)}${countHtml}</button>`;
-}
-function storageProfileRulesByMode(mode) {
-  return (currentStorageProfile?.tag_rules || []).filter(rule => rule.mode === mode);
-}
-function storageProfileTagRulesPanel(profile) {
-  const includeRules = storageProfileRulesByMode('include');
-  const excludeRules = storageProfileRulesByMode('exclude');
-  const includeIds = includeRules.map(rule => Number(rule.tag_id));
-  const excludeIds = excludeRules.map(rule => Number(rule.tag_id));
-  const matchMode = profile?.tag_match_mode || 'any';
-  const includePills = includeRules.length
-    ? includeRules.map(rule => `${tagPill(rule.tag, {locked: rule.locked})}${rule.locked ? '' : `<button class="tag-remove" onclick="removeStorageProfileTagRule(${Number(rule.tag_id)}, 'include')">×</button>`}`).join('')
-    : '<span class="mono dim">Добавьте теги, по которым профиль будет собирать видео.</span>';
-  const excludePills = excludeRules.length
-    ? excludeRules.map(rule => `${tagPill(rule.tag)}<button class="tag-remove" onclick="removeStorageProfileTagRule(${Number(rule.tag_id)}, 'exclude')">×</button>`).join('')
-    : '<span class="mono dim">Исключающих тегов нет.</span>';
-  return `<div class="storage-tag-panel">
-    <div class="storage-tag-panel-head">
-      <div>
-        <div class="storage-section-title inline-title">Теги профиля</div>
-        <div class="mono dim">Профиль подключает теги, а не папки. Channel-тег YouTube создаётся автоматически и заблокирован.</div>
-      </div>
-      <div class="row-actions">
-        <button class="btn-secondary" onclick="runStorageProfileTagSync()">Обновить по тегам</button>
-        <button class="btn-mini" onclick="openGlobalTagsView()">Открыть Теги</button>
-      </div>
-    </div>
-    <div class="storage-tag-rule-grid">
-      <div class="storage-tag-rule-box">
-        <div class="field-lbl">Include tags</div>
-        <div class="tag-pill-list">${includePills}</div>
-        <div class="storage-tag-add">
-          <select id="storage-profile-include-tag">${tagOptionsHtml(includeIds.concat(excludeIds))}</select>
-          <button class="btn-secondary" onclick="addStorageProfileTagRule('include')">Добавить</button>
-        </div>
-      </div>
-      <div class="storage-tag-rule-box">
-        <div class="field-lbl">Exclude tags</div>
-        <div class="tag-pill-list">${excludePills}</div>
-        <div class="storage-tag-add">
-          <select id="storage-profile-exclude-tag">${tagOptionsHtml(includeIds.concat(excludeIds))}</select>
-          <button class="btn-secondary" onclick="addStorageProfileTagRule('exclude')">Исключить</button>
-        </div>
-      </div>
-      <div class="storage-tag-rule-box compact">
-        <div class="field-lbl">Режим совпадения</div>
-        <select id="storage-profile-tag-match-mode" onchange="saveStorageProfileTagRules()">
-          <option value="any"${matchMode === 'any' ? ' selected' : ''}>Любой include-тег</option>
-          <option value="all"${matchMode === 'all' ? ' selected' : ''}>Все include-теги</option>
-        </select>
-      </div>
-    </div>
-  </div>`;
-}
-function storageProfileRuleIds(mode) {
-  return storageProfileRulesByMode(mode).map(rule => Number(rule.tag_id));
-}
-async function saveStorageProfileTagRules(next = {}) {
-  if (!currentStorageProfileId) return;
-  const include = next.include || storageProfileRuleIds('include');
-  const exclude = next.exclude || storageProfileRuleIds('exclude');
-  const mode = next.mode || document.getElementById('storage-profile-tag-match-mode')?.value || currentStorageProfile?.tag_match_mode || 'any';
-  try {
-    const data = await api.patch(`/api/storage-profiles/${Number(currentStorageProfileId)}/tag-rules`, {
-      include_tag_ids: include,
-      exclude_tag_ids: exclude,
-      tag_match_mode: mode,
-    });
-    currentStorageProfile = data.profile || currentStorageProfile;
-    renderStorageProfileDetail();
-    showToast('Теги профиля сохранены');
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось сохранить теги профиля');
-  }
-}
-async function addStorageProfileTagRule(mode) {
-  const selectId = mode === 'exclude' ? 'storage-profile-exclude-tag' : 'storage-profile-include-tag';
-  const tagId = Number(document.getElementById(selectId)?.value || 0);
-  if (!tagId) return;
-  const include = storageProfileRuleIds('include');
-  const exclude = storageProfileRuleIds('exclude');
-  if (mode === 'exclude') {
-    await saveStorageProfileTagRules({
-      include: include.filter(id => id !== tagId),
-      exclude: Array.from(new Set(exclude.concat([tagId]))),
-    });
-  } else {
-    await saveStorageProfileTagRules({
-      include: Array.from(new Set(include.concat([tagId]))),
-      exclude: exclude.filter(id => id !== tagId),
-    });
-  }
-}
-async function removeStorageProfileTagRule(tagId, mode) {
-  const include = storageProfileRuleIds('include');
-  const exclude = storageProfileRuleIds('exclude');
-  await saveStorageProfileTagRules({
-    include: mode === 'include' ? include.filter(id => id !== Number(tagId)) : include,
-    exclude: mode === 'exclude' ? exclude.filter(id => id !== Number(tagId)) : exclude,
-  });
-}
-async function updateVideoCatalogTags(workspacePath, tagIds) {
-  const data = await api.post('/api/catalog/videos/tags', {
-    workspace_path: workspacePath,
-    tag_ids: Array.from(new Set(tagIds.map(Number).filter(Boolean))),
-    mode: 'replace',
-  });
-  updateWorkspaceItemCatalogTags(data.workspace_path, data.tags || [], data.item || null);
-  return data;
-}
-async function runStorageProfileTagSync() {
-  if (!currentStorageProfileId) return;
-  try {
-    const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/tag-sync/run`, {});
-    if (data.profile) currentStorageProfile = data.profile;
-    if (data.items) storageProfileItems = data.items;
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
-    showToast(`Обновлено по тегам · добавлено: ${data.summary?.added || 0} · найдено: ${data.summary?.matched || 0}`);
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось обновить профиль по тегам');
-  }
-}
 async function linkStorageProfileYoutube() {
-  if (!currentStorageProfileId) return;
+  const profileId = storageProfileCurrentId();
+  if (!profileId) return;
   const accountId = Number(document.getElementById('storage-profile-youtube-account')?.value || 0);
   if (!accountId) {
     showToast('Сначала выберите YouTube-канал', 'err');
     return;
   }
   try {
-    const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/youtube/link`, {account_id: accountId});
-    currentStorageProfile = data.profile;
-    storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(data.profile.id) ? data.profile : profile);
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
+    const data = await api.post(`/api/storage-profiles/${Number(profileId)}/youtube/link`, {account_id: accountId});
+    applyStorageProfileUpdate(data.profile);
     if (data.status === 'linked_with_sync_error') {
       showStorageProfileError(`Канал привязан, но оформление обновить не удалось: ${data.sync_error || 'ошибка sync'}`);
       showToast('Канал привязан, но оформление не обновилось', 'err');
@@ -3217,13 +2866,11 @@ async function linkStorageProfileYoutube() {
   }
 }
 async function unlinkStorageProfileYoutube() {
-  if (!currentStorageProfileId) return;
+  const profileId = storageProfileCurrentId();
+  if (!profileId) return;
   try {
-    const data = await api.del(`/api/storage-profiles/${Number(currentStorageProfileId)}/youtube/link`);
-    currentStorageProfile = data.profile;
-    storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(data.profile.id) ? data.profile : profile);
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
+    const data = await api.del(`/api/storage-profiles/${Number(profileId)}/youtube/link`);
+    applyStorageProfileUpdate(data.profile);
     showToast('YouTube-канал отвязан');
   } catch (err) {
     showStorageProfileError(err.message || 'Не удалось отвязать YouTube-канал');
@@ -3233,15 +2880,13 @@ function openStorageProfileYoutubeSettings() {
   nav('integrations', document.querySelector('[data-v="integrations"]'));
 }
 async function syncStorageProfileYoutubeBranding() {
-  if (!currentStorageProfileId) return;
+  const profileId = storageProfileCurrentId();
+  if (!profileId) return;
   try {
-    const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/youtube/sync-branding`, {});
+    const data = await api.post(`/api/storage-profiles/${Number(profileId)}/youtube/sync-branding`, {});
     if (data.profile) {
-      currentStorageProfile = data.profile;
-      storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(data.profile.id) ? data.profile : profile);
+      applyStorageProfileUpdate(data.profile);
     }
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
     if (data.status === 'failed') {
       showStorageProfileError(data.error || 'Не удалось обновить оформление YouTube');
       showToast('Оформление YouTube не обновлено', 'err');
@@ -3253,70 +2898,78 @@ async function syncStorageProfileYoutubeBranding() {
   }
 }
 async function toggleStorageProfileYoutubeBranding(enabled) {
-  if (!currentStorageProfileId) return;
+  const profileId = storageProfileCurrentId();
+  if (!profileId) return;
   try {
-    const data = await api.patch(`/api/storage-profiles/${Number(currentStorageProfileId)}`, {
+    const data = await api.patch(`/api/storage-profiles/${Number(profileId)}`, {
       youtube_branding_sync_enabled: Boolean(enabled),
     });
-    currentStorageProfile = data.profile;
-    storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(data.profile.id) ? data.profile : profile);
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
+    applyStorageProfileUpdate(data.profile);
     showToast(enabled ? 'Автооформление YouTube включено' : 'Автооформление YouTube выключено');
   } catch (err) {
     showStorageProfileError(err.message || 'Не удалось изменить режим оформления YouTube');
   }
 }
 async function setStorageProfileBrandingOverride(field, enabled) {
-  if (!currentStorageProfileId) return;
+  const profileId = storageProfileCurrentId();
+  if (!profileId) return;
   const allowed = new Set(['name', 'handle', 'description', 'avatar', 'banner']);
   if (!allowed.has(field)) return;
   try {
     const payload = {};
     payload[`${field}_override`] = Boolean(enabled);
-    const data = await api.patch(`/api/storage-profiles/${Number(currentStorageProfileId)}`, payload);
-    currentStorageProfile = data.profile;
-    storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(data.profile.id) ? data.profile : profile);
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
+    const data = await api.patch(`/api/storage-profiles/${Number(profileId)}`, payload);
+    applyStorageProfileUpdate(data.profile);
     showToast(enabled ? 'Включено локальное значение поля' : 'Поле снова берётся из YouTube');
   } catch (err) {
     showStorageProfileError(err.message || 'Не удалось изменить override оформления');
   }
 }
 async function syncStorageProfileYoutube() {
-  if (!currentStorageProfileId) return;
+  const profileId = storageProfileCurrentId();
+  if (!profileId) return;
   try {
-    const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/youtube/sync`, {});
-    if (data.profile) currentStorageProfile = data.profile;
-    if (data.items) storageProfileItems = data.items;
+    const data = await api.post(`/api/storage-profiles/${Number(profileId)}/youtube/sync`, {});
+    if (data.profile || data.items) applyStorageProfileDetail(data.profile, data.items, {render: false});
     storageProfilePublishJobs = data.jobs || storageProfilePublishJobs;
     storageProfileYoutubeVideos = data.youtube_videos || storageProfileYoutubeVideos;
     mergePublishJobsIntoGlobal(storageProfilePublishJobs);
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
+    renderCurrentStorageProfile();
     showToast(`YouTube синхронизирован · найдено: ${data.summary?.fetched || 0} · связано: ${data.summary?.matched_profile_items || 0}`);
   } catch (err) {
     showStorageProfileError(err.message || 'Не удалось синхронизировать YouTube для профиля');
   }
 }
 function selectedStorageProfileItems() {
-  return storageProfileItems.filter(item => selectedStorageProfileItemIds.has(Number(item.id)));
+  return window.ShortsFarmStorageProfiles?.getSelectedItems?.() || [];
 }
-function toggleStorageProfileItemSelection(itemId, checked) {
-  const id = Number(itemId);
-  if (checked) selectedStorageProfileItemIds.add(id);
-  else selectedStorageProfileItemIds.delete(id);
-  renderStorageProfileDetail();
+function storageProfileName(profile) {
+  return profile?.effective_name || profile?.name || 'Профиль';
 }
-function setAllStorageProfileItemSelection(checked) {
-  selectedStorageProfileItemIds.clear();
-  if (checked) {
-    storageProfileItems
-      .filter(item => item.file_exists && item.is_publish_ready)
-      .forEach(item => selectedStorageProfileItemIds.add(Number(item.id)));
-  }
-  renderStorageProfileDetail();
+function storageProfileHandle(profile) {
+  return profile?.effective_handle || profile?.handle || `profile-${profile?.id || ''}`;
+}
+function showStorageProfileError(message) {
+  const target = currentView === 'storage-profile' ? 'storage-profile-error' : 'storage-profiles-error';
+  showInlineError(target, message);
+}
+function storageProfileCurrentId() {
+  return window.ShortsFarmStorageProfiles?.getCurrentProfileId?.() || null;
+}
+function storageProfileCurrentProfile() {
+  return window.ShortsFarmStorageProfiles?.getCurrentProfile?.() || null;
+}
+function storageProfileCurrentItems() {
+  return window.ShortsFarmStorageProfiles?.getCurrentItems?.() || [];
+}
+function renderCurrentStorageProfile() {
+  window.ShortsFarmStorageProfiles?.renderCurrent?.();
+}
+function applyStorageProfileUpdate(profile, options = {}) {
+  window.ShortsFarmStorageProfiles?.applyProfileUpdate?.(profile, options);
+}
+function applyStorageProfileDetail(profile, items, options = {}) {
+  window.ShortsFarmStorageProfiles?.applyProfileDetail?.(profile, items, options);
 }
 function mergePublishJobsIntoGlobal(jobs) {
   const byId = new Map(lastPublishJobs.map(job => [Number(job.id), job]));
@@ -3324,7 +2977,7 @@ function mergePublishJobsIntoGlobal(jobs) {
   lastPublishJobs = Array.from(byId.values()).sort((a, b) => Number(b.id) - Number(a.id));
 }
 function storageProfileLinkedYoutube() {
-  return storageProfileYoutubeLink(currentStorageProfile);
+  return storageProfileYoutubeLink(storageProfileCurrentProfile());
 }
 function storageProfilePublishBadge(item) {
   const job = item.publish_job;
@@ -3349,12 +3002,14 @@ function storageProfilePublishControls() {
   const selected = selectedStorageProfileItems().filter(item => item.file_exists && item.is_publish_ready);
   const selectedCount = selected.length;
   const disabled = !youtube || !selectedCount;
-  const publishableItems = storageProfileItems.filter(item => item.file_exists && item.is_publish_ready);
-  const allSelected = publishableItems.length && publishableItems.every(item => selectedStorageProfileItemIds.has(Number(item.id)));
+  const items = storageProfileCurrentItems();
+  const publishableItems = items.filter(item => item.file_exists && item.is_publish_ready);
+  const allSelected = publishableItems.length && publishableItems.every(item => window.ShortsFarmStorageProfiles?.isItemSelected?.(item.id));
   const note = youtube
     ? `Канал: ${esc(storageAccountTitle(youtube.youtube_account) || youtube.display_name || 'YouTube')}`
     : 'Сначала привяжите YouTube-канал к профилю.';
-  const blocked = storageProfileItems.filter(item => item.file_exists && !item.is_publish_ready).length;
+  const blocked = items.filter(item => item.file_exists && !item.is_publish_ready).length;
+  const profileId = storageProfileCurrentId();
   return `<div class="storage-profile-publish-panel storage-profile-actionbar">
     <div class="storage-actionbar-info">
       <div class="storage-section-title inline-title">Публикация YouTube</div>
@@ -3367,13 +3022,13 @@ function storageProfilePublishControls() {
       <button class="btn-secondary" ${disabled ? 'disabled' : ''} onclick="enqueueStorageProfileSelection('schedule')">Таймер</button>
       <button class="btn-primary" ${disabled ? 'disabled' : ''} onclick="enqueueStorageProfileSelection('run')">Загрузить сейчас</button>
       <button class="btn-secondary" ${youtube ? '' : 'disabled'} onclick="syncStorageProfileYoutube()">Синхронизировать YouTube</button>
-      <button class="btn-mini" onclick="loadStorageProfileDetail(${Number(currentStorageProfileId)})">Обновить</button>
+      <button class="btn-mini" onclick="loadStorageProfileDetail(${Number(profileId)})">Обновить</button>
       <button class="btn-mini" onclick="openStorageProfileDrawer('publish')">Настройки</button>
     </div>
   </div>`;
 }
 function storageProfilePublishSettings() {
-  const link = currentStorageProfile?.service_links?.find(item => item.platform === 'youtube') || null;
+  const link = storageProfileCurrentProfile()?.service_links?.find(item => item.platform === 'youtube') || null;
   let raw = {};
   try {
     raw = link?.settings_json ? JSON.parse(link.settings_json) : {};
@@ -3450,19 +3105,17 @@ function readStorageProfilePublishSettingsForm() {
   };
 }
 async function saveStorageProfilePublishSettings() {
-  if (!currentStorageProfileId) return;
+  const profileId = storageProfileCurrentId();
+  if (!profileId) return;
   try {
-    const data = await api.patch(`/api/storage-profiles/${Number(currentStorageProfileId)}/publish-settings`, readStorageProfilePublishSettingsForm());
-    currentStorageProfile = data.profile || currentStorageProfile;
-    storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(currentStorageProfile.id) ? currentStorageProfile : profile);
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
+    const data = await api.patch(`/api/storage-profiles/${Number(profileId)}/publish-settings`, readStorageProfilePublishSettingsForm());
+    applyStorageProfileUpdate(data.profile || storageProfileCurrentProfile());
     showToast('Настройки публикации профиля сохранены');
   } catch (err) {
     showStorageProfileError(err.message || 'Не удалось сохранить настройки публикации профиля');
   }
 }
-function storageProfileChannelProfile(profile = currentStorageProfile) {
+function storageProfileChannelProfile(profile = storageProfileCurrentProfile()) {
   const youtube = storageProfileYoutubeLink(profile);
   const accountId = Number(youtube?.external_account_id || youtube?.youtube_account?.id || 0);
   const effectiveName = String(storageProfileName(profile) || '').trim().toLowerCase();
@@ -3474,7 +3127,7 @@ function storageProfileChannelProfile(profile = currentStorageProfile) {
     return name && (name === effectiveName || name === handle);
   }) || null;
 }
-function storageProfileChannelSettingsPanel(profile = currentStorageProfile) {
+function storageProfileChannelSettingsPanel(profile = storageProfileCurrentProfile()) {
   const channelProfile = storageProfileChannelProfile(profile);
   const youtube = storageProfileYoutubeLink(profile);
   const linkedAccountId = Number(youtube?.external_account_id || youtube?.youtube_account?.id || 0);
@@ -3528,8 +3181,9 @@ function storageProfileChannelSettingsPanel(profile = currentStorageProfile) {
   </div>`;
 }
 function readStorageProfileChannelSettingsForm() {
+  const profile = storageProfileCurrentProfile();
   return {
-    name: document.getElementById('storage-channel-profile-name')?.value.trim() || storageProfileName(currentStorageProfile) || 'Channel profile',
+    name: document.getElementById('storage-channel-profile-name')?.value.trim() || storageProfileName(profile) || 'Channel profile',
     youtube_account_id: editingOptionalId(document.getElementById('storage-channel-profile-account')?.value),
     default_studio_template_id: editingOptionalId(document.getElementById('storage-channel-profile-template')?.value),
     reaction_pool_id: editingOptionalId(document.getElementById('storage-channel-profile-pool')?.value),
@@ -3542,7 +3196,7 @@ function readStorageProfileChannelSettingsForm() {
   };
 }
 async function saveStorageProfileChannelSettings() {
-  if (!currentStorageProfileId) return;
+  if (!storageProfileCurrentId()) return;
   try {
     const existing = storageProfileChannelProfile();
     const body = readStorageProfileChannelSettingsForm();
@@ -3555,14 +3209,14 @@ async function saveStorageProfileChannelSettings() {
       editingProfiles = editingProfiles.filter(profile => Number(profile.id) !== id).concat([item]);
     }
     showToast(existing ? 'Настройки обработки профиля сохранены' : 'Channel profile создан');
-    renderStorageProfileDetail();
+    renderCurrentStorageProfile();
   } catch (err) {
     showStorageProfileError(err.message || 'Не удалось сохранить настройки обработки профиля');
   }
 }
 async function openQueueForChannelProfile() {
   const profile = storageProfileChannelProfile();
-  const query = profile?.name || storageProfileName(currentStorageProfile) || '';
+  const query = profile?.name || storageProfileName(storageProfileCurrentProfile()) || '';
   queueSearchQuery = query;
   const input = document.getElementById('queue-search-input');
   if (input) input.value = query;
@@ -3609,7 +3263,7 @@ function storageProfileYoutubeVideoCard(video) {
 }
 function storageProfileYoutubeVideosPanel() {
   const youtube = storageProfileLinkedYoutube();
-  const link = currentStorageProfile?.service_links?.find(item => item.platform === 'youtube');
+  const link = storageProfileCurrentProfile()?.service_links?.find(item => item.platform === 'youtube');
   const syncInfo = link?.last_sync_at
     ? `Последняя синхронизация YouTube: ${formatMtime(link.last_sync_at)} · найдено видео: ${Number(link.synced_video_count || storageProfileYoutubeVideos.length || 0)}`
     : 'Полной синхронизации с YouTube ещё не было.';
@@ -3626,24 +3280,60 @@ function storageProfileYoutubeVideosPanel() {
     ${body}
   </div>`;
 }
+function storageProfileErrorsPanel(profile = storageProfileCurrentProfile(), items = storageProfileCurrentItems()) {
+  const missing = (items || []).filter(item => item.missing || !item.file_exists);
+  const failedJobs = (storageProfilePublishJobs || []).filter(job => job.status === 'failed' || job.error);
+  const missingRows = missing.length
+    ? `<div class="storage-profile-jobs"><table class="tbl compact"><thead><tr><th>Видео</th><th>Путь</th><th>Действие</th></tr></thead><tbody>${missing.map(item => (
+        `<tr>
+          <td class="mono mid ov">${esc(item.title || item.file_name || item.workspace_path || `#${item.id}`)}</td>
+          <td class="mono dim ov">${esc(workspaceDisplayPath(item.workspace_path || item.path || '—'))}</td>
+          <td><button class="btn-danger" onclick="removeStorageProfileItem(${Number(item.id)})">Убрать из профиля</button></td>
+        </tr>`
+      )).join('')}</tbody></table></div>`
+    : '<div class="empty compact">Missing-файлов в профиле нет.</div>';
+  const failedRows = failedJobs.length
+    ? `<div class="storage-profile-jobs"><table class="tbl compact"><thead><tr><th>#</th><th>Статус</th><th>Видео</th><th>Ошибка</th><th>Действие</th></tr></thead><tbody>${failedJobs.map(job => {
+        const actions = [];
+        if (job.can_retry) actions.push(`<button class="btn-mini" onclick="retryPublishJob(${Number(job.id)})">Повторить</button>`);
+        if (job.can_cancel) actions.push(`<button class="btn-danger" onclick="cancelPublishJob(${Number(job.id)})">Отменить</button>`);
+        return `<tr>
+          <td class="mono dim">#${Number(job.id)}</td>
+          <td>${badge(job.status || 'failed')}</td>
+          <td class="mono mid ov">${esc(job.title || job.clip_output_path || '—')}</td>
+          <td><button class="link-video err mono" onclick="showPublishJobError(${Number(job.id)})">${esc(shortErrorText(job.error || 'ошибка публикации'))}</button></td>
+          <td><div class="row-actions">${actions.join('')}</div></td>
+        </tr>`;
+      }).join('')}</tbody></table></div>`
+    : '<div class="empty compact">Ошибок публикации для этого профиля нет.</div>';
+  const brandingError = profile?.youtube_branding?.sync_error
+    ? `<div class="storage-service-note"><i class="ti ti-alert-triangle"></i><div><b>Ошибка оформления YouTube</b><p class="mono err">${esc(shortErrorText(profile.youtube_branding.sync_error))}</p><button class="btn-secondary" onclick="syncStorageProfileYoutubeBranding()">Повторить sync оформления</button></div></div>`
+    : '';
+  return `<div class="storage-profile-errors">
+    <div class="storage-feed-head padded"><div><div class="storage-section-title inline-title">Ошибки и missing</div><div class="mono dim">Проблемы файлов, оформления и YouTube-задач только этого профиля.</div></div><button class="btn-mini" onclick="refreshStorageProfilePublishState()">Обновить</button></div>
+    ${brandingError}
+    <div class="storage-section-title inline-title">Missing / удалённые файлы</div>
+    ${missingRows}
+    <div class="storage-section-title inline-title">Ошибки YouTube-очереди</div>
+    ${failedRows}
+  </div>`;
+}
 async function refreshStorageProfilePublishState() {
-  if (!currentStorageProfileId) return;
+  const profileId = storageProfileCurrentId();
+  if (!profileId) return;
   const [profileData, jobsData, youtubeVideosData] = await Promise.all([
-    api.get(`/api/storage-profiles/${Number(currentStorageProfileId)}`),
-    api.get(`/api/storage-profiles/${Number(currentStorageProfileId)}/publish-jobs?limit=200`),
-    api.get(`/api/storage-profiles/${Number(currentStorageProfileId)}/youtube/videos?limit=200`).catch(() => ({videos: []})),
+    api.get(`/api/storage-profiles/${Number(profileId)}`),
+    api.get(`/api/storage-profiles/${Number(profileId)}/publish-jobs?limit=200`),
+    api.get(`/api/storage-profiles/${Number(profileId)}/youtube/videos?limit=200`).catch(() => ({videos: []})),
   ]);
-  currentStorageProfile = profileData.profile;
-  storageProfileItems = profileData.items || [];
   storageProfilePublishJobs = jobsData.jobs || [];
   storageProfileYoutubeVideos = youtubeVideosData.videos || [];
   mergePublishJobsIntoGlobal(storageProfilePublishJobs);
-  selectedStorageProfileItemIds = new Set(Array.from(selectedStorageProfileItemIds).filter(id => storageProfileItems.some(item => Number(item.id) === Number(id))));
-  renderStorageProfilesGrid();
-  renderStorageProfileDetail();
+  applyStorageProfileDetail(profileData.profile, profileData.items);
 }
 async function enqueueStorageProfileSelection(mode = 'queue') {
-  if (!currentStorageProfileId) return;
+  const profileId = storageProfileCurrentId();
+  if (!profileId) return;
   const publishSettings = readStorageProfilePublishSettingsForm();
   const selected = selectedStorageProfileItems().filter(item => item.file_exists && item.is_publish_ready);
   if (!selected.length) {
@@ -3651,7 +3341,7 @@ async function enqueueStorageProfileSelection(mode = 'queue') {
     return;
   }
   try {
-    const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/youtube/enqueue`, {
+    const data = await api.post(`/api/storage-profiles/${Number(profileId)}/youtube/enqueue`, {
       item_ids: selected.map(item => Number(item.id)),
       publish_mode: publishSettings.publish_mode,
       category_id: publishSettings.category_id,
@@ -3660,8 +3350,7 @@ async function enqueueStorageProfileSelection(mode = 'queue') {
       description_template: publishSettings.description_template,
       tags_template: publishSettings.tags_template,
     });
-    if (data.profile) currentStorageProfile = data.profile;
-    if (data.profile_items) storageProfileItems = data.profile_items;
+    if (data.profile || data.profile_items) applyStorageProfileDetail(data.profile, data.profile_items, {render: false});
     mergePublishJobsIntoGlobal(data.jobs || []);
     await refreshStorageProfilePublishState();
     const jobs = (data.jobs || []).filter(job => job.status === 'queued' || job.status === 'failed');
@@ -3705,493 +3394,8 @@ async function runStorageProfilePublishJobsNow(jobIds) {
     showStorageProfileError(err.message || 'Не удалось запустить загрузку из профиля');
   }
 }
-function storageProfileItemCard(item) {
-  const title = item.title || item.file_name || item.workspace_path;
-  const missing = !item.file_exists;
-  const selected = selectedStorageProfileItemIds.has(Number(item.id));
-  const ready = Boolean(item.is_publish_ready);
-  const publishNote = ready
-    ? ''
-    : '<div class="mono warn storage-video-publish-status">YouTube: нужен тег «Готово»</div>';
-  return `<article class="storage-video-card${missing ? ' missing' : ''}">
-    <label class="storage-video-select"><input type="checkbox" ${selected ? 'checked' : ''} ${missing || !ready ? 'disabled' : ''} onchange="toggleStorageProfileItemSelection(${Number(item.id)}, this.checked)"> <span>Выбрать для YouTube</span></label>
-    <div class="storage-video-thumb">${missing ? videoThumb(item.workspace_path, title) : videoWatchThumb(item.workspace_path, title)}</div>
-    <div class="storage-video-title" title="${esc(title)}">${esc(title)}</div>
-    <div class="mono dim storage-video-path" title="${esc(item.workspace_path)}">${esc(workspaceDisplayPath(item.workspace_path))}</div>
-    ${tagListPills(item.catalog_tags || [])}
-    <div class="storage-video-meta">
-      <span>${missing ? badge('failed') : storageProfilePublishBadge(item)}</span>
-      <span class="mono dim">${esc(workspaceFolderLabel(item.section || ''))}</span>
-    </div>
-    ${publishNote}
-    ${storageProfilePublishStatus(item)}
-    <div class="row-actions">
-      ${missing ? `<button class="btn-mini" disabled title="${esc(item.path_error || 'Файл отсутствует')}">Смотреть</button>` : webPlayerButton(item.workspace_path, 'Смотреть')}
-      <button class="btn-danger" onclick="removeStorageProfileItem(${Number(item.id)})">Убрать</button>
-    </div>
-  </article>`;
-}
-function renderStorageCandidatePicker() {
-  if (!storageCandidatePickerOpen) return '';
-  const existing = new Set(storageProfileItems.map(item => item.workspace_path));
-  const candidates = storageProfileCandidates.filter(item => !existing.has(item.workspace_path));
-  const selectedCount = Array.from(selectedStorageCandidatePaths).filter(path => candidates.some(item => item.workspace_path === path)).length;
-  const body = candidates.length
-    ? `<div class="storage-candidate-list">${candidates.map(item => {
-        const checked = selectedStorageCandidatePaths.has(item.workspace_path);
-        return `<div class="storage-candidate-row">
-        <label class="storage-video-select"><input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleStorageCandidateSelection('${esc(item.workspace_path)}', this.checked)"></label>
-        ${videoWatchThumb(item.workspace_path, item.title || item.file_name)}
-        <div style="min-width:0;flex:1">
-          <div class="mono txt ov">${esc(item.title || item.file_name)}</div>
-          <div class="mono dim ov">${esc(workspaceDisplayPath(item.workspace_path))}</div>
-          ${tagListPills(item.tags || [])}
-        </div>
-        <button class="btn-secondary" data-path="${esc(item.workspace_path)}" onclick="addCandidateToStorageProfile(this.dataset.path)">Добавить</button>
-      </div>`;
-      }).join('')}</div>`
-    : '<div class="empty">Начните писать название, путь или тег — результаты появятся автоматически. Можно нажать «Случайные видео».</div>';
-  return `<div class="storage-candidates">
-    <div class="box-head"><span>Добавить видео из каталога</span><button class="btn-mini" onclick="toggleStorageCandidatePicker()">Скрыть</button></div>
-    <div class="storage-search-panel">
-      <input id="storage-video-search-input" type="text" placeholder="Искать по названию, тегу или пути…" value="${esc(storageCatalogSearchQuery || '')}" oninput="onStorageCatalogSearchInput(this.value)" autofocus>
-      <button class="btn-secondary" onclick="loadRandomStorageCatalogVideos()">Случайные видео</button>
-      <button class="btn-primary" ${selectedCount ? '' : 'disabled'} onclick="addSelectedCatalogVideosToStorageProfile()">Добавить выбранные (${selectedCount})</button>
-    </div>
-    ${body}
-  </div>`;
-}
-function storageProfileStats() {
-  const total = storageProfileItems.length;
-  const ready = storageProfileItems.filter(item => item.file_exists && item.is_publish_ready).length;
-  const blocked = storageProfileItems.filter(item => item.file_exists && !item.is_publish_ready).length;
-  const missing = storageProfileItems.filter(item => !item.file_exists).length;
-  const queued = storageProfilePublishJobs.filter(job => ['queued', 'scheduled'].includes(job.status)).length;
-  const failed = storageProfilePublishJobs.filter(job => ['failed', 'cancelled'].includes(job.status)).length;
-  const done = storageProfilePublishJobs.filter(job => job.status === 'done').length;
-  return {total, ready, blocked, missing, queued, failed, done, selected: selectedStorageProfileItems().length};
-}
-function storageProfileMetric(label, value, tone = '') {
-  return `<div class="storage-profile-metric ${esc(tone)}"><b>${Number(value) || 0}</b><span>${esc(label)}</span></div>`;
-}
-function storageProfileTabs() {
-  const stats = storageProfileStats();
-  return `<div class="storage-profile-tabs">
-    ${storageProfileTabButton('publish', 'Публикация', stats.ready)}
-    ${storageProfileTabButton('videos', 'Видео', stats.total)}
-    ${storageProfileTabButton('queue', 'Очередь', storageProfilePublishJobs.length)}
-    ${storageProfileTabButton('youtube', 'YouTube', storageProfileYoutubeVideos.length)}
-    ${storageProfileTabButton('errors', 'Ошибки', stats.failed + stats.missing)}
-  </div>`;
-}
-function storageProfileVideoGrid(items, emptyText) {
-  return items.length
-    ? `<div class="storage-video-grid storage-video-grid-compact">${items.map(storageProfileItemCard).join('')}</div>`
-    : `<div class="empty compact">${esc(emptyText)}</div>`;
-}
-function storageProfilePublishDashboard(profile) {
-  const stats = storageProfileStats();
-  const ready = storageProfileItems.filter(item => item.file_exists && item.is_publish_ready);
-  const waiting = storageProfileItems.filter(item => item.file_exists && !item.is_publish_ready);
-  const youtube = storageProfileLinkedYoutube();
-  const spotlight = ready.length ? ready : storageProfileItems.filter(item => item.file_exists).slice(0, 18);
-  return `<div class="storage-profile-main-grid">
-    <section class="storage-profile-cockpit">
-      <div class="storage-cockpit-head">
-        <div>
-          <div class="storage-section-title inline-title">Готовность к публикации</div>
-          <div class="mono dim">${youtube ? `Канал: ${esc(storageAccountTitle(youtube.youtube_account) || youtube.display_name || 'YouTube')}` : 'YouTube-канал ещё не привязан.'}</div>
-        </div>
-        <button class="btn-mini" onclick="openStorageProfileDrawer('tags')">Теги профиля</button>
-      </div>
-      <div class="storage-profile-metrics">
-        ${storageProfileMetric('видео', stats.total)}
-        ${storageProfileMetric('готово', stats.ready, 'ok')}
-        ${storageProfileMetric('ждут теги', stats.blocked, 'warn')}
-        ${storageProfileMetric('в очереди', stats.queued)}
-        ${storageProfileMetric('ошибки', stats.failed + stats.missing, 'err')}
-      </div>
-      ${waiting.length ? `<div class="mono warn">Без тега «Готово» не публикуются: ${waiting.length}</div>` : '<div class="mono dim">Все доступные видео готовы к публикации или уже обработаны.</div>'}
-    </section>
-    <section class="storage-profile-feed">
-      <div class="storage-feed-head">
-        <div>
-          <div class="storage-section-title inline-title">Видео для публикации</div>
-          <div class="mono dim">Выбирайте карточки и отправляйте их в очередь, на таймер или сразу в YouTube.</div>
-        </div>
-        <button class="btn-secondary" onclick="openStorageProfileVideoPicker()">Добавить видео</button>
-      </div>
-      ${storageProfileVideoGrid(spotlight, 'В профиле пока нет готовых видео. Добавьте ролики через поиск по каталогу.')}
-    </section>
-  </div>`;
-}
-function storageProfileErrorsPanel() {
-  const missing = storageProfileItems.filter(item => !item.file_exists);
-  const failedJobs = storageProfilePublishJobs.filter(job => ['failed', 'cancelled'].includes(job.status));
-  const brandingError = currentStorageProfile?.youtube_branding?.sync_error || '';
-  const link = currentStorageProfile?.service_links?.find(item => item.platform === 'youtube');
-  const syncError = link?.last_sync_error || '';
-  const jobRows = failedJobs.length
-    ? `<div class="storage-profile-jobs"><table class="tbl compact"><thead><tr><th>#</th><th>Статус</th><th>Видео</th><th>Ошибка</th><th>Действие</th></tr></thead><tbody>${failedJobs.map(job => `<tr><td class="mono dim">#${Number(job.id)}</td><td>${badge(job.status)}</td><td class="mono ov">${esc(job.title || '—')}</td><td class="mono err ov">${esc(shortErrorText(job.error || '—'))}</td><td><div class="row-actions">${job.can_retry ? `<button class="btn-mini" onclick="retryPublishJob(${Number(job.id)})">Повторить</button>` : ''}${job.can_cancel ? `<button class="btn-danger" onclick="cancelPublishJob(${Number(job.id)})">Отменить</button>` : ''}</div></td></tr>`).join('')}</tbody></table></div>`
-    : '<div class="empty compact">Ошибок публикации нет.</div>';
-  return `<div class="storage-profile-errors">
-    ${brandingError ? `<div class="storage-error-card"><b>Оформление YouTube</b><span>${esc(shortErrorText(brandingError))}</span><button class="btn-mini" onclick="syncStorageProfileYoutubeBranding()">Повторить sync</button></div>` : ''}
-    ${syncError ? `<div class="storage-error-card"><b>Синхронизация YouTube</b><span>${esc(shortErrorText(syncError))}</span><button class="btn-mini" onclick="syncStorageProfileYoutube()">Повторить sync</button></div>` : ''}
-    ${missing.length ? `<div class="storage-section-title">Файлы отсутствуют</div>${storageProfileVideoGrid(missing, '')}` : ''}
-    <div class="storage-section-title">Ошибки очереди</div>
-    ${jobRows}
-  </div>`;
-}
-function storageProfileMainContent(profile) {
-  if (storageProfileActiveTab === 'videos') {
-    return `<div class="storage-feed-head padded"><div><div class="storage-section-title inline-title">Все видео профиля</div><div class="mono dim">Локальная витрина профиля. Публикация доступна только для видео с тегом «Готово».</div></div><button class="btn-secondary" onclick="openStorageProfileVideoPicker()">Добавить видео</button></div>${storageProfileVideoGrid(storageProfileItems, 'В профиле пока нет видео.')}`;
-  }
-  if (storageProfileActiveTab === 'queue') {
-    return `<div class="storage-feed-head padded"><div><div class="storage-section-title inline-title">Очередь публикации профиля</div><div class="mono dim">Здесь видны задачи YouTube только этого профиля.</div></div><button class="btn-mini" onclick="refreshStorageProfilePublishState()">Обновить</button></div>${storageProfilePublishJobsPanel()}`;
-  }
-  if (storageProfileActiveTab === 'youtube') {
-    return `<div class="storage-feed-head padded"><div><div class="storage-section-title inline-title">Видео на YouTube</div><div class="mono dim">Сверка локального профиля с подключённым каналом.</div></div><button class="btn-secondary" onclick="syncStorageProfileYoutube()">Синхронизировать YouTube</button></div>${storageProfileYoutubeVideosPanel()}`;
-  }
-  if (storageProfileActiveTab === 'errors') {
-    return storageProfileErrorsPanel();
-  }
-  return storageProfilePublishDashboard(profile);
-}
-function storageProfileLocalEditPanel(profile) {
-  return `<div class="storage-profile-edit compact-panel">
-    <div class="settings-meta">Локальные значения работают как ручное переопределение оформления YouTube только для изменённых полей.</div>
-    <div class="field-grid">
-      <div class="field"><label class="field-lbl">Локальное название</label><input id="storage-profile-name" type="text" value="${esc(profile.name)}">${storageBrandingFieldActions(profile, 'name', 'Использовать локальное имя', 'Вернуть имя из YouTube')}</div>
-      <div class="field"><label class="field-lbl">Локальный Handle</label><input id="storage-profile-handle" type="text" value="${esc(profile.handle)}">${storageBrandingFieldActions(profile, 'handle', 'Использовать локальный handle', 'Вернуть handle из YouTube')}</div>
-    </div>
-    <div class="field"><label class="field-lbl">Локальное описание</label><textarea id="storage-profile-description" rows="3">${esc(profile.description || '')}</textarea>${storageBrandingFieldActions(profile, 'description', 'Использовать локальное описание', 'Вернуть описание из YouTube')}</div>
-    <div class="field-grid">
-      <div class="field"><label class="field-lbl">Инициалы</label><input id="storage-profile-initials" type="text" value="${esc(profile.avatar_initials || '')}"></div>
-      <div class="field"><label class="field-lbl">Цвет аватара</label><input id="storage-profile-avatar-color" type="text" value="${esc(profile.avatar_color || '#3b82f6')}"></div>
-      <div class="field"><label class="field-lbl">URL локального аватара</label><input id="storage-profile-avatar-url" type="text" value="${esc(profile.avatar_url || '')}">${storageBrandingFieldActions(profile, 'avatar', 'Использовать локальный аватар', 'Вернуть фото YouTube')}</div>
-      <div class="field"><label class="field-lbl">Цвет баннера</label><input id="storage-profile-banner-color" type="text" value="${esc(profile.banner_color || '#111827')}"></div>
-      <div class="field"><label class="field-lbl">URL локальной шапки</label><input id="storage-profile-banner-url" type="text" value="${esc(profile.banner_url || '')}">${storageBrandingFieldActions(profile, 'banner', 'Использовать локальную шапку', 'Вернуть шапку из YouTube')}</div>
-    </div>
-  </div>`;
-}
-function storageProfileDrawerButton(section, label) {
-  const handler = section === 'add-video'
-    ? 'openStorageProfileVideoPicker()'
-    : `openStorageProfileDrawer('${esc(section)}')`;
-  return `<button class="${storageProfileDrawerSection === section ? 'active' : ''}" onclick="${handler}">${esc(label)}</button>`;
-}
-function storageProfileDrawerTitle(section) {
-  const titles = {
-    publish: 'Настройки публикации',
-    processing: 'Обработка канала',
-    tags: 'Теги профиля',
-    youtube: 'YouTube и оформление',
-    profile: 'Локальные данные',
-    danger: 'Опасная зона',
-    'add-video': 'Добавить видео',
-  };
-  return titles[section] || 'Настройки';
-}
-function storageProfileDrawerBody(profile) {
-  if (storageProfileDrawerSection === 'processing') return storageProfileChannelSettingsPanel(profile);
-  if (storageProfileDrawerSection === 'tags') return storageProfileTagRulesPanel(profile);
-  if (storageProfileDrawerSection === 'youtube') return storageProfileServiceLinks(profile);
-  if (storageProfileDrawerSection === 'profile') return storageProfileLocalEditPanel(profile);
-  if (storageProfileDrawerSection === 'danger') {
-    return `<div class="storage-danger-panel"><b>Отключить профиль</b><p class="mono dim">Профиль исчезнет из списка, видео на диске не удаляются.</p><button class="btn-danger" onclick="disableStorageProfile()">Отключить профиль</button></div>`;
-  }
-  if (storageProfileDrawerSection === 'add-video') return renderStorageCandidatePicker();
-  return storageProfilePublishSettingsPanel();
-}
-function storageProfileDrawerFooter() {
-  if (storageProfileDrawerSection === 'publish') {
-    return `<button class="btn-primary" onclick="saveStorageProfilePublishSettings()">Сохранить публикацию</button><button class="btn-secondary" onclick="closeStorageProfileDrawer()">Закрыть</button>`;
-  }
-  if (storageProfileDrawerSection === 'processing') {
-    return `<button class="btn-primary" onclick="saveStorageProfileChannelSettings()">Сохранить обработку</button><button class="btn-secondary" onclick="closeStorageProfileDrawer()">Закрыть</button>`;
-  }
-  if (storageProfileDrawerSection === 'profile') {
-    return `<button class="btn-primary" onclick="saveStorageProfile()">Сохранить профиль</button><button class="btn-secondary" onclick="closeStorageProfileDrawer()">Закрыть</button>`;
-  }
-  return `<button class="btn-secondary" onclick="closeStorageProfileDrawer()">Закрыть</button>`;
-}
-function renderStorageProfileDrawer(profile) {
-  if (!storageProfileDrawerOpen) return '';
-  return `<div class="storage-profile-drawer-backdrop" onclick="closeStorageProfileDrawer()"></div>
-  <aside class="storage-profile-drawer">
-    <div class="storage-drawer-head">
-      <div><div class="inspector-kicker">Профиль · настройки</div><h2>${esc(storageProfileDrawerTitle(storageProfileDrawerSection))}</h2></div>
-      <button class="btn-mini" onclick="closeStorageProfileDrawer()">×</button>
-    </div>
-    <div class="storage-drawer-nav">
-      ${storageProfileDrawerButton('publish', 'Публикация')}
-      ${storageProfileDrawerButton('processing', 'Обработка')}
-      ${storageProfileDrawerButton('tags', 'Теги')}
-      ${storageProfileDrawerButton('youtube', 'YouTube')}
-      ${storageProfileDrawerButton('profile', 'Профиль')}
-      ${storageProfileDrawerButton('add-video', 'Добавить видео')}
-      ${storageProfileDrawerButton('danger', 'Опасное')}
-    </div>
-    <div class="storage-drawer-body">${storageProfileDrawerBody(profile)}</div>
-    <div class="storage-drawer-footer">${storageProfileDrawerFooter()}</div>
-  </aside>`;
-}
-function renderStorageProfileDetail() {
-  const el = document.getElementById('storage-profile-detail');
-  if (!el) return;
-  const profile = currentStorageProfile;
-  if (!profile) {
-    const title = document.getElementById('storage-profile-view-title');
-    const subtitle = document.getElementById('storage-profile-view-subtitle');
-    const headTitle = document.getElementById('storage-profile-page-head-title');
-    if (title) title.textContent = 'Профиль';
-    if (subtitle) subtitle.textContent = 'отдельная страница локального канала';
-    if (headTitle) headTitle.textContent = 'Витрина профиля';
-    el.innerHTML = '<div class="empty">Создайте профиль кнопкой «+» или выберите существующий.</div>';
-    return;
-  }
-  const title = document.getElementById('storage-profile-view-title');
-  const subtitle = document.getElementById('storage-profile-view-subtitle');
-  const headTitle = document.getElementById('storage-profile-page-head-title');
-  const effectiveName = storageProfileName(profile);
-  const effectiveHandle = storageProfileHandle(profile);
-  const effectiveDescription = storageProfileDescription(profile);
-  if (title) title.textContent = effectiveName || 'Профиль';
-  if (subtitle) subtitle.textContent = `@${effectiveHandle} · публикация, теги и очередь`;
-  if (headTitle) headTitle.textContent = `Публикация: ${effectiveName || `Профиль #${profile.id}`}`;
-  const stats = storageProfileStats();
-  const youtube = storageProfileLinkedYoutube();
-  const youtubeLabel = youtube
-    ? `<span class="badge b-err"><i class="ti ti-brand-youtube"></i>${esc(storageAccountTitle(youtube.youtube_account) || youtube.display_name || 'YouTube')}</span>`
-    : '<span class="badge">YouTube не привязан</span>';
-  el.innerHTML = `<div class="storage-channel storage-channel-compact">
-    <div class="storage-channel-banner compact" style="${storageProfileBannerStyle(profile)}"></div>
-    <div class="storage-channel-head compact">
-      ${storageProfileAvatarHtml(profile, 'storage-channel-avatar compact')}
-      <div class="storage-channel-titlebox">
-        <div class="storage-channel-name">${esc(effectiveName)}</div>
-        <div class="storage-channel-meta mono dim">@${esc(effectiveHandle)} · ${stats.total} видео · ${stats.ready} готово · ${stats.queued} в очереди ${youtubeLabel}</div>
-        <p>${esc(effectiveDescription)}</p>
-      </div>
-      <div class="row-actions storage-profile-head-actions">
-        <button class="btn-secondary" onclick="openStorageProfileVideoPicker()">Добавить видео</button>
-        <button class="btn-mini" onclick="openStorageProfileDrawer('processing')">Обработка</button>
-        <button class="btn-mini" onclick="openStorageProfileDrawer('tags')">Теги</button>
-        <button class="btn-mini" onclick="openStorageProfileDrawer('publish')">Настройки</button>
-      </div>
-    </div>
-    ${storageProfileTabs()}
-    ${storageProfilePublishControls()}
-    <div class="storage-profile-content">${storageProfileMainContent(profile)}</div>
-    ${renderStorageProfileDrawer(profile)}
-  </div>`;
-}
-async function saveStorageProfile() {
-  if (!currentStorageProfileId) return;
-  const profile = currentStorageProfile || {};
-  try {
-    const data = await api.patch(`/api/storage-profiles/${Number(currentStorageProfileId)}`, {
-      name: document.getElementById('storage-profile-name')?.value ?? profile.name ?? '',
-      handle: document.getElementById('storage-profile-handle')?.value ?? profile.handle ?? '',
-      description: document.getElementById('storage-profile-description')?.value ?? profile.description ?? '',
-      avatar_initials: document.getElementById('storage-profile-initials')?.value ?? profile.avatar_initials ?? '',
-      avatar_color: document.getElementById('storage-profile-avatar-color')?.value ?? profile.avatar_color ?? '',
-      avatar_url: document.getElementById('storage-profile-avatar-url')?.value ?? profile.avatar_url ?? '',
-      banner_color: document.getElementById('storage-profile-banner-color')?.value ?? profile.banner_color ?? '',
-      banner_url: document.getElementById('storage-profile-banner-url')?.value ?? profile.banner_url ?? '',
-    });
-    currentStorageProfile = data.profile;
-    storageProfiles = storageProfiles.map(profile => Number(profile.id) === Number(data.profile.id) ? data.profile : profile);
-    renderStorageProfilesGrid();
-    renderStorageProfileDetail();
-    showToast('Профиль сохранён');
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось сохранить профиль');
-  }
-}
-async function disableStorageProfile() {
-  if (!currentStorageProfileId) return;
-  if (!confirm('Отключить локальный профиль? Видео на диске не удаляются.')) return;
-  try {
-    await api.del(`/api/storage-profiles/${Number(currentStorageProfileId)}`);
-    currentStorageProfileId = null;
-    currentStorageProfile = null;
-    storageProfileItems = [];
-    showToast('Профиль отключён');
-    await openStorageProfilesHub({replace: true});
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось отключить профиль');
-  }
-}
-async function searchStorageCatalogVideos(query = storageCatalogSearchQuery) {
-  storageCatalogSearchQuery = String(query || '');
-  const data = await api.get(`/api/catalog/videos/search?q=${encodeURIComponent(storageCatalogSearchQuery)}&limit=60`);
-  storageProfileCandidates = data.items || [];
-  selectedStorageCandidatePaths = new Set(Array.from(selectedStorageCandidatePaths).filter(path => storageProfileCandidates.some(item => item.workspace_path === path)));
-}
-function onStorageCatalogSearchInput(value) {
-  storageCatalogSearchQuery = value || '';
-  if (storageCatalogSearchTimer) clearTimeout(storageCatalogSearchTimer);
-  storageCatalogSearchTimer = setTimeout(async () => {
-    try {
-      await searchStorageCatalogVideos(storageCatalogSearchQuery);
-      renderStorageProfileDetail();
-      setTimeout(() => {
-        const input = document.getElementById('storage-video-search-input');
-        if (input) {
-          input.focus();
-          input.setSelectionRange(input.value.length, input.value.length);
-        }
-      }, 0);
-    } catch (err) {
-      showStorageProfileError(err.message || 'Не удалось выполнить поиск видео');
-    }
-  }, 220);
-}
-async function loadRandomStorageCatalogVideos() {
-  try {
-    storageCatalogSearchQuery = '';
-    const data = await api.get('/api/catalog/videos/random?limit=24');
-    storageProfileCandidates = data.items || [];
-    selectedStorageCandidatePaths.clear();
-    renderStorageProfileDetail();
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось загрузить случайные видео');
-  }
-}
-async function toggleStorageCandidatePicker() {
-  if (!currentStorageProfileId) {
-    showToast('Сначала выберите профиль', 'err');
-    return;
-  }
-  if (storageProfileDrawerOpen && storageProfileDrawerSection === 'add-video') {
-    closeStorageProfileDrawer();
-    return;
-  }
-  await openStorageProfileVideoPicker();
-}
-async function openStorageProfileVideoPicker() {
-  if (!currentStorageProfileId) {
-    showToast('Сначала выберите профиль', 'err');
-    return;
-  }
-  storageCandidatePickerOpen = true;
-  storageProfileDrawerOpen = true;
-  storageProfileDrawerSection = 'add-video';
-  try {
-    await searchStorageCatalogVideos('');
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось загрузить каталог видео');
-  }
-  renderStorageProfileDetail();
-}
-function toggleStorageCandidateSelection(workspacePath, checked) {
-  if (checked) selectedStorageCandidatePaths.add(workspacePath);
-  else selectedStorageCandidatePaths.delete(workspacePath);
-  renderStorageProfileDetail();
-}
-async function addCandidateToStorageProfile(workspacePath) {
-  if (!currentStorageProfileId) return;
-  try {
-    const candidate = storageProfileCandidates.find(item => item.workspace_path === workspacePath);
-    const data = await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/items`, {
-      workspace_path: workspacePath,
-      status: candidate?.is_publish_ready ? 'ready' : 'draft',
-    });
-    currentStorageProfile = data.profile || currentStorageProfile;
-    showToast('Видео добавлено в профиль');
-    storageCandidatePickerOpen = false;
-    storageProfileDrawerOpen = false;
-    await loadStorageProfileDetail(currentStorageProfileId);
-    await loadStorageProfiles({selectId: currentStorageProfileId});
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось добавить видео');
-  }
-}
-async function addSelectedCatalogVideosToStorageProfile() {
-  const paths = Array.from(selectedStorageCandidatePaths);
-  if (!paths.length) return;
-  let added = 0;
-  let errors = 0;
-  for (const path of paths) {
-    try {
-      const candidate = storageProfileCandidates.find(item => item.workspace_path === path);
-      await api.post(`/api/storage-profiles/${Number(currentStorageProfileId)}/items`, {
-        workspace_path: path,
-        status: candidate?.is_publish_ready ? 'ready' : 'draft',
-      });
-      added += 1;
-    } catch {
-      errors += 1;
-    }
-  }
-  selectedStorageCandidatePaths.clear();
-  storageCandidatePickerOpen = false;
-  storageProfileDrawerOpen = false;
-  await loadStorageProfileDetail(currentStorageProfileId);
-  await loadStorageProfiles({selectId: currentStorageProfileId});
-  showToast(`Добавлено видео: ${added}${errors ? ` · ошибок: ${errors}` : ''}`, errors ? 'err' : 'ok');
-}
-async function removeStorageProfileItem(itemId) {
-  if (!currentStorageProfileId) return;
-  try {
-    const data = await api.del(`/api/storage-profiles/${Number(currentStorageProfileId)}/items/${Number(itemId)}`);
-    currentStorageProfile = data.profile || currentStorageProfile;
-    storageProfileItems = storageProfileItems.filter(item => Number(item.id) !== Number(itemId));
-    selectedStorageProfileItemIds.delete(Number(itemId));
-    showToast('Видео убрано из профиля');
-    renderStorageProfileDetail();
-    await loadStorageProfiles({selectId: currentStorageProfileId});
-  } catch (err) {
-    showStorageProfileError(err.message || 'Не удалось убрать видео');
-  }
-}
-async function ensureStorageProfilesLoaded() {
-  if (storageProfiles.length) return storageProfiles;
-  const data = await api.get('/api/storage-profiles');
-  storageProfiles = data.items || [];
-  return storageProfiles;
-}
-async function pickStorageProfileIdForAdd() {
-  const profiles = await ensureStorageProfilesLoaded();
-  if (!profiles.length) {
-    nav('storage-profiles', document.querySelector('[data-v="storage-profiles"]'));
-    showToast('Сначала создайте локальный профиль', 'err');
-    return null;
-  }
-  if (currentStorageProfileId && profiles.some(profile => Number(profile.id) === Number(currentStorageProfileId))) {
-    return Number(currentStorageProfileId);
-  }
-  if (profiles.length === 1) return Number(profiles[0].id);
-  return await openStorageProfilePickModal(profiles);
-}
-async function addWorkspacePathToStorageProfile(path) {
-  try {
-    const workspacePath = await workspacePathForStorageProfile(path);
-    const profileId = await pickStorageProfileIdForAdd();
-    if (!profileId) return;
-    await api.post(`/api/storage-profiles/${Number(profileId)}/items`, {workspace_path: workspacePath});
-    showToast('Видео добавлено в локальный профиль');
-    if (currentView === 'storage-profile' && Number(currentStorageProfileId) === Number(profileId)) {
-      await loadStorageProfileDetail(profileId);
-    } else if (currentView === 'storage-profiles') {
-      currentStorageProfileId = Number(profileId);
-      await loadStorageProfiles({selectId: profileId});
-    }
-  } catch (err) {
-    showToast(err.message || 'Не удалось добавить видео в профиль', 'err');
-  }
-}
-async function addWorkspaceItemToStorageProfile(key) {
-  const item = workspaceItemByKey(key);
-  if (!item) return;
-  await addWorkspacePathToStorageProfile(item.path || item.prepared_path || item.source_path || '');
-}
 function storageProfileWorkspaceButton(item) {
-  if (!item || item.missing || !item.file_exists) {
-    return `<button class="btn-mini" disabled title="${esc(item?.path_error || 'Файл отсутствует')}">В профиль</button>`;
-  }
-  return `<button class="btn-mini" onclick="event.stopPropagation();addWorkspaceItemToStorageProfile('${esc(item.id)}')">В профиль</button>`;
+  return window.ShortsFarmStorageProfiles?.workspaceButtonHtml?.(item) || '';
 }
 function getActiveYoutubeAccounts() {
   return (lastYoutubeAccounts || []).filter(account => (account.status || 'active') === 'active');
@@ -5516,7 +4720,7 @@ async function refreshPublishJobs() {
       await refreshWorkspaceList();
       renderWorkspaceListAndDetail();
     }
-    if ((currentView === 'storage-profiles' || currentView === 'storage-profile') && currentStorageProfileId) {
+    if ((currentView === 'storage-profiles' || currentView === 'storage-profile') && storageProfileCurrentId()) {
       await refreshStorageProfilePublishState();
     }
   } catch (err) {
@@ -5898,14 +5102,15 @@ async function loadIntegrationsView(options = {}) {
   const {silent = false} = options;
   renderIntegrationsError('');
   try {
+    const currentStorageProfiles = window.ShortsFarmStorageProfiles?.getProfiles?.() || [];
     const [profilesData, accountsData, storageProfilesData] = await Promise.all([
       api.get('/api/publish/youtube/oauth-profiles'),
       api.get('/api/publish/youtube/accounts'),
-      api.get('/api/storage-profiles').catch(() => ({items: storageProfiles || []})),
+      api.get('/api/storage-profiles').catch(() => ({items: currentStorageProfiles})),
     ]);
     lastYoutubeProfiles = profilesData.profiles || [];
     lastYoutubeAccounts = accountsData.accounts || [];
-    storageProfiles = storageProfilesData.items || storageProfiles || [];
+    window.ShortsFarmStorageProfiles?.setProfiles?.(storageProfilesData.items || currentStorageProfiles || []);
     syncPublishSelections();
     renderIntegrationsView();
   } catch (err) {
@@ -6239,7 +5444,7 @@ async function disconnectYouTubeAccount(accountId) {
     await api.post(`/api/publish/youtube/accounts/${accountId}/disconnect`, {});
     showToast('YouTube канал отключён');
     if (currentView === 'integrations') await loadIntegrationsView({silent: true});
-    else if (currentView === 'storage-profile') await loadStorageProfileDetail(currentStorageProfileId);
+    else if (currentView === 'storage-profile') await window.ShortsFarmStorageProfiles?.reloadCurrentProfile?.();
     else await loadPublishView({silent: true});
   } catch (err) {
     const message = `Не удалось отключить канал:\n${err.message || err}`;
@@ -6594,7 +5799,7 @@ function handleOAuthEvent(payload) {
   loadSettingsView({silent: true});
   if (currentView === 'integrations') loadIntegrationsView({silent: true});
   else loadPublishView({silent: true});
-  if (currentView === 'storage-profile') loadStorageProfileDetail(currentStorageProfileId);
+  if (currentView === 'storage-profile') window.ShortsFarmStorageProfiles?.reloadCurrentProfile?.();
 }
 
 function editingOptionalId(value) {
@@ -6872,6 +6077,57 @@ async function loadOutputs() {
   }
 }
 
+window.ShortsFarmStorageProfiles?.configure?.({
+  apiGet: path => api.get(path),
+  apiPost: (path, body) => api.post(path, body),
+  apiPatch: (path, body) => api.patch(path, body),
+  apiDel: path => api.del(path),
+  currentView: () => currentView,
+  activateView,
+  loadCatalogTags,
+  loadAdvancedProfileData: async profileId => {
+    const [jobsData, youtubeVideosData] = await Promise.all([
+      api.get(`/api/storage-profiles/${Number(profileId)}/publish-jobs?limit=200`).catch(() => ({jobs: []})),
+      api.get(`/api/storage-profiles/${Number(profileId)}/youtube/videos?limit=200`).catch(() => ({videos: []})),
+      loadStorageYoutubeAccounts().catch(() => null),
+      loadEditingSupportData().catch(() => null),
+    ]);
+    storageProfilePublishJobs = jobsData.jobs || [];
+    storageProfileYoutubeVideos = youtubeVideosData.videos || [];
+    mergePublishJobsIntoGlobal(storageProfilePublishJobs);
+    return {};
+  },
+  pickStorageProfile: profiles => openStorageProfilePickModal(profiles),
+  workspaceMediaPathForPlayer,
+  workspaceItemByKey,
+  esc,
+  showToast,
+  showInlineError,
+  hideInlineError,
+  openTextActionModal,
+  tagPill,
+  tagListPills,
+  tagOptionsHtml,
+  openGlobalTagsView: () => window.ShortsFarmTags?.openGlobalTagsView?.(),
+  storageAccountTitle,
+  renderBrandingFieldActions: storageBrandingFieldActions,
+  renderProfilePublishControls: () => storageProfilePublishControls(),
+  renderProfilePublishSettingsPanel: () => storageProfilePublishSettingsPanel(),
+  renderProfileChannelSettingsPanel: profile => storageProfileChannelSettingsPanel(profile),
+  renderProfileServiceLinks: profile => storageProfileServiceLinks(profile),
+  renderProfilePublishJobsPanel: () => storageProfilePublishJobsPanel(),
+  renderProfileYoutubeVideosPanel: () => storageProfileYoutubeVideosPanel(),
+  renderProfileErrorsPanel: (profile, items) => storageProfileErrorsPanel(profile, items),
+  publishBadge: storageProfilePublishBadge,
+  publishStatus: storageProfilePublishStatus,
+  videoThumb,
+  videoWatchThumb,
+  webPlayerButton,
+  workspaceDisplayPath,
+  workspaceFolderLabel,
+  nav,
+});
+
 Object.assign(window, {
   nav,
   toggleSidebarCollapsed,
@@ -6902,15 +6158,10 @@ Object.assign(window, {
   syncStorageProfileYoutubeBranding,
   toggleStorageProfileYoutubeBranding,
   setStorageProfileBrandingOverride,
-  setStorageProfileTab,
-  openStorageProfileDrawer,
-  closeStorageProfileDrawer,
-  openStorageProfileVideoPicker,
   saveStorageProfileChannelSettings,
   openQueueForChannelProfile,
   openStudioTemplate,
   openYouTubeSettings,
-  openStorageProfile,
 });
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -6925,7 +6176,7 @@ window.addEventListener('DOMContentLoaded', () => {
   activateInitialViewFromQuery();
 });
 window.addEventListener('popstate', () => {
-  handleProfileRouteFromLocation();
+  window.ShortsFarmStorageProfiles?.handleRouteFromLocation?.();
 });
 window.addEventListener('message', event => {
   if (event.origin !== window.location.origin) return;
