@@ -186,6 +186,7 @@ def test_integrations_namespace_is_narrow_and_state_private() -> None:
     assert "function syncAccountsSnapshot" not in integrations_js
     assert "return copyItems(state.oauthProfiles)" in integrations_js
     assert "return copyItems(state.accounts)" in integrations_js
+    assert "dataLoadPromise" not in public_api
 
 
 def test_integrations_app_bridge_and_cross_domain_boundaries() -> None:
@@ -244,3 +245,32 @@ def test_integrations_is_only_frontend_youtube_accounts_owner() -> None:
     editing_body = app_js.split("async function loadEditingSupportData()", 1)[1].split("function getVisibleEditingJobs", 1)[0]
     assert "editingAccounts = window.ShortsFarmIntegrations?.getAccounts?.() || [];" in editing_body
     assert "ShortsFarmStorageProfiles?.getYoutubeAccounts" not in editing_body
+
+
+def test_integrations_canonical_loader_is_single_flight_and_private() -> None:
+    app_js = APP_JS.read_text(encoding="utf-8")
+    storage_js = (ROOT / "shortsfarm" / "web" / "static" / "js" / "features" / "storage-profiles.js").read_text(encoding="utf-8")
+    integrations_js = INTEGRATIONS_JS.read_text(encoding="utf-8")
+
+    assert "let dataLoadPromise = null;" in integrations_js
+    assert "async function loadCanonicalData()" in integrations_js
+    assert "if (dataLoadPromise) return dataLoadPromise;" in integrations_js
+    assert "dataLoadPromise = promise;" in integrations_js
+    assert "if (dataLoadPromise === promise) dataLoadPromise = null;" in integrations_js
+
+    refresh_body = integrations_js.split("async function refreshData", 1)[1].split("async function ensureData", 1)[0]
+    ensure_body = integrations_js.split("async function ensureData", 1)[1].split("async function loadIntegrationsView", 1)[0]
+    assert "await loadCanonicalData()" in refresh_body
+    assert "await loadCanonicalData()" in ensure_body
+
+    public_api = integrations_js.split("window.ShortsFarmIntegrations = {", 1)[1].split("};", 1)[0]
+    assert "dataLoadPromise" not in public_api
+    assert "loadCanonicalData" not in public_api
+
+    for endpoint in [
+        "/api/publish/youtube/oauth-profiles",
+        "/api/publish/youtube/accounts",
+    ]:
+        assert endpoint in integrations_js
+        assert endpoint not in app_js
+        assert endpoint not in storage_js

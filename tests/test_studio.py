@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
@@ -676,6 +677,25 @@ def test_remotion_output_paths_are_managed_and_use_temp(tmp_path, monkeypatch):
     assert temp.name == "render_job_9.tmp.mp4"
     assert final.name == "render_job_9.mp4"
     assert "edits/show/segment/remotion_project_" in temp.as_posix()
+
+
+def test_wait_for_studio_render_queue_handles_missing_and_finished_thread():
+    import shortsfarm.remotion_renderer as renderer
+
+    with renderer._threads_lock:
+        renderer._queue_thread = None
+    assert renderer.wait_for_studio_render_queue(timeout_sec=0.01) is True
+
+    thread = threading.Thread(target=lambda: None, name="studio-render-queue-test")
+    thread.start()
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    with renderer._threads_lock:
+        renderer._queue_thread = thread
+
+    assert renderer.wait_for_studio_render_queue(timeout_sec=0.01) is True
+    with renderer._threads_lock:
+        assert renderer._queue_thread is None
 
 
 def test_remotion_worker_atomically_finishes_valid_output(tmp_path, monkeypatch):

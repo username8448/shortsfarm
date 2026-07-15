@@ -921,6 +921,34 @@ def _run_remotion_queue(base_url: str) -> None:
             _queue_thread = None
 
 
+def wait_for_studio_render_queue(timeout_sec: float = 10.0) -> bool:
+    """Wait for the current Studio render queue thread to finish.
+
+    This is a lifecycle helper for tests and controlled shutdown paths.  It does
+    not stop a running render process; it only waits for the queue daemon thread
+    that was already started by ``start_studio_render_queue``.
+    """
+    global _queue_thread
+    with _threads_lock:
+        thread = _queue_thread
+    if thread is None:
+        return True
+    if thread is threading.current_thread():
+        return not thread.is_alive()
+    if not thread.is_alive():
+        with _threads_lock:
+            if _queue_thread is thread:
+                _queue_thread = None
+        return True
+    thread.join(max(0.0, float(timeout_sec)))
+    finished = not thread.is_alive()
+    if finished:
+        with _threads_lock:
+            if _queue_thread is thread:
+                _queue_thread = None
+    return finished
+
+
 def _job_timeout_sec(job: Any) -> int:
     try:
         return get_render_profile(str(job["render_profile"])).timeout_sec

@@ -30,7 +30,12 @@ def tmp_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     from shortsfarm import db
     db.init_db()
 
-    return home
+    yield home
+
+    from shortsfarm.remotion_renderer import wait_for_studio_render_queue
+    assert wait_for_studio_render_queue(timeout_sec=10.0), (
+        "studio-render-queue did not stop before temporary test DB teardown"
+    )
 
 
 # ---------------------------------------------------------------------------

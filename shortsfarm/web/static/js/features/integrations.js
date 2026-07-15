@@ -13,6 +13,7 @@
     connectBusy: false,
     loaded: false,
   };
+  let dataLoadPromise = null;
 
   const bridge = {
     apiGet: async () => ({}),
@@ -284,19 +285,33 @@
     btn.innerHTML = '<i class="ti ti-brand-youtube"></i> Подключить канал';
   }
 
+  async function loadCanonicalData() {
+    if (dataLoadPromise) return dataLoadPromise;
+    const promise = (async () => {
+      const [profilesData, accountsData] = await Promise.all([
+        bridge.apiGet('/api/publish/youtube/oauth-profiles'),
+        bridge.apiGet('/api/publish/youtube/accounts'),
+      ]);
+      state.oauthProfiles = profilesData.profiles || [];
+      state.accounts = accountsData.accounts || [];
+      state.loaded = true;
+      reconcileSelectedOAuthProfile();
+      bridge.syncPublishSelections();
+      return {profiles: getOAuthProfiles(), accounts: getAccounts()};
+    })();
+    dataLoadPromise = promise;
+    try {
+      return await promise;
+    } finally {
+      if (dataLoadPromise === promise) dataLoadPromise = null;
+    }
+  }
+
   async function refreshData(options = {}) {
     const {render = true} = options;
-    const [profilesData, accountsData] = await Promise.all([
-      bridge.apiGet('/api/publish/youtube/oauth-profiles'),
-      bridge.apiGet('/api/publish/youtube/accounts'),
-    ]);
-    state.oauthProfiles = profilesData.profiles || [];
-    state.accounts = accountsData.accounts || [];
-    state.loaded = true;
-    reconcileSelectedOAuthProfile();
-    bridge.syncPublishSelections();
+    const result = await loadCanonicalData();
     if (render && bridge.currentView() === 'integrations') renderIntegrationsView();
-    return {profiles: getOAuthProfiles(), accounts: getAccounts()};
+    return result;
   }
 
   async function ensureData(options = {}) {
@@ -304,7 +319,9 @@
       reconcileSelectedOAuthProfile();
       return {profiles: getOAuthProfiles(), accounts: getAccounts()};
     }
-    return refreshData(options);
+    const result = await loadCanonicalData();
+    if (options.render && bridge.currentView() === 'integrations') renderIntegrationsView();
+    return result;
   }
 
   async function loadIntegrationsView(options = {}) {
