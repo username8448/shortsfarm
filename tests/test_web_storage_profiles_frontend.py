@@ -239,6 +239,7 @@ def test_storage_profiles_public_namespace_is_narrow_after_advanced_cleanup() ->
 def test_storage_profiles_routing_candidate_sync_and_oauth_boundaries() -> None:
     app_js = APP_JS.read_text(encoding="utf-8")
     storage_js = STORAGE_JS.read_text(encoding="utf-8")
+    integrations_js = (ROOT / "shortsfarm" / "web" / "static" / "js" / "features" / "integrations.js").read_text(encoding="utf-8")
 
     nav_body = app_js.split("function nav(id, btn) {", 1)[1].split("function activateInitialViewFromQuery", 1)[0]
     assert "window.ShortsFarmStorageProfiles?.openStorageProfilesHub?.({replace: true})" in nav_body
@@ -262,7 +263,10 @@ def test_storage_profiles_routing_candidate_sync_and_oauth_boundaries() -> None:
     assert "...(updatedItem || {})" not in sync_body
 
     oauth_body = app_js.split("function handleOAuthEvent", 1)[1].split("window.addEventListener('DOMContentLoaded'", 1)[0]
-    assert "window.ShortsFarmStorageProfiles?.reloadCurrentProfile?.();" in oauth_body
+    assert "window.ShortsFarmIntegrations?.handleOAuthEvent?.(payload)" in oauth_body
+    integrations_oauth_body = integrations_js.split("function handleOAuthEvent", 1)[1].split("function isConnectBusy", 1)[0]
+    assert "bridge.reloadStorageProfile()" in integrations_oauth_body
+    assert "reloadStorageProfile: () => window.ShortsFarmStorageProfiles?.reloadCurrentProfile?.()" in app_js
     assert "currentStorageProfileId" not in oauth_body
 
 

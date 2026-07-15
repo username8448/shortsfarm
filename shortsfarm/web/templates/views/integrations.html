@@ -1,0 +1,46 @@
+<div id="v-integrations" class="v">
+  <div class="ph"><h1>Интеграции</h1><p>Google API auth, подключённые YouTube-каналы и связь аккаунтов с локальными профилями</p></div>
+  <div id="integrations-error" class="err-line" style="display:none;margin-bottom:14px"></div>
+  <div class="publish-grid integrations-grid">
+    <section class="box">
+      <div class="box-head">
+        <span>Google API auth</span>
+        <div class="row-actions">
+          <button class="btn-mini" onclick="loadIntegrationsView()">Обновить</button>
+          <button class="btn-secondary" onclick="createIntegrationOAuthProfile('json')">Импорт JSON</button>
+          <button class="btn-secondary" onclick="createIntegrationOAuthProfile('manual')">Создать вручную</button>
+        </div>
+      </div>
+      <div id="integrations-oauth-profiles"></div>
+    </section>
+
+    <section class="box">
+      <div class="box-head">
+        <span>Подключение YouTube</span>
+        <button class="btn-primary" id="integrations-connect-btn" onclick="startYouTubeConnect()">
+          <i class="ti ti-brand-youtube"></i> Подключить канал
+        </button>
+      </div>
+      <div class="form-body">
+        <div class="field">
+          <label class="field-lbl">Google API auth для нового подключения</label>
+          <select id="integrations-profile-select" onchange="onIntegrationOAuthProfileChange(this.value)"></select>
+          <div id="integrations-profile-meta" class="settings-meta" style="margin-top:8px"></div>
+        </div>
+        <div id="integrations-connect-state"></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="box">
+    <div class="box-head">
+      <span>YouTube-аккаунты</span>
+      <div class="row-actions">
+        <input id="integrations-search" class="compact-input" type="text" placeholder="Поиск канала, OAuth или профиля…" oninput="renderIntegrationsAccountsPanel()">
+        <button class="btn-mini" onclick="syncAllYouTubeAccountsMetadata()">Обновить данные каналов</button>
+        <button class="btn-mini" onclick="loadIntegrationsView()">Обновить</button>
+      </div>
+    </div>
+    <div id="integrations-accounts-list"></div>
+  </section>
+</div>

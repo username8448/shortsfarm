@@ -1,0 +1,45 @@
+<div id="integration-oauth-modal" class="modal-backdrop" style="display:none" onclick="closeIntegrationOAuthModal(event)">
+  <section class="schedule-modal integration-oauth-modal" onclick="event.stopPropagation()">
+    <div class="box-head">
+      <span id="integration-oauth-modal-title">Google API auth</span>
+      <button class="btn-mini" onclick="closeIntegrationOAuthModal()">Закрыть</button>
+    </div>
+    <div class="schedule-modal-body">
+      <div id="integration-oauth-form-error" class="err-line" style="display:none;margin-bottom:12px"></div>
+      <div class="field">
+        <label class="field-lbl">Название</label>
+        <input id="integration-oauth-name" type="text" placeholder="YouTube OAuth">
+      </div>
+      <div id="integration-oauth-json-wrap" class="field">
+        <label class="field-lbl">OAuth Client JSON</label>
+        <textarea id="integration-oauth-json" spellcheck="false" placeholder='{"web":{"client_id":"...","client_secret":"...","redirect_uris":["http://127.0.0.1:8000/api/publish/youtube/oauth/callback"]}}'></textarea>
+        <div class="settings-meta">Скопируйте JSON OAuth Client из Google Cloud. Поддерживаются web и installed форматы.</div>
+      </div>
+      <div id="integration-oauth-manual-wrap" class="integration-oauth-manual-grid">
+        <div class="field">
+          <label class="field-lbl">client_id</label>
+          <input id="integration-oauth-client-id" type="text" placeholder="client_id.apps.googleusercontent.com">
+        </div>
+        <div class="field">
+          <label class="field-lbl">client_secret</label>
+          <input id="integration-oauth-client-secret" type="password" placeholder="client_secret">
+        </div>
+        <div class="field span-2">
+          <label class="field-lbl">redirect_uri</label>
+          <input id="integration-oauth-redirect-uri" type="text" placeholder="http://127.0.0.1:8000/api/publish/youtube/oauth/callback">
+        </div>
+      </div>
+      <label class="toggle-label" style="margin-top:8px">
+        <input id="integration-oauth-default" type="checkbox">
+        Сделать Google API auth по умолчанию
+      </label>
+      <div class="setup-panel integration-oauth-next-hint">
+        Теперь нажмите “Подключить канал”, чтобы привязать YouTube-канал к этому Google API auth.
+      </div>
+      <div class="row-actions end">
+        <button class="btn-secondary" onclick="closeIntegrationOAuthModal()">Отмена</button>
+        <button class="btn-primary" id="integration-oauth-save-btn" onclick="saveIntegrationOAuthProfile()">Сохранить</button>
+      </div>
+    </div>
+  </section>
+</div>

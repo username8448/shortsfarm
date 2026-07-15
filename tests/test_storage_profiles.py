@@ -1258,14 +1258,19 @@ def test_storage_profiles_ui_is_registered():
     index_html = (root / "shortsfarm" / "web" / "templates" / "index.html").read_text(encoding="utf-8")
     tags_partial = (root / "shortsfarm" / "web" / "templates" / "views" / "tags.html").read_text(encoding="utf-8")
     storage_partial = (root / "shortsfarm" / "web" / "templates" / "views" / "storage_profiles.html").read_text(encoding="utf-8")
+    integrations_partial = (root / "shortsfarm" / "web" / "templates" / "views" / "integrations.html").read_text(encoding="utf-8")
+    integration_oauth_modal = (root / "shortsfarm" / "web" / "templates" / "components" / "integration_oauth_modal.html").read_text(encoding="utf-8")
     html = (
         index_html
         .replace('{% include "views/tags.html" %}', tags_partial)
         .replace('{% include "views/storage_profiles.html" %}', storage_partial)
+        .replace('{% include "views/integrations.html" %}', integrations_partial)
+        .replace('{% include "components/integration_oauth_modal.html" %}', integration_oauth_modal)
     )
     js = (root / "shortsfarm" / "web" / "static" / "app.js").read_text(encoding="utf-8")
     tags_js = (root / "shortsfarm" / "web" / "static" / "js" / "features" / "tags.js").read_text(encoding="utf-8")
     storage_js = (root / "shortsfarm" / "web" / "static" / "js" / "features" / "storage-profiles.js").read_text(encoding="utf-8")
+    integrations_js = (root / "shortsfarm" / "web" / "static" / "js" / "features" / "integrations.js").read_text(encoding="utf-8")
     storage_ui_js = storage_js + "\n" + js
     css = (root / "shortsfarm" / "web" / "static" / "style.css").read_text(encoding="utf-8")
 
@@ -1372,30 +1377,31 @@ def test_storage_profiles_ui_is_registered():
     assert "Видео на YouTube" in storage_ui_js
     assert "только на YouTube" in storage_js
     assert "enqueueStorageProfileSelection" in storage_js
-    assert "loadIntegrationsView" in js
-    assert "renderIntegrationsAccountsPanel" in js
+    assert "loadIntegrationsView" in integrations_js
+    assert "renderIntegrationsAccountsPanel" in integrations_js
     assert "prompt(" not in js
     assert "settings-oauth" not in js
     assert "data-tag-color-id" in tags_js
     assert "openTextActionModal" in js
     assert "openStorageProfilePickModal" in js
-    create_integration_body = js.split("function createIntegrationOAuthProfile", 1)[1].split("function editIntegrationOAuthProfile", 1)[0]
+    create_integration_body = integrations_js.split("function createIntegrationOAuthProfile", 1)[1].split("function editIntegrationOAuthProfile", 1)[0]
     assert "prompt(" not in create_integration_body
     assert "/api/publish/youtube/oauth-profiles/import-client-json" in create_integration_body
     assert "/api/publish/youtube/oauth-profiles" in create_integration_body
     window_exports = js.split("Object.assign(window,", 1)[1].split("});", 1)[0]
-    assert "loadIntegrationsView" in window_exports
     assert "closeTextActionModal" in window_exports
     assert "confirmTextActionModal" in window_exports
     assert "closeStorageProfilePickModal" in window_exports
     assert "confirmStorageProfilePickModal" in window_exports
-    assert "createIntegrationOAuthProfile" in window_exports
-    assert "closeIntegrationOAuthModal" in window_exports
-    assert "saveIntegrationOAuthProfile" in window_exports
-    assert "editIntegrationOAuthProfile" in window_exports
-    assert "setIntegrationDefaultOAuthProfile" in window_exports
-    assert "deleteIntegrationOAuthProfile" in window_exports
-    assert "disconnectYouTubeAccount" in window_exports
+    integration_window_exports = integrations_js.split("Object.assign(window,", 1)[1].split("});", 1)[0]
+    assert "loadIntegrationsView" in integration_window_exports
+    assert "createIntegrationOAuthProfile" in integration_window_exports
+    assert "closeIntegrationOAuthModal" in integration_window_exports
+    assert "saveIntegrationOAuthProfile" in integration_window_exports
+    assert "editIntegrationOAuthProfile" in integration_window_exports
+    assert "setIntegrationDefaultOAuthProfile" in integration_window_exports
+    assert "deleteIntegrationOAuthProfile" in integration_window_exports
+    assert "disconnectYouTubeAccount" in integration_window_exports
     storage_window_exports = storage_js.split("Object.assign(window,", 1)[1].split("});", 1)[0]
     assert "openStorageProfile" in storage_window_exports
     assert "addWorkspaceItemToStorageProfile" in storage_window_exports

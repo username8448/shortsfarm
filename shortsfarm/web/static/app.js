@@ -601,8 +601,6 @@ let selectedWorkspaceKeys = new Set();
 let currentWorkspaceItemKey = null;
 let workspaceDetailDirty = false;
 let lastOutputs = [];
-let lastYoutubeAccounts = [];
-let lastYoutubeProfiles = [];
 let lastPublishJobs = [];
 let lastPublishScheduleGroups = [];
 let lastReadyPublishClips = [];
@@ -625,7 +623,6 @@ let editingJobReviewFilter = 'all';
 let selectedEditingJobIds = new Set();
 let editingPreviewJobId = null;
 let catalogTags = [];
-let integrationsSearchQuery = '';
 let pipelineSources = [];
 let pipelineTemplates = [];
 let pipelineReactions = [];
@@ -789,7 +786,7 @@ function nav(id, btn) {
     loadJobs();
   }
   if (id === 'tags') window.loadTagsView?.();
-  if (id === 'integrations') loadIntegrationsView();
+  if (id === 'integrations') window.ShortsFarmIntegrations?.loadIntegrationsView?.();
   if (id === 'settings') loadSettingsView();
 }
 
@@ -2813,8 +2810,17 @@ function openRenderQueueForStorageProfile(query = '') {
 function storageProfileWorkspaceButton(item) {
   return window.ShortsFarmStorageProfiles?.workspaceButtonHtml?.(item) || '';
 }
+function youtubeAccountsSnapshot() {
+  return window.ShortsFarmIntegrations?.getAccounts?.() || [];
+}
+function activeYoutubeOAuthProfilesSnapshot() {
+  return window.ShortsFarmIntegrations?.getActiveOAuthProfiles?.() || [];
+}
+function youtubeOAuthProfileSourceLabel(profile) {
+  return window.ShortsFarmIntegrations?.profileSourceLabel?.(profile) || '—';
+}
 function getActiveYoutubeAccounts() {
-  return (lastYoutubeAccounts || []).filter(account => (account.status || 'active') === 'active');
+  return youtubeAccountsSnapshot().filter(account => (account.status || 'active') === 'active');
 }
 function getWorkspaceYoutubeAccount() {
   return getActiveYoutubeAccounts().find(account => Number(account.id) === Number(workspaceYoutubeState.selectedAccountId)) || null;
@@ -3763,7 +3769,7 @@ function renderPublishError(message) {
 }
 
 function getSelectedAccount() {
-  return (lastYoutubeAccounts || []).find(account => Number(account.id) === Number(publishState.selectedAccountId)) || null;
+  return youtubeAccountsSnapshot().find(account => Number(account.id) === Number(publishState.selectedAccountId)) || null;
 }
 
 function getSelectedPublishClip() {
@@ -3771,18 +3777,7 @@ function getSelectedPublishClip() {
 }
 
 function getActiveOAuthProfiles() {
-  return (lastYoutubeProfiles || []).filter(profile => (profile.status || 'active') === 'active');
-}
-
-function isEnvOAuthProfile(profile) {
-  return profile?.mode === 'env';
-}
-
-function oauthProfileSourceLabel(profile) {
-  if (!profile) return '—';
-  if (isEnvOAuthProfile(profile)) return 'окружение';
-  if (profile.mode === 'legacy') return 'legacy settings';
-  return 'ручной профиль';
+  return activeYoutubeOAuthProfilesSnapshot();
 }
 
 function getSelectedProfile() {
@@ -3791,8 +3786,9 @@ function getSelectedProfile() {
 
 function getVisibleYoutubeAccounts() {
   const selectedProfile = getSelectedProfile();
-  if (!selectedProfile) return lastYoutubeAccounts || [];
-  return (lastYoutubeAccounts || []).filter(account => {
+  const accounts = youtubeAccountsSnapshot();
+  if (!selectedProfile) return accounts;
+  return accounts.filter(account => {
     if (!account.oauth_profile_id) return true;
     return Number(account.oauth_profile_id) === Number(selectedProfile.id);
   });
@@ -3814,15 +3810,16 @@ function syncPublishSelections() {
     publishState.selectedClipId = lastReadyPublishClips[0] ? Number(lastReadyPublishClips[0].id) : null;
   }
 
-  if (lastYoutubeAccounts.length) publishState.onboardingHint = '';
+  if (youtubeAccountsSnapshot().length) publishState.onboardingHint = '';
 }
 
 function renderPublishConnectButton() {
   const html = '<i class="ti ti-brand-youtube" style="font-size:12px;vertical-align:-1px"></i> Подключить канал';
-  ['publish-connect-btn', 'publish-connect-btn-accounts', 'integrations-connect-btn'].forEach(id => {
+  const connectBusy = Boolean(window.ShortsFarmIntegrations?.isConnectBusy?.());
+  ['publish-connect-btn', 'publish-connect-btn-accounts'].forEach(id => {
     const btn = document.getElementById(id);
     if (!btn) return;
-    btn.disabled = publishState.busy;
+    btn.disabled = publishState.busy || connectBusy;
     btn.innerHTML = html;
   });
 }
@@ -3838,8 +3835,8 @@ function renderPublishStatePanel() {
     return;
   }
 
-  if (!lastYoutubeAccounts.length) {
-    const source = selectedProfile ? ` · ${oauthProfileSourceLabel(selectedProfile)}` : '';
+  if (!youtubeAccountsSnapshot().length) {
+    const source = selectedProfile ? ` · ${youtubeOAuthProfileSourceLabel(selectedProfile)}` : '';
     const hint = publishState.onboardingHint ? `<p class="err">${esc(publishState.onboardingHint)}</p>` : '';
     el.innerHTML = `<div class="setup-panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${badge('active')}<span class="mono txt">OAuth-клиент готов${esc(source)}</span></div><p>Выберите OAuth-клиент и нажмите «Подключить канал», чтобы открыть Google Consent Screen.</p>${hint}</div>`;
     return;
@@ -3854,7 +3851,8 @@ function renderPublishAccountsPanel() {
   if (!stateEl || !listEl) return;
   const profiles = getActiveOAuthProfiles();
 
-  if (!lastYoutubeAccounts.length) {
+  const youtubeAccounts = youtubeAccountsSnapshot();
+  if (!youtubeAccounts.length) {
     const text = profiles.length
       ? 'Нажмите «Подключить канал», чтобы добавить YouTube-канал через Google OAuth.'
       : 'Сначала добавьте OAuth-клиент в настройках YouTube OAuth.';
@@ -3864,7 +3862,7 @@ function renderPublishAccountsPanel() {
   }
 
   stateEl.innerHTML = `<div class="setup-panel"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${badge('active')}<span class="mono txt">Подключённые каналы</span></div><p>Здесь можно проверить подключённые каналы и отключить лишние.</p></div>`;
-  listEl.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Аккаунт</th><th>Канал</th><th>Google OAuth-клиент</th><th>Статус</th><th>Подключён</th><th>Обновлён</th><th>Действие</th></tr></thead><tbody>${lastYoutubeAccounts.map(account => {
+  listEl.innerHTML = `<table class="tbl"><thead><tr><th>#</th><th>Аккаунт</th><th>Канал</th><th>Google OAuth-клиент</th><th>Статус</th><th>Подключён</th><th>Обновлён</th><th>Действие</th></tr></thead><tbody>${youtubeAccounts.map(account => {
     const displayName = account.display_name || account.channel_title || 'YouTube аккаунт';
     const channel = account.channel_title || account.channel_id || '—';
     const profile = account.profile_name || (account.oauth_profile_id ? `Профиль #${account.oauth_profile_id}` : 'по умолчанию');
@@ -3889,7 +3887,7 @@ function renderPublishProfileSelect() {
   select.innerHTML = profiles.map(profile => {
     const suffix = [
       profile.is_default ? 'по умолчанию' : '',
-      oauthProfileSourceLabel(profile),
+      youtubeOAuthProfileSourceLabel(profile),
     ].filter(Boolean).join(' · ');
     return `<option value="${Number(profile.id)}"${Number(profile.id) === Number(publishState.selectedProfileId) ? ' selected' : ''}>${esc(profile.name || `Профиль #${profile.id}`)}${suffix ? ` · ${esc(suffix)}` : ''}</option>`;
   }).join('');
@@ -3897,7 +3895,7 @@ function renderPublishProfileSelect() {
   if (meta && selected) {
     const secret = selected.client_secret_set ? 'secret сохранён' : 'secret не задан';
     const redirect = selected.redirect_uri ? `<div>Redirect URI: <span class="mono">${esc(selected.redirect_uri)}</span></div>` : '';
-    meta.innerHTML = `<div>${esc(oauthProfileSourceLabel(selected))} · ${esc(secret)}</div>${redirect}`;
+    meta.innerHTML = `<div>${esc(youtubeOAuthProfileSourceLabel(selected))} · ${esc(secret)}</div>${redirect}`;
   }
 }
 
@@ -4104,15 +4102,12 @@ async function loadPublishView(options = {}) {
   const {silent = false} = options;
   renderPublishError('');
   try {
-    const [profilesData, accountsData, clipsData, jobsData, groupsData] = await Promise.all([
-      api.get('/api/publish/youtube/oauth-profiles'),
-      api.get('/api/publish/youtube/accounts'),
+    const [, clipsData, jobsData, groupsData] = await Promise.all([
+      Promise.resolve(window.ShortsFarmIntegrations?.ensureData?.({render: false})).catch(() => null),
       api.get('/api/clips?status=done&limit=200'),
       api.get('/api/publish/jobs?limit=200'),
       api.get('/api/publish/schedule-groups'),
     ]);
-    lastYoutubeProfiles = profilesData.profiles || [];
-    lastYoutubeAccounts = accountsData.accounts || [];
     lastReadyPublishClips = clipsData.clips || [];
     lastPublishJobs = jobsData.jobs || [];
     lastPublishScheduleGroups = groupsData.groups || [];
@@ -4351,411 +4346,6 @@ async function runSelectedPublishJobs() {
   }
 }
 
-function renderIntegrationsError(message) {
-  if (message) showInlineError('integrations-error', message);
-  else hideInlineError('integrations-error');
-}
-function integrationLinkedProfiles(account) {
-  return account?.linked_storage_profiles || [];
-}
-function integrationAccountSearchText(account) {
-  return [
-    account.id,
-    account.display_name,
-    account.local_alias,
-    account.account_email,
-    account.channel_id,
-    account.channel_title,
-    account.official_channel_title,
-    account.channel_handle,
-    account.channel_custom_url,
-    account.channel_description,
-    account.uploads_playlist_id,
-    account.profile_name,
-    ...(integrationLinkedProfiles(account).map(profile => `${profile.name} ${profile.handle}`)),
-  ].join(' ').toLowerCase();
-}
-function formatChannelNumber(value) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return '—';
-  return new Intl.NumberFormat('ru-RU', {notation: 'compact', maximumFractionDigits: 1}).format(num);
-}
-function youtubeAccountAvatarHtml(account) {
-  const url = account.channel_avatar_url || '';
-  const title = account.channel_title || account.display_name || 'YT';
-  const initials = title.trim().slice(0, 2).toUpperCase() || 'YT';
-  return url
-    ? `<img class="youtube-account-avatar" src="${esc(url)}" alt="">`
-    : `<div class="youtube-account-avatar fallback">${esc(initials)}</div>`;
-}
-function youtubeAccountStatsHtml(account) {
-  const subscribers = account.hidden_subscriber_count ? 'скрыто' : formatChannelNumber(account.subscriber_count);
-  return `<div class="youtube-account-stats">
-    <span title="Подписчики">👥 ${esc(subscribers)}</span>
-    <span title="Просмотры">▶ ${esc(formatChannelNumber(account.view_count))}</span>
-    <span title="Видео">▦ ${esc(formatChannelNumber(account.video_count))}</span>
-  </div>`;
-}
-function renderIntegrationsOAuthSelect() {
-  const select = document.getElementById('integrations-profile-select');
-  const meta = document.getElementById('integrations-profile-meta');
-  if (!select) return;
-  const profiles = getActiveOAuthProfiles();
-  if (!profiles.length) {
-    select.innerHTML = '<option value="">OAuth profile не найден</option>';
-    select.disabled = true;
-    if (meta) meta.innerHTML = '<div>Создайте или импортируйте Google API auth слева.</div>';
-    return;
-  }
-  if (!profiles.some(profile => Number(profile.id) === Number(publishState.selectedProfileId))) {
-    const defaultProfile = profiles.find(profile => profile.is_default) || profiles[0];
-    publishState.selectedProfileId = Number(defaultProfile.id);
-  }
-  select.disabled = false;
-  select.innerHTML = profiles.map(profile => {
-    const suffix = [profile.is_default ? 'по умолчанию' : '', oauthProfileSourceLabel(profile)].filter(Boolean).join(' · ');
-    return `<option value="${Number(profile.id)}"${Number(profile.id) === Number(publishState.selectedProfileId) ? ' selected' : ''}>${esc(profile.name || `OAuth #${profile.id}`)}${suffix ? ` · ${esc(suffix)}` : ''}</option>`;
-  }).join('');
-  const selected = getSelectedProfile();
-  if (meta && selected) {
-    meta.innerHTML = `<div>${esc(oauthProfileSourceLabel(selected))} · ${selected.client_secret_set ? 'secret сохранён' : 'secret не задан'}</div><div>Redirect URI: <span class="mono">${esc(selected.redirect_uri || '—')}</span></div>`;
-  }
-}
-function renderIntegrationsConnectState() {
-  const el = document.getElementById('integrations-connect-state');
-  if (!el) return;
-  const profiles = getActiveOAuthProfiles();
-  if (!profiles.length) {
-    el.innerHTML = `<div class="setup-panel">${badge('error')} <span class="mono txt">Нет активного Google API auth</span><p>Импортируйте OAuth Client JSON или создайте auth вручную.</p></div>`;
-    return;
-  }
-  const accountCount = (lastYoutubeAccounts || []).filter(account => (account.status || 'active') === 'active').length;
-  el.innerHTML = `<div class="setup-panel">${badge('active')} <span class="mono txt">Готово к подключению YouTube</span><p>Подключённых каналов: ${accountCount}. Выберите Google API auth и нажмите «Подключить канал».</p></div>`;
-}
-function renderIntegrationsOAuthProfilesPanel() {
-  const el = document.getElementById('integrations-oauth-profiles');
-  if (!el) return;
-  const rows = lastYoutubeProfiles || [];
-  if (!rows.length) {
-    el.innerHTML = '<div class="empty">Google API auth пока нет. Импортируйте JSON OAuth-клиента или создайте профиль вручную.</div>';
-    return;
-  }
-  el.innerHTML = `<table class="tbl compact"><thead><tr><th>#</th><th>Название</th><th>Client</th><th>Redirect</th><th>Статус</th><th>Действие</th></tr></thead><tbody>${rows.map(profile => {
-    const mode = `${oauthProfileSourceLabel(profile)}${profile.is_default ? ' · по умолчанию' : ''}`;
-    const actions = [
-      `<button class="btn-mini" onclick="editIntegrationOAuthProfile(${Number(profile.id)})">Редактировать</button>`,
-      profile.is_default ? '' : `<button class="btn-mini" onclick="setIntegrationDefaultOAuthProfile(${Number(profile.id)})">По умолчанию</button>`,
-      isEnvOAuthProfile(profile) ? '' : `<button class="btn-danger" onclick="deleteIntegrationOAuthProfile(${Number(profile.id)})">Удалить</button>`,
-    ].filter(Boolean).join('');
-    return `<tr><td class="mono dim">#${profile.id}</td><td><div class="mono txt">${esc(profile.name || `OAuth #${profile.id}`)}</div><div class="mono dim">${esc(mode)}</div></td><td class="mono dim ov">${esc(profile.client_id || '—')}</td><td class="mono dim ov">${esc(profile.redirect_uri || '—')}</td><td>${badge(profile.status || 'active')}</td><td><div class="row-actions">${actions}</div></td></tr>`;
-  }).join('')}</tbody></table>`;
-}
-function renderIntegrationsAccountsPanel() {
-  const el = document.getElementById('integrations-accounts-list');
-  if (!el) return;
-  const input = document.getElementById('integrations-search');
-  integrationsSearchQuery = (input?.value || integrationsSearchQuery || '').trim().toLowerCase();
-  const accounts = (lastYoutubeAccounts || []).filter(account => !integrationsSearchQuery || integrationAccountSearchText(account).includes(integrationsSearchQuery));
-  if (!accounts.length) {
-    el.innerHTML = '<div class="empty">YouTube-аккаунты не найдены. Подключите канал или измените поиск.</div>';
-    return;
-  }
-  el.innerHTML = `<table class="tbl integrations-accounts-table"><thead><tr><th>#</th><th>YouTube канал</th><th>Google API auth</th><th>Профили</th><th>Sync</th><th>Действие</th></tr></thead><tbody>${accounts.map(account => {
-    const officialName = account.channel_title || account.official_channel_title || `YouTube #${account.id}`;
-    const alias = account.display_name || account.local_alias || '';
-    const handle = account.channel_handle || account.channel_custom_url || '';
-    const oauth = account.oauth_profile?.name || account.profile_name || (account.oauth_profile_id ? `OAuth #${account.oauth_profile_id}` : 'не указан');
-    const linked = integrationLinkedProfiles(account);
-    const linkedHtml = linked.length
-      ? linked.map(profile => `<button class="link-video mono" onclick="openStorageProfile(${Number(profile.id)})">${esc(profile.name || `Профиль #${profile.id}`)}</button>`).join('<span class="mono dim">, </span>')
-      : '<span class="mono dim">не привязан</span>';
-    const disabled = account.status === 'disconnected';
-    const accountError = account.error ? `<div class="mono err">${esc(shortErrorText(account.error))}</div>` : '';
-    const syncError = account.metadata_sync_error ? `<div class="mono err" title="${esc(account.metadata_sync_error)}">${esc(shortErrorText(account.metadata_sync_error))}</div>` : '';
-    const description = account.channel_description ? `<div class="mono dim ov" title="${esc(account.channel_description)}">${esc(account.channel_description)}</div>` : '';
-    const published = account.channel_published_at ? `<span>создан: ${esc(formatMtime(account.channel_published_at))}</span>` : '';
-    const country = account.channel_country ? `<span>страна: ${esc(account.channel_country)}</span>` : '';
-    const syncMeta = [
-      account.metadata_synced_at ? `sync: ${formatMtime(account.metadata_synced_at)}` : 'sync: ещё не было',
-      account.uploads_playlist_id ? `uploads: ${shortPath(account.uploads_playlist_id)}` : '',
-    ].filter(Boolean).join(' · ');
-    return `<tr>
-      <td class="mono dim">#${account.id}</td>
-      <td>
-        <div class="youtube-account-cell">
-          ${youtubeAccountAvatarHtml(account)}
-          <div class="youtube-account-main">
-            <div class="mono txt">${esc(officialName)}</div>
-            ${alias && alias !== officialName ? `<div class="mono dim">alias: ${esc(alias)}</div>` : ''}
-            <div class="mono dim">${esc([account.account_email, account.channel_id].filter(Boolean).join(' · '))}</div>
-            ${handle ? `<div class="mono dim">${esc(handle)}</div>` : ''}
-            ${description}
-            <div class="youtube-account-meta">${[published, country].filter(Boolean).join(' · ')}</div>
-            ${youtubeAccountStatsHtml(account)}
-            ${accountError}
-          </div>
-        </div>
-      </td>
-      <td class="mono dim">${esc(oauth)}</td>
-      <td>${linkedHtml}</td>
-      <td><div>${badge(account.status || 'active')}</div><div class="mono dim">${esc(syncMeta)}</div>${syncError}</td>
-      <td><div class="row-actions">
-        <button class="btn-mini" onclick="syncYouTubeAccountMetadata(${Number(account.id)})">Обновить данные</button>
-        <button class="btn-mini" onclick="editYouTubeAccountAlias(${Number(account.id)})">Alias</button>
-        <button class="btn-danger" ${disabled ? 'disabled' : ''} onclick="disconnectYouTubeAccount(${Number(account.id)})">Отключить</button>
-      </div></td>
-    </tr>`;
-  }).join('')}</tbody></table>`;
-}
-function renderIntegrationsView() {
-  renderPublishConnectButton();
-  renderIntegrationsOAuthSelect();
-  renderIntegrationsConnectState();
-  renderIntegrationsOAuthProfilesPanel();
-  renderIntegrationsAccountsPanel();
-}
-async function loadIntegrationsView(options = {}) {
-  const {silent = false} = options;
-  renderIntegrationsError('');
-  try {
-    const [profilesData, accountsData] = await Promise.all([
-      api.get('/api/publish/youtube/oauth-profiles'),
-      api.get('/api/publish/youtube/accounts'),
-    ]);
-    lastYoutubeProfiles = profilesData.profiles || [];
-    lastYoutubeAccounts = accountsData.accounts || [];
-    syncPublishSelections();
-    renderIntegrationsView();
-  } catch (err) {
-    if (!silent) renderIntegrationsError(`Не удалось загрузить интеграции:\n${err.message || err}`);
-  }
-}
-function onIntegrationOAuthProfileChange(value) {
-  publishState.selectedProfileId = value ? Number(value) : null;
-  renderIntegrationsView();
-}
-
-const INTEGRATION_OAUTH_DEFAULT_REDIRECT_URI = 'http://127.0.0.1:8000/api/publish/youtube/oauth/callback';
-let integrationOAuthFormMode = 'json';
-let integrationOAuthEditingProfileId = null;
-
-function setIntegrationOAuthFormError(message) {
-  if (message) {
-    showInlineError('integration-oauth-form-error', message);
-  } else {
-    hideInlineError('integration-oauth-form-error');
-  }
-}
-
-function setIntegrationOAuthFormMode(mode = 'json') {
-  integrationOAuthFormMode = mode === 'edit' ? 'edit' : (mode === 'manual' ? 'manual' : 'json');
-  const title = document.getElementById('integration-oauth-modal-title');
-  const jsonWrap = document.getElementById('integration-oauth-json-wrap');
-  const manualWrap = document.getElementById('integration-oauth-manual-wrap');
-  const saveBtn = document.getElementById('integration-oauth-save-btn');
-  const hint = document.querySelector('.integration-oauth-next-hint');
-  if (title) {
-    title.textContent = integrationOAuthFormMode === 'edit'
-      ? 'Редактировать Google API auth'
-      : integrationOAuthFormMode === 'manual'
-        ? 'Создать Google API auth вручную'
-        : 'Импортировать Google API auth из JSON';
-  }
-  if (jsonWrap) jsonWrap.style.display = integrationOAuthFormMode === 'json' ? 'block' : 'none';
-  if (manualWrap) manualWrap.style.display = integrationOAuthFormMode === 'manual' || integrationOAuthFormMode === 'edit' ? 'grid' : 'none';
-  if (saveBtn) {
-    saveBtn.textContent = integrationOAuthFormMode === 'edit'
-      ? 'Сохранить auth'
-      : integrationOAuthFormMode === 'manual'
-        ? 'Создать auth'
-        : 'Импортировать auth';
-  }
-  if (hint) {
-    hint.textContent = integrationOAuthFormMode === 'edit'
-      ? 'После сохранения список Google API auth и выбор подключения канала обновятся автоматически.'
-      : 'Теперь нажмите “Подключить канал”, чтобы привязать YouTube-канал к этому Google API auth.';
-  }
-}
-
-function resetIntegrationOAuthForm(mode = 'json') {
-  integrationOAuthEditingProfileId = null;
-  setIntegrationOAuthFormMode(mode);
-  setIntegrationOAuthFormError('');
-  const hasProfiles = Boolean((lastYoutubeProfiles || []).length);
-  const fields = {
-    'integration-oauth-name': mode === 'manual' ? 'YouTube OAuth' : 'Imported YouTube OAuth',
-    'integration-oauth-json': '',
-    'integration-oauth-client-id': '',
-    'integration-oauth-client-secret': '',
-    'integration-oauth-redirect-uri': INTEGRATION_OAUTH_DEFAULT_REDIRECT_URI,
-  };
-  Object.entries(fields).forEach(([id, value]) => {
-    const el = document.getElementById(id);
-    if (el) el.value = value;
-  });
-  const defaultEl = document.getElementById('integration-oauth-default');
-  if (defaultEl) {
-    defaultEl.checked = !hasProfiles;
-    defaultEl.disabled = false;
-  }
-  ['integration-oauth-client-id', 'integration-oauth-client-secret', 'integration-oauth-redirect-uri'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.disabled = false;
-  });
-  const secret = document.getElementById('integration-oauth-client-secret');
-  if (secret) secret.placeholder = 'client_secret';
-  const saveBtn = document.getElementById('integration-oauth-save-btn');
-  if (saveBtn) saveBtn.disabled = false;
-}
-
-function createIntegrationOAuthProfile(mode = 'json') {
-  renderIntegrationsError('');
-  resetIntegrationOAuthForm(mode);
-  const modal = document.getElementById('integration-oauth-modal');
-  if (modal) modal.style.display = 'grid';
-  setTimeout(() => {
-    const focusId = integrationOAuthFormMode === 'manual' ? 'integration-oauth-client-id' : 'integration-oauth-json';
-    (document.getElementById(focusId) || document.getElementById('integration-oauth-name'))?.focus();
-  }, 0);
-}
-
-function closeIntegrationOAuthModal(event) {
-  if (event && event.target && event.target.id !== 'integration-oauth-modal') return;
-  const modal = document.getElementById('integration-oauth-modal');
-  if (modal) modal.style.display = 'none';
-  integrationOAuthEditingProfileId = null;
-  setIntegrationOAuthFormError('');
-}
-
-async function saveIntegrationOAuthProfile() {
-  const saveBtn = document.getElementById('integration-oauth-save-btn');
-  const name = (document.getElementById('integration-oauth-name')?.value || '').trim();
-  const isDefault = Boolean(document.getElementById('integration-oauth-default')?.checked);
-  setIntegrationOAuthFormError('');
-  try {
-    if (saveBtn) saveBtn.disabled = true;
-    let data;
-    if (integrationOAuthFormMode === 'edit') {
-      const profile = settingsProfileById(integrationOAuthEditingProfileId);
-      if (!profile) throw new Error('Google API auth не найден.');
-      const redirectUri = (document.getElementById('integration-oauth-redirect-uri')?.value || '').trim() || profile.redirect_uri || INTEGRATION_OAUTH_DEFAULT_REDIRECT_URI;
-      const payload = {
-        name: name || profile.name || `OAuth #${profile.id}`,
-        redirect_uri: redirectUri,
-        status: profile.status || 'active',
-      };
-      if (!isEnvOAuthProfile(profile)) {
-        const clientId = (document.getElementById('integration-oauth-client-id')?.value || '').trim();
-        const clientSecret = (document.getElementById('integration-oauth-client-secret')?.value || '').trim();
-        if (!clientId) throw new Error('Укажите client_id.');
-        payload.client_id = clientId;
-        if (clientSecret) payload.client_secret = clientSecret;
-      }
-      data = await api.patch(`/api/publish/youtube/oauth-profiles/${Number(profile.id)}`, payload);
-      const makeDefault = Boolean(document.getElementById('integration-oauth-default')?.checked);
-      if (makeDefault && !profile.is_default) {
-        data = await api.post(`/api/publish/youtube/oauth-profiles/${Number(profile.id)}/set-default`, {});
-      }
-    } else if (integrationOAuthFormMode === 'manual') {
-      const clientId = (document.getElementById('integration-oauth-client-id')?.value || '').trim();
-      const clientSecret = (document.getElementById('integration-oauth-client-secret')?.value || '').trim();
-      const redirectUri = (document.getElementById('integration-oauth-redirect-uri')?.value || '').trim() || INTEGRATION_OAUTH_DEFAULT_REDIRECT_URI;
-      if (!clientId || !clientSecret) {
-        throw new Error('Укажите client_id и client_secret.');
-      }
-      data = await api.post('/api/publish/youtube/oauth-profiles', {
-        name: name || 'YouTube OAuth',
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri,
-        is_default: isDefault,
-      });
-    } else {
-      const jsonText = (document.getElementById('integration-oauth-json')?.value || '').trim();
-      if (!jsonText) {
-        throw new Error('Вставьте OAuth Client JSON.');
-      }
-      data = await api.post('/api/publish/youtube/oauth-profiles/import-client-json', {
-        name,
-        json_text: jsonText,
-        is_default: isDefault,
-      });
-    }
-    if (data?.profile?.id) publishState.selectedProfileId = Number(data.profile.id);
-    closeIntegrationOAuthModal();
-    showToast(integrationOAuthFormMode === 'edit' ? 'Google API auth обновлён' : 'Google API auth сохранён');
-    await loadIntegrationsView({silent: true});
-  } catch (err) {
-    const message = err.message || 'Не удалось сохранить Google API auth';
-    setIntegrationOAuthFormError(message);
-    renderIntegrationsError(message);
-  } finally {
-    if (saveBtn) saveBtn.disabled = false;
-  }
-}
-function editIntegrationOAuthProfile(profileId) {
-  const profile = settingsProfileById(profileId);
-  if (!profile) return;
-  renderIntegrationsError('');
-  integrationOAuthEditingProfileId = Number(profile.id);
-  setIntegrationOAuthFormMode('edit');
-  setIntegrationOAuthFormError('');
-  const fields = {
-    'integration-oauth-name': profile.name || '',
-    'integration-oauth-json': '',
-    'integration-oauth-client-id': profile.client_id || '',
-    'integration-oauth-client-secret': '',
-    'integration-oauth-redirect-uri': profile.redirect_uri || INTEGRATION_OAUTH_DEFAULT_REDIRECT_URI,
-  };
-  Object.entries(fields).forEach(([id, value]) => {
-    const el = document.getElementById(id);
-    if (el) el.value = value;
-  });
-  const canEditCredentials = !isEnvOAuthProfile(profile);
-  ['integration-oauth-client-id', 'integration-oauth-client-secret'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.disabled = !canEditCredentials;
-  });
-  const redirect = document.getElementById('integration-oauth-redirect-uri');
-  if (redirect) redirect.disabled = false;
-  const secret = document.getElementById('integration-oauth-client-secret');
-  if (secret) {
-    secret.placeholder = canEditCredentials
-      ? 'Оставьте пустым, чтобы не менять'
-      : 'ENV Google API auth нельзя менять здесь';
-  }
-  const defaultEl = document.getElementById('integration-oauth-default');
-  if (defaultEl) {
-    defaultEl.checked = Boolean(profile.is_default);
-    defaultEl.disabled = Boolean(profile.is_default);
-  }
-  const saveBtn = document.getElementById('integration-oauth-save-btn');
-  if (saveBtn) saveBtn.disabled = false;
-  const modal = document.getElementById('integration-oauth-modal');
-  if (modal) modal.style.display = 'grid';
-  setTimeout(() => document.getElementById('integration-oauth-name')?.focus(), 0);
-}
-async function setIntegrationDefaultOAuthProfile(profileId) {
-  try {
-    await api.post(`/api/publish/youtube/oauth-profiles/${Number(profileId)}/set-default`, {});
-    publishState.selectedProfileId = Number(profileId);
-    showToast('Google API auth выбран по умолчанию');
-    await loadIntegrationsView({silent: true});
-  } catch (err) {
-    renderIntegrationsError(err.message || 'Не удалось выбрать Google API auth по умолчанию');
-  }
-}
-async function deleteIntegrationOAuthProfile(profileId) {
-  if (!confirm(`Удалить Google API auth #${profileId}?`)) return;
-  try {
-    await api.del(`/api/publish/youtube/oauth-profiles/${Number(profileId)}`);
-    showToast('Google API auth удалён');
-    await loadIntegrationsView({silent: true});
-  } catch (err) {
-    renderIntegrationsError(err.message || 'Не удалось удалить Google API auth');
-  }
-}
-
 async function retryFailedPublishJobs() {
   const selected = selectedPublishJobList().filter(job => job.status === 'failed' || job.status === 'cancelled');
   const jobs = selected.length ? selected : getVisiblePublishJobs().filter(job => job.status === 'failed');
@@ -4798,134 +4388,6 @@ function hideDonePublishJobs() {
   showToast('Завершённые задачи скрыты из вида');
 }
 
-async function startYouTubeConnect() {
-  const selectedProfile = getSelectedProfile();
-  if (!selectedProfile) {
-    const message = 'OAuth-клиент не найден. Создайте OAuth профиль в настройках.';
-    publishState.onboardingHint = message;
-    if (currentView === 'integrations') {
-      renderIntegrationsView();
-      renderIntegrationsError(message);
-    } else {
-      renderPublishView();
-      renderPublishError(message);
-    }
-    showToast(message, 'err');
-    return;
-  }
-  const popup = window.open('about:blank', 'shortsfarm_youtube_oauth');
-  if (popup) {
-    try {
-      popup.document.write(`<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>ShortsFarm · YouTube OAuth</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f4f5;color:#18181b;font:16px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif}main{padding:24px 28px;border:1px solid #d4d4d8;border-radius:14px;background:#fff;box-shadow:0 20px 40px rgba(0,0,0,.08)}h1{margin:0 0 8px;font-size:20px}p{margin:0;color:#52525b}</style></head><body><main><h1>Открываю Google OAuth…</h1><p>Подождите пару секунд.</p></main></body></html>`);
-      popup.document.close();
-    } catch {}
-  }
-  renderPublishError('');
-  renderIntegrationsError('');
-  publishState.busy = true;
-  renderPublishConnectButton();
-  try {
-    const data = await api.post('/api/publish/youtube/connect/start', {oauth_profile_id: Number(selectedProfile.id)});
-    if (!data?.auth_url) throw new Error('Google OAuth URL не получен');
-    if (popup && !popup.closed) {
-      popup.location.href = data.auth_url;
-      popup.focus?.();
-      showToast('Открываю Google Consent Screen');
-    } else {
-      showToast('Браузер заблокировал новую вкладку. Открываю авторизацию в текущем окне.', 'warn');
-      window.location.href = data.auth_url;
-    }
-  } catch (err) {
-    if (popup && !popup.closed) {
-      popup.close();
-    }
-    const message = err.message || 'Не удалось начать подключение YouTube';
-    if (currentView === 'integrations') renderIntegrationsError(message);
-    else renderPublishError(message);
-    showToast(message, 'err');
-  } finally {
-    publishState.busy = false;
-    renderPublishConnectButton();
-  }
-}
-
-async function disconnectYouTubeAccount(accountId) {
-  if (!accountId) return;
-  renderPublishError('');
-  renderIntegrationsError('');
-  try {
-    await api.post(`/api/publish/youtube/accounts/${accountId}/disconnect`, {});
-    showToast('YouTube канал отключён');
-    if (currentView === 'integrations') await loadIntegrationsView({silent: true});
-    else if (currentView === 'storage-profile') await window.ShortsFarmStorageProfiles?.reloadCurrentProfile?.();
-    else await loadPublishView({silent: true});
-  } catch (err) {
-    const message = `Не удалось отключить канал:\n${err.message || err}`;
-    if (currentView === 'integrations') renderIntegrationsError(message);
-    else renderPublishError(message);
-  }
-}
-
-async function syncYouTubeAccountMetadata(accountId) {
-  if (!accountId) return;
-  renderIntegrationsError('');
-  try {
-    const data = await api.post(`/api/publish/youtube/accounts/${Number(accountId)}/sync-metadata`, {});
-    if (data.status === 'failed') {
-      renderIntegrationsError(data.error || 'Не удалось обновить данные канала');
-      showToast('Данные канала не обновлены', 'err');
-    } else {
-      showToast('Данные YouTube-канала обновлены');
-    }
-    await loadIntegrationsView({silent: true});
-  } catch (err) {
-    const message = err.message || 'Не удалось обновить данные канала';
-    renderIntegrationsError(message);
-    showToast(message, 'err');
-  }
-}
-
-async function syncAllYouTubeAccountsMetadata() {
-  renderIntegrationsError('');
-  try {
-    const data = await api.post('/api/publish/youtube/accounts/sync-metadata', {});
-    const summary = data.summary || {};
-    const failed = Number(summary.failed || 0);
-    showToast(`Обновлено каналов: ${summary.ok || 0} · ошибок: ${failed}`, failed ? 'err' : 'ok');
-    await loadIntegrationsView({silent: true});
-  } catch (err) {
-    const message = err.message || 'Не удалось обновить данные каналов';
-    renderIntegrationsError(message);
-    showToast(message, 'err');
-  }
-}
-
-async function editYouTubeAccountAlias(accountId) {
-  const account = (lastYoutubeAccounts || []).find(item => Number(item.id) === Number(accountId));
-  if (!account) return;
-  const alias = await openTextActionModal({
-    title: 'Локальное название YouTube-канала',
-    label: 'Alias в ShortsFarm',
-    value: account.display_name || account.local_alias || account.channel_title || '',
-    placeholder: account.channel_title || 'Например: anime shorts',
-    hint: 'Это локальное имя для удобства. Официальное название YouTube-канала не меняется.',
-    confirmText: 'Сохранить alias',
-    maxLength: 160,
-    validate: value => value.length > 160 ? 'Alias слишком длинный.' : '',
-  });
-  if (alias === null) return;
-  renderIntegrationsError('');
-  try {
-    await api.patch(`/api/publish/youtube/accounts/${Number(accountId)}`, {local_alias: alias});
-    showToast('Локальный alias сохранён');
-    await loadIntegrationsView({silent: true});
-  } catch (err) {
-    const message = err.message || 'Не удалось сохранить alias';
-    renderIntegrationsError(message);
-    showToast(message, 'err');
-  }
-}
-
 function setSettingsTab(id, btn) {
   document.querySelectorAll('[data-settings-tab]').forEach(item => item.classList.remove('on'));
   if (btn) btn.classList.add('on');
@@ -4936,10 +4398,6 @@ function setSettingsTab(id, btn) {
 
 function openYouTubeSettings() {
   nav('integrations', document.querySelector('[data-v="integrations"]'));
-}
-
-function settingsProfileById(profileId) {
-  return (lastYoutubeProfiles || []).find(profile => Number(profile.id) === Number(profileId)) || null;
 }
 
 function showSettingsError(message) {
@@ -5096,10 +4554,11 @@ function updatePublishButtons() {
   const mode = document.getElementById('publish-mode')?.value || 'public';
   const publishAt = document.getElementById('publish-at')?.value.trim() || '';
   const valid = hasProfile && hasAccount && hasClip && Boolean(title) && Boolean(category) && (mode !== 'schedule' || Boolean(publishAt));
+  const connectBusy = Boolean(window.ShortsFarmIntegrations?.isConnectBusy?.());
   if (enqueueBtn) enqueueBtn.disabled = publishState.busy || !valid;
   if (uploadBtn) uploadBtn.disabled = publishState.busy || !valid;
   connectButtons.forEach(btn => {
-    btn.disabled = publishState.busy || !hasProfile;
+    btn.disabled = publishState.busy || connectBusy || !hasProfile;
   });
 }
 
@@ -5196,23 +4655,8 @@ async function runPublishWorkerOnce() {
 }
 
 function handleOAuthEvent(payload) {
-  const ok = Boolean(payload?.ok);
-  const message = payload?.message || '';
-  if (ok) {
-    publishState.onboardingHint = '';
-    showToast('YouTube канал подключён. Обновляю список каналов...');
-  } else {
-    showToast(message || 'Подключение YouTube не завершено. Попробуйте ещё раз.', 'err');
-    if (currentView === 'integrations') {
-      renderIntegrationsError(message || 'Подключение YouTube не завершено. Попробуйте ещё раз.');
-    } else if (currentView === 'publish') {
-      renderPublishError(message || 'Подключение YouTube не завершено. Попробуйте ещё раз.');
-    }
-  }
-  loadSettingsView({silent: true});
-  if (currentView === 'integrations') loadIntegrationsView({silent: true});
-  else loadPublishView({silent: true});
-  if (currentView === 'storage-profile') window.ShortsFarmStorageProfiles?.reloadCurrentProfile?.();
+  if (payload?.ok) publishState.onboardingHint = '';
+  window.ShortsFarmIntegrations?.handleOAuthEvent?.(payload);
 }
 
 function editingOptionalId(value) {
@@ -5231,16 +4675,16 @@ function activeStudioEditingTemplates() {
 }
 
 async function loadEditingSupportData() {
-  const [poolsData, templatesData, profilesData, accountsData] = await Promise.all([
+  await Promise.resolve(window.ShortsFarmIntegrations?.ensureData?.({render: false})).catch(() => null);
+  const [poolsData, templatesData, profilesData] = await Promise.all([
     api.get('/api/editing/reaction-pools').catch(() => ({items: []})),
     api.get('/api/studio/templates?status=active').catch(() => ({items: []})),
     api.get('/api/editing/channel-profiles').catch(() => ({items: []})),
-    api.get('/api/publish/youtube/accounts').catch(() => ({accounts: []})),
   ]);
   editingPools = poolsData.items || [];
   editingStudioTemplates = studioTemplateOptions(templatesData.items || []);
   editingProfiles = profilesData.items || [];
-  editingAccounts = accountsData.accounts || [];
+  editingAccounts = window.ShortsFarmIntegrations?.getAccounts?.() || [];
   const profileYoutubeAccounts = window.ShortsFarmStorageProfiles?.getYoutubeAccounts?.() || [];
   if (profileYoutubeAccounts.length) {
     const known = new Map(editingAccounts.map(account => [Number(account.id), account]));
@@ -5491,6 +4935,32 @@ async function loadOutputs() {
   }
 }
 
+window.ShortsFarmIntegrations?.configure?.({
+  apiGet: path => api.get(path),
+  apiPost: (path, body) => api.post(path, body),
+  apiPatch: (path, body) => api.patch(path, body),
+  apiDel: path => api.del(path),
+  badge,
+  currentView: () => currentView,
+  esc,
+  formatMtime,
+  hideInlineError,
+  loadSettingsView,
+  nav,
+  openStorageProfile: profileId => window.ShortsFarmStorageProfiles?.openStorageProfile?.(profileId),
+  openTextActionModal,
+  refreshPublishView: options => loadPublishView(options),
+  reloadStorageProfile: () => window.ShortsFarmStorageProfiles?.reloadCurrentProfile?.(),
+  renderPublishConnectButton,
+  renderPublishError,
+  shortErrorText,
+  shortPath,
+  showInlineError,
+  showToast,
+  syncPublishSelections,
+  getPublishSelectedOAuthProfileId: () => publishState.selectedProfileId,
+});
+
 window.ShortsFarmStorageProfiles?.configure?.({
   apiGet: path => api.get(path),
   apiPost: (path, body) => api.post(path, body),
@@ -5524,7 +4994,7 @@ window.ShortsFarmStorageProfiles?.configure?.({
   openRenderQueue: query => openRenderQueueForStorageProfile(query),
   openStudioTemplate,
   syncGlobalYoutubeAccounts: accounts => {
-    if (Array.isArray(accounts)) lastYoutubeAccounts = accounts.slice();
+    window.ShortsFarmIntegrations?.syncAccountsSnapshot?.(accounts);
   },
   badge,
   ruStatus,
@@ -5553,20 +5023,6 @@ Object.assign(window, {
   openInspector,
   closeInspector,
   renderActionBar,
-  loadIntegrationsView,
-  renderIntegrationsAccountsPanel,
-  onIntegrationOAuthProfileChange,
-  createIntegrationOAuthProfile,
-  closeIntegrationOAuthModal,
-  saveIntegrationOAuthProfile,
-  editIntegrationOAuthProfile,
-  setIntegrationDefaultOAuthProfile,
-  deleteIntegrationOAuthProfile,
-  startYouTubeConnect,
-  disconnectYouTubeAccount,
-  syncYouTubeAccountMetadata,
-  syncAllYouTubeAccountsMetadata,
-  editYouTubeAccountAlias,
   openStudioTemplate,
   openYouTubeSettings,
 });
@@ -5606,5 +5062,5 @@ setInterval(() => {
     loadJobs();
     if (queueSubView === 'clips') loadClips();
   }
-  if (currentView === 'integrations') loadIntegrationsView({silent: true});
+  if (currentView === 'integrations') window.ShortsFarmIntegrations?.loadIntegrationsView?.({silent: true});
 }, 5000);

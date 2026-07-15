@@ -299,52 +299,7 @@
 
     {% include "views/storage_profiles.html" %}
 
-    <div id="v-integrations" class="v">
-      <div class="ph"><h1>Интеграции</h1><p>Google API auth, подключённые YouTube-каналы и связь аккаунтов с локальными профилями</p></div>
-      <div id="integrations-error" class="err-line" style="display:none;margin-bottom:14px"></div>
-      <div class="publish-grid integrations-grid">
-        <section class="box">
-          <div class="box-head">
-            <span>Google API auth</span>
-            <div class="row-actions">
-              <button class="btn-mini" onclick="loadIntegrationsView()">Обновить</button>
-              <button class="btn-secondary" onclick="createIntegrationOAuthProfile('json')">Импорт JSON</button>
-              <button class="btn-secondary" onclick="createIntegrationOAuthProfile('manual')">Создать вручную</button>
-            </div>
-          </div>
-          <div id="integrations-oauth-profiles"></div>
-        </section>
-
-        <section class="box">
-          <div class="box-head">
-            <span>Подключение YouTube</span>
-            <button class="btn-primary" id="integrations-connect-btn" onclick="startYouTubeConnect()">
-              <i class="ti ti-brand-youtube"></i> Подключить канал
-            </button>
-          </div>
-          <div class="form-body">
-            <div class="field">
-              <label class="field-lbl">Google API auth для нового подключения</label>
-              <select id="integrations-profile-select" onchange="onIntegrationOAuthProfileChange(this.value)"></select>
-              <div id="integrations-profile-meta" class="settings-meta" style="margin-top:8px"></div>
-            </div>
-            <div id="integrations-connect-state"></div>
-          </div>
-        </section>
-      </div>
-
-      <section class="box">
-        <div class="box-head">
-          <span>YouTube-аккаунты</span>
-          <div class="row-actions">
-            <input id="integrations-search" class="compact-input" type="text" placeholder="Поиск канала, OAuth или профиля…" oninput="renderIntegrationsAccountsPanel()">
-            <button class="btn-mini" onclick="syncAllYouTubeAccountsMetadata()">Обновить данные каналов</button>
-            <button class="btn-mini" onclick="loadIntegrationsView()">Обновить</button>
-          </div>
-        </div>
-        <div id="integrations-accounts-list"></div>
-      </section>
-    </div>
+    {% include "views/integrations.html" %}
 
     <div id="v-settings" class="v">
       <div class="ph"><h1>Настройки</h1><p>рабочая папка ShortsFarm и локальные параметры приложения</p></div>
@@ -491,51 +446,7 @@ npm --prefix frontend run build</pre>
   </section>
 </div>
 
-<div id="integration-oauth-modal" class="modal-backdrop" style="display:none" onclick="closeIntegrationOAuthModal(event)">
-  <section class="schedule-modal integration-oauth-modal" onclick="event.stopPropagation()">
-    <div class="box-head">
-      <span id="integration-oauth-modal-title">Google API auth</span>
-      <button class="btn-mini" onclick="closeIntegrationOAuthModal()">Закрыть</button>
-    </div>
-    <div class="schedule-modal-body">
-      <div id="integration-oauth-form-error" class="err-line" style="display:none;margin-bottom:12px"></div>
-      <div class="field">
-        <label class="field-lbl">Название</label>
-        <input id="integration-oauth-name" type="text" placeholder="YouTube OAuth">
-      </div>
-      <div id="integration-oauth-json-wrap" class="field">
-        <label class="field-lbl">OAuth Client JSON</label>
-        <textarea id="integration-oauth-json" spellcheck="false" placeholder='{"web":{"client_id":"...","client_secret":"...","redirect_uris":["http://127.0.0.1:8000/api/publish/youtube/oauth/callback"]}}'></textarea>
-        <div class="settings-meta">Скопируйте JSON OAuth Client из Google Cloud. Поддерживаются web и installed форматы.</div>
-      </div>
-      <div id="integration-oauth-manual-wrap" class="integration-oauth-manual-grid">
-        <div class="field">
-          <label class="field-lbl">client_id</label>
-          <input id="integration-oauth-client-id" type="text" placeholder="client_id.apps.googleusercontent.com">
-        </div>
-        <div class="field">
-          <label class="field-lbl">client_secret</label>
-          <input id="integration-oauth-client-secret" type="password" placeholder="client_secret">
-        </div>
-        <div class="field span-2">
-          <label class="field-lbl">redirect_uri</label>
-          <input id="integration-oauth-redirect-uri" type="text" placeholder="http://127.0.0.1:8000/api/publish/youtube/oauth/callback">
-        </div>
-      </div>
-      <label class="toggle-label" style="margin-top:8px">
-        <input id="integration-oauth-default" type="checkbox">
-        Сделать Google API auth по умолчанию
-      </label>
-      <div class="setup-panel integration-oauth-next-hint">
-        Теперь нажмите “Подключить канал”, чтобы привязать YouTube-канал к этому Google API auth.
-      </div>
-      <div class="row-actions end">
-        <button class="btn-secondary" onclick="closeIntegrationOAuthModal()">Отмена</button>
-        <button class="btn-primary" id="integration-oauth-save-btn" onclick="saveIntegrationOAuthProfile()">Сохранить</button>
-      </div>
-    </div>
-  </section>
-</div>
+{% include "components/integration_oauth_modal.html" %}
 
 <div id="publish-schedule-modal" class="modal-backdrop" style="display:none" onclick="closePublishScheduleEditor(event)">
   <section class="schedule-modal" onclick="event.stopPropagation()">
@@ -590,6 +501,7 @@ npm --prefix frontend run build</pre>
 <script src="/static/js/features/files.js?v={{ asset_version }}"></script>
 <script src="/static/js/features/tags.js?v={{ asset_version }}"></script>
 <script src="/static/js/features/storage-profiles.js?v={{ asset_version }}"></script>
+<script src="/static/js/features/integrations.js?v={{ asset_version }}"></script>
 <script src="/static/app.js?v={{ asset_version }}"></script>
 {% if studio_built %}
 <link rel="stylesheet" href="/studio/assets/studio.css">
