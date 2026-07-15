@@ -9,7 +9,7 @@ from .. import db
 from ..workspace_fs import resolve_workspace_path
 from .publish_payloads import publish_job_dict
 from .social_account_payloads import social_account_base_dict
-from .tag_catalog import row_value as _row
+from .api_common import row_value as _row
 from .tag_catalog import tag_dict
 
 

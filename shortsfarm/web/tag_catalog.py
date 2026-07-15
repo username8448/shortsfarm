@@ -9,18 +9,7 @@ from typing import Any
 from .. import db
 from ..services import VIDEO_EXTENSIONS
 from ..workspace_fs import SYSTEM_FOLDERS, get_workspace_root, resolve_workspace_path
-
-
-def row_value(row: Any, key: str, default: Any = None) -> Any:
-    try:
-        if key in row.keys():
-            return row[key]
-    except Exception:
-        pass
-    try:
-        return row[key]
-    except Exception:
-        return default
+from .api_common import row_value
 
 
 def tag_dict(row: Any) -> dict[str, Any]:

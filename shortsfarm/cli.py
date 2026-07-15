@@ -999,12 +999,12 @@ def youtube_connect_cmd(
 
         from fastapi import HTTPException
 
-        from .web import api as web_api
+        from .web import integrations_api as web_integrations_api
         from .web.schemas import YouTubeConnectStartRequest
 
         db.init_db()
         try:
-            payload = web_api.youtube_connect_start(
+            payload = web_integrations_api.youtube_connect_start(
                 YouTubeConnectStartRequest(oauth_profile_id=profile_id)
             )
         except HTTPException as exc:

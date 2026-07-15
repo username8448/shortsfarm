@@ -25,7 +25,7 @@ from .api_common import normalize_setting_text
 from .storage_profile_youtube_service import (
     touch_linked_storage_profiles_youtube_branding,
 )
-from .tag_catalog import row_value as _row
+from .api_common import row_value as _row
 from .youtube_integration_payloads import youtube_account_dict
 
 

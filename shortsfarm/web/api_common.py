@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import HTTPException
 
 from .. import db
@@ -21,3 +23,15 @@ def normalize_setting_text(value: str | None) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def row_value(row: Any, key: str, default: Any = None) -> Any:
+    try:
+        if key in row.keys():
+            return row[key]
+    except Exception:
+        pass
+    try:
+        return row[key]
+    except Exception:
+        return default

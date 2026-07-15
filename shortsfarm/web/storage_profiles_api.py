@@ -27,7 +27,7 @@ from .storage_profile_payloads import (
     storage_profile_item_dict,
     storage_profile_service_link_context,
 )
-from .tag_catalog import row_value as _row
+from .api_common import row_value as _row
 
 router = APIRouter()
 

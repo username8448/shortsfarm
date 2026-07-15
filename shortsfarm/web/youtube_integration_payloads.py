@@ -7,7 +7,7 @@ from ..config import DEFAULT_YOUTUBE_REDIRECT_URI
 from .api_common import normalize_setting_text
 from .social_account_payloads import social_account_base_dict
 from .storage_profile_payloads import storage_profile_dict
-from .tag_catalog import row_value as _row
+from .api_common import row_value as _row
 
 
 def youtube_oauth_profile_dict(row: Any) -> dict[str, Any]:

@@ -510,7 +510,7 @@ def test_youtube_accounts_cmd(runner):
 def test_youtube_connect_cmd(runner):
     from shortsfarm.cli import app
 
-    with patch("shortsfarm.web.api.youtube_connect_start", return_value={
+    with patch("shortsfarm.web.integrations_api.youtube_connect_start", return_value={
         "auth_url": "https://accounts.google.com/o/oauth2/auth?state=test",
         "oauth_profile_id": 1,
         "profile_name": "CLI Profile",

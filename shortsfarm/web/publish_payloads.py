@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..publish_schedule import schedule_state, seconds_until
-from .tag_catalog import row_value as _row
+from .api_common import row_value as _row
 
 
 def publish_job_dict(row: Any) -> dict[str, Any]:

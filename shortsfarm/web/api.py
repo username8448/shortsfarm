@@ -93,7 +93,6 @@ from .schemas import (
 )
 from .api_common import fail, init_api
 from .api_common import normalize_setting_text as _normalize_setting_text
-from .integrations_api import youtube_connect_start as youtube_connect_start
 from .publish_payloads import publish_job_dict as _publish_job_dict
 from .tag_catalog import (
     catalog_tags_for_video as _catalog_tags_for_video,

@@ -15,7 +15,7 @@ from .storage_profile_payloads import (
     tag_rule_dict,
 )
 from .tag_catalog import list_catalog_videos
-from .tag_catalog import row_value as _row
+from .api_common import row_value as _row
 
 
 LOCAL_STORAGE_PROFILE_VIDEO_FOLDERS = {"edits", "ready", "published"}

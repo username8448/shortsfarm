@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .tag_catalog import row_value as _row
+from .api_common import row_value as _row
 
 
 def social_account_base_dict(row: Any) -> dict[str, Any]:

@@ -16,7 +16,7 @@ from .storage_profile_catalog import (
     validate_local_storage_workspace_video,
 )
 from .storage_profile_payloads import storage_profile_dict
-from .tag_catalog import row_value as _row
+from .api_common import row_value as _row
 
 
 PROFILE_PUBLISH_DEFAULTS = {
