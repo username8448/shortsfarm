@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from shortsfarm.web import storage_profiles_api
+from shortsfarm.web import storage_profiles_api, storage_profile_youtube_api
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -163,7 +163,7 @@ def test_storage_profile_youtube_link_and_unlink(tmp_path):
     profile_id = _profile_id()
     account_id = _youtube_account(channel_title="Shorts Channel")
 
-    linked = api.local_storage_profile_youtube_link(
+    linked = storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )["profile"]
@@ -177,7 +177,7 @@ def test_storage_profile_youtube_link_and_unlink(tmp_path):
     listed_profile = next(item for item in listed if item["id"] == profile_id)
     assert listed_profile["service_links"][0]["external_account_id"] == account_id
 
-    unlinked = api.local_storage_profile_youtube_unlink(profile_id)["profile"]
+    unlinked = storage_profile_youtube_api.local_storage_profile_youtube_unlink(profile_id)["profile"]
 
     assert unlinked["service_links"] == []
 
@@ -197,7 +197,7 @@ def test_storage_profile_youtube_link_uses_effective_channel_branding(tmp_path):
         avatar_url="https://img.example/official.jpg",
     )
 
-    profile = api.local_storage_profile_youtube_link(
+    profile = storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )["profile"]
@@ -223,7 +223,7 @@ def test_storage_profile_manual_name_override_wins_over_youtube_branding(tmp_pat
     profile_id = _profile_id(name="Local Name")
     account_id = _youtube_account(channel_title="Official One")
     _set_youtube_account_metadata(account_id, title="Official One")
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -263,7 +263,7 @@ def test_storage_profile_field_overrides_can_return_to_youtube(tmp_path):
         title="Official One",
         avatar_url="https://img.example/youtube-avatar.jpg",
     )
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -301,7 +301,7 @@ def test_storage_profile_youtube_branding_disabled_uses_local_values(tmp_path):
     profile_id = _profile_id(name="Local Name")
     account_id = _youtube_account(channel_title="Official One")
     _set_youtube_account_metadata(account_id, title="Official One")
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -329,7 +329,7 @@ def test_youtube_account_sync_updates_linked_profile_branding(monkeypatch, tmp_p
         title="Synced Official",
         avatar_url="https://img.example/synced-official.jpg",
     )
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -357,7 +357,7 @@ def test_storage_profile_youtube_branding_sync_error_is_stored(monkeypatch, tmp_
     profile_id = _profile_id(name="Local Name")
     account_id = _youtube_account(channel_title="Broken Channel")
     _set_youtube_account_metadata(account_id, title="Broken Channel")
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -367,7 +367,7 @@ def test_storage_profile_youtube_branding_sync_error_is_stored(monkeypatch, tmp_
 
     monkeypatch.setattr(publish_youtube, "build_youtube_client", fail_build)
 
-    result = api.local_storage_profile_youtube_sync_branding(profile_id)
+    result = storage_profile_youtube_api.local_storage_profile_youtube_sync_branding(profile_id)
 
     assert result["status"] == "failed"
     assert "YouTube metadata unavailable" in result["error"]
@@ -387,7 +387,7 @@ def test_storage_profile_sync_error_keeps_last_success_time(monkeypatch, tmp_pat
     _set_youtube_account_metadata(account_id, title="Broken Channel")
     success_at = "2026-07-01T10:00:00+00:00"
     db.update_local_storage_profile_youtube_branding_sync(profile_id, synced_at=success_at, error=None)
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -396,7 +396,7 @@ def test_storage_profile_sync_error_keeps_last_success_time(monkeypatch, tmp_pat
         raise RuntimeError("YouTube metadata unavailable")
 
     monkeypatch.setattr(publish_youtube, "build_youtube_client", fail_build)
-    result = api.local_storage_profile_youtube_sync_branding(profile_id)
+    result = storage_profile_youtube_api.local_storage_profile_youtube_sync_branding(profile_id)
 
     assert result["status"] == "failed"
     assert result["profile"]["youtube_branding"]["synced_at"] == success_at
@@ -416,7 +416,7 @@ def test_storage_profile_youtube_link_keeps_link_on_sync_error(monkeypatch, tmp_
         raise RuntimeError("metadata failed")
 
     monkeypatch.setattr(publish_youtube, "build_youtube_client", fail_build)
-    result = api.local_storage_profile_youtube_link(
+    result = storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -440,12 +440,12 @@ def test_storage_profile_youtube_unlink_clears_branding_status(monkeypatch, tmp_
         raise RuntimeError("metadata failed")
 
     monkeypatch.setattr(publish_youtube, "build_youtube_client", fail_build)
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
 
-    profile = api.local_storage_profile_youtube_unlink(profile_id)["profile"]
+    profile = storage_profile_youtube_api.local_storage_profile_youtube_unlink(profile_id)["profile"]
 
     assert profile["service_links"] == []
     assert profile["youtube_branding"]["sync_error"] is None
@@ -468,7 +468,7 @@ def test_youtube_account_sync_updates_multiple_linked_profiles(monkeypatch, tmp_
     )
 
     for profile_id in (first_profile_id, second_profile_id):
-        api.local_storage_profile_youtube_link(
+        storage_profile_youtube_api.local_storage_profile_youtube_link(
             profile_id,
             LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
         )
@@ -490,11 +490,11 @@ def test_storage_profile_youtube_link_updates_existing_link(tmp_path):
     first_id = _youtube_account(channel_id="channel-1", channel_title="First")
     second_id = _youtube_account(channel_id="channel-2", channel_title="Second")
 
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=first_id),
     )
-    updated = api.local_storage_profile_youtube_link(
+    updated = storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=second_id),
     )["profile"]
@@ -518,7 +518,7 @@ def test_storage_profile_publish_settings_persist_and_apply_defaults(tmp_path):
     _video(root, relative)
     profile_id = _profile_id(name="Hello World")
 
-    saved = api.local_storage_profile_publish_settings_update(
+    saved = storage_profile_youtube_api.local_storage_profile_publish_settings_update(
         profile_id,
         LocalStorageProfilePublishSettingsRequest(
             publish_mode="unlisted",
@@ -536,7 +536,7 @@ def test_storage_profile_publish_settings_persist_and_apply_defaults(tmp_path):
     assert saved["profile"]["service_links"][0]["status"] == "not_connected"
 
     account_id = _youtube_account(channel_title="Defaults Channel")
-    linked = api.local_storage_profile_youtube_link(
+    linked = storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )["profile"]
@@ -547,7 +547,7 @@ def test_storage_profile_publish_settings_persist_and_apply_defaults(tmp_path):
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
-    data = api.local_storage_profile_youtube_enqueue(
+    data = storage_profile_youtube_api.local_storage_profile_youtube_enqueue(
         profile_id,
         LocalStorageProfileYouTubePublishRequest(item_ids=[item["id"]]),
     )
@@ -569,7 +569,7 @@ def test_youtube_accounts_include_oauth_and_linked_storage_profiles(tmp_path):
     _workspace(tmp_path)
     profile_id = _profile_id(name="Linked Local Profile")
     account_id = _youtube_account(channel_title="Mapped Channel")
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -591,7 +591,7 @@ def test_storage_profile_youtube_link_rejects_inactive_account(tmp_path):
     account_id = _youtube_account(status="disconnected")
 
     with pytest.raises(HTTPException) as exc:
-        api.local_storage_profile_youtube_link(
+        storage_profile_youtube_api.local_storage_profile_youtube_link(
             profile_id,
             LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
         )
@@ -614,7 +614,7 @@ def test_storage_profile_youtube_enqueue_creates_publish_job(tmp_path):
     video = _video(root, relative)
     profile_id = _profile_id()
     account_id = _youtube_account(channel_title="Profile Channel")
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -629,7 +629,7 @@ def test_storage_profile_youtube_enqueue_creates_publish_job(tmp_path):
         ),
     )["item"]
 
-    data = api.local_storage_profile_youtube_enqueue(
+    data = storage_profile_youtube_api.local_storage_profile_youtube_enqueue(
         profile_id,
         LocalStorageProfileYouTubePublishRequest(item_ids=[item["id"]]),
     )
@@ -642,7 +642,7 @@ def test_storage_profile_youtube_enqueue_creates_publish_job(tmp_path):
     assert data["jobs"][0]["publish_mode"] == "public"
     assert data["jobs"][0]["clip_output_path"] == str(video)
     assert data["profile_items"][0]["publish_job"]["id"] == data["jobs"][0]["id"]
-    assert api.local_storage_profile_publish_jobs(profile_id)["jobs"][0]["id"] == data["jobs"][0]["id"]
+    assert storage_profile_youtube_api.local_storage_profile_publish_jobs(profile_id)["jobs"][0]["id"] == data["jobs"][0]["id"]
 
     clip = db.get_clip(data["jobs"][0]["clip_id"])
     assert clip["status"] == "done"
@@ -667,7 +667,7 @@ def test_storage_profile_youtube_enqueue_requires_linked_account(tmp_path):
     )["item"]
 
     with pytest.raises(HTTPException) as exc:
-        api.local_storage_profile_youtube_enqueue(
+        storage_profile_youtube_api.local_storage_profile_youtube_enqueue(
             profile_id,
             LocalStorageProfileYouTubePublishRequest(item_ids=[item["id"]]),
         )
@@ -689,7 +689,7 @@ def test_storage_profile_youtube_enqueue_reuses_existing_job(tmp_path):
     _video(root, relative)
     profile_id = _profile_id()
     account_id = _youtube_account()
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -699,8 +699,8 @@ def test_storage_profile_youtube_enqueue_reuses_existing_job(tmp_path):
     )["item"]
     req = LocalStorageProfileYouTubePublishRequest(item_ids=[item["id"]])
 
-    first = api.local_storage_profile_youtube_enqueue(profile_id, req)
-    second = api.local_storage_profile_youtube_enqueue(profile_id, req)
+    first = storage_profile_youtube_api.local_storage_profile_youtube_enqueue(profile_id, req)
+    second = storage_profile_youtube_api.local_storage_profile_youtube_enqueue(profile_id, req)
 
     assert first["jobs"][0]["id"] == second["jobs"][0]["id"]
     assert second["summary"]["created"] == 0
@@ -721,7 +721,7 @@ def test_storage_profile_youtube_enqueue_rejects_other_account(tmp_path):
     profile_id = _profile_id()
     linked_id = _youtube_account(channel_id="linked", channel_title="Linked")
     other_id = _youtube_account(channel_id="other", channel_title="Other")
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=linked_id),
     )
@@ -731,7 +731,7 @@ def test_storage_profile_youtube_enqueue_rejects_other_account(tmp_path):
     )["item"]
 
     with pytest.raises(HTTPException) as exc:
-        api.local_storage_profile_youtube_enqueue(
+        storage_profile_youtube_api.local_storage_profile_youtube_enqueue(
             profile_id,
             LocalStorageProfileYouTubePublishRequest(
                 item_ids=[item["id"]],
@@ -885,7 +885,7 @@ def test_storage_profile_youtube_sync_fetches_channel_inventory(monkeypatch, tmp
     _video(root, relative)
     profile_id = _profile_id()
     account_id = _youtube_account(channel_title="Sync Channel")
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -893,14 +893,14 @@ def test_storage_profile_youtube_sync_fetches_channel_inventory(monkeypatch, tmp
         profile_id,
         LocalStorageProfileItemCreateRequest(workspace_path=relative, status="ready"),
     )["item"]
-    job = api.local_storage_profile_youtube_enqueue(
+    job = storage_profile_youtube_api.local_storage_profile_youtube_enqueue(
         profile_id,
         LocalStorageProfileYouTubePublishRequest(item_ids=[item["id"]]),
     )["jobs"][0]
     db.mark_publish_done(job["id"], "yt-sync", "https://youtu.be/yt-sync")
 
-    synced = api.local_storage_profile_youtube_sync(profile_id)
-    youtube_videos = api.local_storage_profile_youtube_videos(profile_id)["videos"]
+    synced = storage_profile_youtube_api.local_storage_profile_youtube_sync(profile_id)
+    youtube_videos = storage_profile_youtube_api.local_storage_profile_youtube_videos(profile_id)["videos"]
 
     assert synced["summary"]["fetched"] == 2
     assert synced["summary"]["matched_jobs"] == 1
@@ -1083,7 +1083,7 @@ def test_channel_tag_is_created_reconciled_and_removed_from_profile_rules(tmp_pa
     profile_id = _profile_id()
     account_id = _youtube_account(channel_title="Hello World")
 
-    linked = api.local_storage_profile_youtube_link(
+    linked = storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )["profile"]
@@ -1113,7 +1113,7 @@ def test_channel_tag_is_created_reconciled_and_removed_from_profile_rules(tmp_pa
     ]
     assert channel_slugs == ["channel-hello-world"]
 
-    unlinked = api.local_storage_profile_youtube_unlink(profile_id)["profile"]
+    unlinked = storage_profile_youtube_api.local_storage_profile_youtube_unlink(profile_id)["profile"]
     assert [
         rule for rule in unlinked["tag_rules"]
         if rule["tag"]["kind"] == "channel"
@@ -1233,7 +1233,7 @@ def test_storage_profile_youtube_enqueue_requires_status_ready_tag(tmp_path):
     _video(root, relative)
     profile_id = _profile_id()
     account_id = _youtube_account(channel_title="Draft Channel")
-    api.local_storage_profile_youtube_link(
+    storage_profile_youtube_api.local_storage_profile_youtube_link(
         profile_id,
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
@@ -1242,7 +1242,7 @@ def test_storage_profile_youtube_enqueue_requires_status_ready_tag(tmp_path):
         LocalStorageProfileItemCreateRequest(workspace_path=relative),
     )["item"]
 
-    data = api.local_storage_profile_youtube_enqueue(
+    data = storage_profile_youtube_api.local_storage_profile_youtube_enqueue(
         profile_id,
         LocalStorageProfileYouTubePublishRequest(item_ids=[item["id"]]),
     )

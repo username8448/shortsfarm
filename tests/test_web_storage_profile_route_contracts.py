@@ -76,7 +76,7 @@ ADJACENT_STORAGE_PROFILE_YOUTUBE_ROUTES = {
 
 
 EXPECTED_CORE_MODULE = "shortsfarm.web.storage_profiles_api"
-EXPECTED_YOUTUBE_MODULE = "shortsfarm.web.api"
+EXPECTED_YOUTUBE_MODULE = "shortsfarm.web.storage_profile_youtube_api"
 
 
 def _route_entries() -> list[tuple[str, str, APIRoute]]:
