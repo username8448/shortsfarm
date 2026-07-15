@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -12,23 +10,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 
 from .. import db
 from ..config import (
-    DEFAULT_YOUTUBE_REDIRECT_URI,
-    YOUTUBE_CLIENT_ID_SETTING,
-    YOUTUBE_CLIENT_SECRET_SETTING,
-    YOUTUBE_REDIRECT_URI_SETTING,
     data_dir,
     db_path,
     ensure_dirs,
     input_dir,
     logs_dir,
     output_dir,
-    youtube_client_id,
-    youtube_client_secret,
-    youtube_redirect_uri,
 )
 from ..edit_planner import parse_workspace_item_key, plan_edit_jobs_for_workspace_items
 from ..edit_renderer import resolve_edit_job_media_path
@@ -42,12 +33,9 @@ from ..mpv_session import require_mpv
 from ..remotion_renderer import start_studio_render_queue
 from ..studio_templates import ensure_default_studio_templates, template_row_payload
 from ..publish_youtube import (
-    fetch_youtube_channel_metadata_items,
     parse_tags,
     run_publish_job_now,
     run_publish_queue_once,
-    save_youtube_channel_metadata,
-    sync_youtube_account_metadata,
     update_youtube_video_metadata,
     upload_clip_to_youtube,
     validate_publish_job,
@@ -62,7 +50,6 @@ from ..services import (
     split_video_file,
     split_video_folder,
 )
-from ..youtube_oauth import YOUTUBE_SCOPES
 from ..workspace_fs import (
     SYSTEM_FOLDERS,
     get_workspace_root,
@@ -102,24 +89,12 @@ from .schemas import (
     WorkspacePrepareRequest,
     WorkspaceYouTubeEnqueueRequest,
     YouTubeMetadataUpdateRequest,
-    YouTubeAccountUpdateRequest,
-    YouTubeClientJsonImportRequest,
-    YouTubeConnectStartRequest,
-    YouTubeOAuthProfileCreateRequest,
-    YouTubeOAuthProfileImportRequest,
-    YouTubeOAuthProfileUpdateRequest,
-    YouTubeSettingsRequest,
     YouTubeUploadRequest,
 )
 from .api_common import fail, init_api
+from .api_common import normalize_setting_text as _normalize_setting_text
+from .integrations_api import youtube_connect_start as youtube_connect_start
 from .publish_payloads import publish_job_dict as _publish_job_dict
-from .social_account_payloads import social_account_base_dict
-from .storage_profile_payloads import (
-    storage_profile_dict as _local_storage_profile_dict,
-)
-from .storage_profile_youtube_service import (
-    touch_linked_storage_profiles_youtube_branding as _touch_linked_storage_profiles_youtube_branding,
-)
 from .tag_catalog import (
     catalog_tags_for_video as _catalog_tags_for_video,
 )
@@ -794,38 +769,6 @@ def _delete_workspace_items_for_video(video_id: int, *, remove_from_profiles: bo
     return result
 
 
-def _social_account_dict(row: Any, *, include_profile_links: bool = False) -> dict[str, Any]:
-    data = social_account_base_dict(row)
-    if include_profile_links:
-        data["linked_storage_profiles"] = [
-            _local_storage_profile_dict(profile)
-            for profile in db.list_local_storage_profiles_for_service_account(
-                platform=_row(row, "platform", "youtube") or "youtube",
-                external_account_id=int(row["id"]),
-            )
-        ]
-    return data
-
-
-def _youtube_oauth_profile_dict(row: Any) -> dict[str, Any]:
-    mode = _row(row, "mode", "custom") or "custom"
-    client_id = _row(row, "client_id", "") or ""
-    redirect_uri = _row(row, "redirect_uri", DEFAULT_YOUTUBE_REDIRECT_URI) or DEFAULT_YOUTUBE_REDIRECT_URI
-    return {
-        "id": int(row["id"]),
-        "name": _row(row, "name", "") or "",
-        "mode": mode,
-        "client_id": client_id,
-        "client_secret_set": bool(_normalize_setting_text(_row(row, "client_secret"))),
-        "redirect_uri": redirect_uri,
-        "status": _row(row, "status", "active") or "active",
-        "is_default": bool(_row(row, "is_default", 0)),
-        "notes": _row(row, "notes"),
-        "created_at": _row(row, "created_at"),
-        "updated_at": _row(row, "updated_at"),
-    }
-
-
 def _status_counts(values: dict[str, int], keys: tuple[str, ...]) -> dict[str, int]:
     return {key: int(values.get(key, 0)) for key in keys}
 
@@ -847,154 +790,6 @@ def _latest_outputs(limit: int = 30) -> list[dict[str, Any]]:
         )
         item["segments_count"] += 1
     return list(grouped.values())[:limit]
-
-
-def _normalize_setting_text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _choose_redirect_uri(candidates: list[str] | None) -> str:
-    if not candidates:
-        return DEFAULT_YOUTUBE_REDIRECT_URI
-    for item in candidates:
-        uri = _normalize_setting_text(item)
-        if uri and uri.startswith(("http://", "https://")):
-            return uri
-    return DEFAULT_YOUTUBE_REDIRECT_URI
-
-
-def _next_imported_profile_name() -> str:
-    existing_names = {str(row["name"]) for row in db.list_youtube_oauth_profiles()}
-    if "Imported YouTube OAuth" not in existing_names:
-        return "Imported YouTube OAuth"
-    index = 2
-    while True:
-        candidate = f"Imported YouTube OAuth {index}"
-        if candidate not in existing_names:
-            return candidate
-        index += 1
-
-
-def _extract_oauth_client_json(payload: dict[str, Any]) -> tuple[str, str, str]:
-    section = payload.get("web")
-    if not isinstance(section, dict):
-        section = payload.get("installed")
-    if not isinstance(section, dict):
-        raise ValueError("Не найден блок web или installed в OAuth Client JSON.")
-
-    client_id = _normalize_setting_text(section.get("client_id"))
-    client_secret = _normalize_setting_text(section.get("client_secret"))
-    redirect_uris = section.get("redirect_uris")
-    redirect_uri = _choose_redirect_uri(redirect_uris if isinstance(redirect_uris, list) else None)
-    if not client_id or not client_secret:
-        raise ValueError("OAuth Client JSON должен содержать client_id и client_secret.")
-    return client_id, client_secret, redirect_uri
-
-
-def _youtube_client_config_from_profile(profile: Any) -> dict[str, Any]:
-    client_id = _normalize_setting_text(_row(profile, "client_id"))
-    client_secret = _normalize_setting_text(_row(profile, "client_secret"))
-    redirect_uri = (
-        _normalize_setting_text(_row(profile, "redirect_uri"))
-        or DEFAULT_YOUTUBE_REDIRECT_URI
-    )
-    if not client_id or not client_secret:
-        raise RuntimeError("У выбранного OAuth Profile не заполнены client_id/client_secret.")
-    return {
-        "web": {
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [redirect_uri],
-        }
-    }
-
-
-def _youtube_flow_from_profile(flow_cls: Any, profile: Any) -> Any:
-    redirect_uri = (
-        _normalize_setting_text(_row(profile, "redirect_uri"))
-        or DEFAULT_YOUTUBE_REDIRECT_URI
-    )
-    return flow_cls.from_client_config(
-        _youtube_client_config_from_profile(profile),
-        scopes=YOUTUBE_SCOPES,
-        redirect_uri=redirect_uri,
-        autogenerate_code_verifier=False,
-    )
-
-
-def _select_youtube_oauth_profile(profile_id: int | None = None) -> Any:
-    if profile_id is not None:
-        profile = db.get_youtube_oauth_profile(profile_id)
-        if profile is None:
-            raise FileNotFoundError("YouTube OAuth Profile не найден.")
-        if _row(profile, "status", "active") != "active":
-            raise ValueError("YouTube OAuth Profile не активен.")
-        return profile
-
-    default_profile = db.get_default_youtube_oauth_profile()
-    if default_profile is not None and _row(default_profile, "status", "active") == "active":
-        return default_profile
-
-    active_profiles = [
-        row for row in db.list_youtube_oauth_profiles()
-        if _row(row, "status", "active") == "active"
-    ]
-    if not active_profiles:
-        raise RuntimeError("Сначала создайте YouTube OAuth Profile в настройках.")
-    if len(active_profiles) == 1:
-        return active_profiles[0]
-    raise RuntimeError("Выберите OAuth Profile для подключения YouTube-канала или назначьте профиль по умолчанию.")
-
-
-def _fetch_google_account_email(credentials: Any) -> str | None:
-    try:
-        from googleapiclient.discovery import build
-    except ImportError:
-        return None
-
-    try:
-        oauth2 = build("oauth2", "v2", credentials=credentials, cache_discovery=False)
-        payload = oauth2.userinfo().get().execute()
-        return _normalize_setting_text(payload.get("email"))
-    except Exception:
-        return None
-
-
-def _youtube_settings_status() -> dict[str, Any]:
-    stored_client_id = _normalize_setting_text(db.get_setting(YOUTUBE_CLIENT_ID_SETTING))
-    stored_client_secret = _normalize_setting_text(db.get_setting(YOUTUBE_CLIENT_SECRET_SETTING))
-    stored_redirect_uri = _normalize_setting_text(db.get_setting(YOUTUBE_REDIRECT_URI_SETTING))
-    env_client_id = bool(_normalize_setting_text(os.environ.get("YOUTUBE_CLIENT_ID")))
-    env_client_secret = bool(_normalize_setting_text(os.environ.get("YOUTUBE_CLIENT_SECRET")))
-    env_redirect_uri = bool(_normalize_setting_text(os.environ.get("YOUTUBE_REDIRECT_URI")))
-
-    client_id = stored_client_id or _normalize_setting_text(os.environ.get("YOUTUBE_CLIENT_ID")) or ""
-    redirect_uri = (
-        stored_redirect_uri
-        or _normalize_setting_text(os.environ.get("YOUTUBE_REDIRECT_URI"))
-        or DEFAULT_YOUTUBE_REDIRECT_URI
-    )
-    client_secret_set = bool(
-        stored_client_secret
-        or _normalize_setting_text(os.environ.get("YOUTUBE_CLIENT_SECRET"))
-    )
-    configured = bool(client_id and client_secret_set)
-    return {
-        "configured": configured,
-        "client_id": client_id,
-        "client_secret_set": client_secret_set,
-        "redirect_uri": redirect_uri,
-        "env_fallback": {
-            "client_id": env_client_id and not stored_client_id,
-            "client_secret": env_client_secret and not stored_client_secret,
-            "redirect_uri": env_redirect_uri and not stored_redirect_uri,
-        },
-    }
 
 
 def _create_publish_job_from_request(clip_id: int, req: YouTubeUploadRequest) -> int:
@@ -1078,33 +873,6 @@ def _workspace_target_needs_prepare(item: dict[str, Any]) -> bool:
     return target_aspect != "original" and _workspace_prepared_publish_path(item) is None
 
 
-def _save_youtube_settings(
-    *,
-    client_id: str | None,
-    client_secret: str | None,
-    redirect_uri: str | None,
-) -> dict[str, Any]:
-    existing_client_id = _normalize_setting_text(db.get_setting(YOUTUBE_CLIENT_ID_SETTING))
-    existing_client_secret = _normalize_setting_text(db.get_setting(YOUTUBE_CLIENT_SECRET_SETTING))
-
-    resolved_client_id = _normalize_setting_text(client_id) or existing_client_id
-    resolved_client_secret = _normalize_setting_text(client_secret) or existing_client_secret
-    resolved_redirect_uri = _normalize_setting_text(redirect_uri) or DEFAULT_YOUTUBE_REDIRECT_URI
-
-    if not resolved_client_id:
-        raise ValueError("Укажите YouTube client_id.")
-    if not resolved_client_secret and not _normalize_setting_text(youtube_client_secret()):
-        raise ValueError("Укажите YouTube client_secret.")
-
-    db.set_setting(YOUTUBE_CLIENT_ID_SETTING, resolved_client_id, is_secret=False)
-    if _normalize_setting_text(client_secret):
-        db.set_setting(YOUTUBE_CLIENT_SECRET_SETTING, _normalize_setting_text(client_secret), is_secret=True)
-    elif existing_client_secret:
-        db.set_setting(YOUTUBE_CLIENT_SECRET_SETTING, existing_client_secret, is_secret=True)
-    db.set_setting(YOUTUBE_REDIRECT_URI_SETTING, resolved_redirect_uri, is_secret=False)
-    return _youtube_settings_status()
-
-
 def _sqlite_sidecar_paths(path: Path) -> list[Path]:
     return [
         path,
@@ -1179,509 +947,6 @@ def local_dialog_pick(req: LocalDialogPickRequest) -> dict[str, Any]:
         return {"selected": True, "path": selected_path}
     except LocalDialogUnavailable as exc:
         raise _fail(exc, status_code=409)
-    except Exception as exc:
-        raise _fail(exc)
-
-
-def _youtube_oauth_config() -> tuple[str, str, str]:
-    client_id = youtube_client_id()
-    client_secret = youtube_client_secret()
-    redirect_uri = youtube_redirect_uri()
-    if not client_id or not client_secret:
-        raise RuntimeError(
-            "YouTube OAuth не настроен. Откройте Настройки → YouTube и добавьте OAuth Client JSON или client_id/client_secret."
-        )
-    return client_id, client_secret, redirect_uri
-
-
-def _oauth_page(title: str, message: str, *, ok: bool) -> HTMLResponse:
-    color = "#86efac" if ok else "#fca5a5"
-    safe_title = title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    safe_message = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    payload = json.dumps(
-        {
-            "type": "shortsfarm-youtube-oauth-complete" if ok else "shortsfarm-youtube-oauth-error",
-            "ok": ok,
-            "message": message,
-        },
-        ensure_ascii=False,
-    )
-    callback_script = f"""
-  <script>
-    (function () {{
-      const payload = {payload};
-      try {{
-        localStorage.setItem('shortsfarm.youtube.oauth.event', JSON.stringify(payload));
-        localStorage.setItem('shortsfarm.youtube.oauth.updated', String(Date.now()));
-      }} catch (err) {{}}
-      try {{
-        if (window.opener && !window.opener.closed) {{
-          window.opener.postMessage(payload, window.location.origin);
-        }}
-      }} catch (err) {{}}
-    }})();
-  </script>"""
-    html = f"""<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{safe_title}</title>
-  <style>
-    body {{ margin:0; min-height:100vh; display:grid; place-items:center; background:#111827; color:#f8fafc; font-family:-apple-system,Segoe UI,system-ui,sans-serif; }}
-    main {{ width:min(560px, calc(100vw - 32px)); padding:28px; border:1px solid #3f4b5c; border-radius:16px; background:#1f2937; box-shadow:0 18px 44px rgba(0,0,0,.32); }}
-    h1 {{ margin:0 0 10px; font-size:22px; color:{color}; }}
-    p {{ margin:0; color:#cbd5e1; line-height:1.6; }}
-    a {{ color:#bfdbfe; }}
-  </style>
-</head>
-<body><main><h1>{safe_title}</h1><p>{safe_message}</p></main>{callback_script}</body>
-</html>"""
-    return HTMLResponse(html, status_code=200 if ok else 400)
-
-
-@router.get("/settings/youtube")
-def youtube_settings() -> dict[str, Any]:
-    try:
-        _init()
-        return _youtube_settings_status()
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.post("/settings/youtube")
-def youtube_settings_save(req: YouTubeSettingsRequest) -> dict[str, Any]:
-    try:
-        _init()
-        return _save_youtube_settings(
-            client_id=req.client_id,
-            client_secret=req.client_secret,
-            redirect_uri=req.redirect_uri,
-        )
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.post("/settings/youtube/import-client-json")
-def youtube_settings_import_client_json(req: YouTubeClientJsonImportRequest) -> dict[str, Any]:
-    try:
-        _init()
-        text = _normalize_setting_text(req.json_text)
-        if not text:
-            raise ValueError("Вставьте OAuth Client JSON.")
-        payload = json.loads(text)
-        if not isinstance(payload, dict):
-            raise ValueError("OAuth Client JSON должен быть JSON-объектом.")
-        client_id, client_secret, redirect_uri = _extract_oauth_client_json(payload)
-
-        return _save_youtube_settings(
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_uri,
-        )
-    except json.JSONDecodeError as exc:
-        raise _fail(ValueError(f"Не удалось разобрать JSON: {exc.msg}"))
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.post("/settings/youtube/clear")
-def youtube_settings_clear() -> dict[str, Any]:
-    try:
-        _init()
-        db.delete_setting(YOUTUBE_CLIENT_ID_SETTING)
-        db.delete_setting(YOUTUBE_CLIENT_SECRET_SETTING)
-        db.delete_setting(YOUTUBE_REDIRECT_URI_SETTING)
-        return {"status": "ok", "settings": _youtube_settings_status()}
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.get("/publish/youtube/oauth-profiles")
-def youtube_oauth_profiles() -> dict[str, Any]:
-    try:
-        _init()
-        rows = db.list_youtube_oauth_profiles()
-        return {"profiles": [_youtube_oauth_profile_dict(row) for row in rows]}
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.post("/publish/youtube/oauth-profiles")
-def youtube_oauth_profiles_create(req: YouTubeOAuthProfileCreateRequest) -> dict[str, Any]:
-    try:
-        _init()
-        name = _normalize_setting_text(req.name)
-        client_id = _normalize_setting_text(req.client_id)
-        client_secret = _normalize_setting_text(req.client_secret)
-        redirect_uri = _normalize_setting_text(req.redirect_uri) or DEFAULT_YOUTUBE_REDIRECT_URI
-        if not name:
-            raise ValueError("Укажите название OAuth Profile.")
-        if not client_id or not client_secret:
-            raise ValueError("Укажите client_id и client_secret.")
-        profile_id = db.create_youtube_oauth_profile(
-            name=name,
-            mode="custom",
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_uri,
-            status="active",
-            is_default=req.is_default,
-            notes=req.notes,
-        )
-        profile = db.get_youtube_oauth_profile(profile_id)
-        return {"profile": _youtube_oauth_profile_dict(profile)}
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.post("/publish/youtube/oauth-profiles/import-client-json")
-def youtube_oauth_profiles_import(req: YouTubeOAuthProfileImportRequest) -> dict[str, Any]:
-    try:
-        _init()
-        text = _normalize_setting_text(req.json_text)
-        if not text:
-            raise ValueError("Вставьте OAuth Client JSON.")
-        payload = json.loads(text)
-        if not isinstance(payload, dict):
-            raise ValueError("OAuth Client JSON должен быть JSON-объектом.")
-
-        client_id, client_secret, redirect_uri = _extract_oauth_client_json(payload)
-        profile_id = db.create_youtube_oauth_profile(
-            name=_normalize_setting_text(req.name) or _next_imported_profile_name(),
-            mode="custom",
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_uri,
-            status="active",
-            is_default=req.is_default or not db.list_youtube_oauth_profiles(),
-            notes=req.notes,
-        )
-        profile = db.get_youtube_oauth_profile(profile_id)
-        return {"profile": _youtube_oauth_profile_dict(profile)}
-    except json.JSONDecodeError as exc:
-        raise _fail(ValueError(f"Не удалось разобрать JSON: {exc.msg}"))
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.patch("/publish/youtube/oauth-profiles/{profile_id}")
-def youtube_oauth_profiles_update(profile_id: int, req: YouTubeOAuthProfileUpdateRequest) -> dict[str, Any]:
-    try:
-        _init()
-        ok = db.update_youtube_oauth_profile(
-            profile_id,
-            name=req.name,
-            client_id=req.client_id,
-            client_secret=req.client_secret,
-            redirect_uri=req.redirect_uri,
-            status=req.status,
-            notes=req.notes,
-        )
-        if not ok:
-            raise FileNotFoundError("YouTube OAuth Profile не найден.")
-        profile = db.get_youtube_oauth_profile(profile_id)
-        return {"profile": _youtube_oauth_profile_dict(profile)}
-    except FileNotFoundError as exc:
-        raise _fail(exc, status_code=404)
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.delete("/publish/youtube/oauth-profiles/{profile_id}")
-def youtube_oauth_profiles_delete(profile_id: int) -> dict[str, Any]:
-    try:
-        _init()
-        ok = db.delete_youtube_oauth_profile(profile_id)
-        if not ok:
-            raise FileNotFoundError("YouTube OAuth Profile не найден.")
-        return {"status": "ok"}
-    except FileNotFoundError as exc:
-        raise _fail(exc, status_code=404)
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.post("/publish/youtube/oauth-profiles/{profile_id}/set-default")
-def youtube_oauth_profiles_set_default(profile_id: int) -> dict[str, Any]:
-    try:
-        _init()
-        ok = db.set_default_youtube_oauth_profile(profile_id)
-        if not ok:
-            raise FileNotFoundError("YouTube OAuth Profile не найден.")
-        profile = db.get_youtube_oauth_profile(profile_id)
-        return {"profile": _youtube_oauth_profile_dict(profile)}
-    except FileNotFoundError as exc:
-        raise _fail(exc, status_code=404)
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.get("/publish/youtube/accounts")
-def youtube_accounts() -> dict[str, Any]:
-    try:
-        _init()
-        rows = db.list_social_accounts(platform="youtube")
-        return {"accounts": [_social_account_dict(row, include_profile_links=True) for row in rows]}
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.patch("/publish/youtube/accounts/{account_id}")
-def youtube_account_update(account_id: int, req: YouTubeAccountUpdateRequest) -> dict[str, Any]:
-    try:
-        _init()
-        account = db.get_social_account(account_id)
-        if account is None or str(account["platform"] or "") != "youtube":
-            raise FileNotFoundError("YouTube аккаунт не найден.")
-        alias = req.local_alias if req.local_alias is not None else req.display_name
-        if alias is None:
-            raise ValueError("Укажите локальное название аккаунта.")
-        if len(str(alias).strip()) > 160:
-            raise ValueError("Локальное название слишком длинное.")
-        db.update_social_account_alias(account_id, str(alias).strip() or None)
-        updated = db.get_social_account(account_id)
-        assert updated is not None
-        return {"account": _social_account_dict(updated, include_profile_links=True)}
-    except FileNotFoundError as exc:
-        raise _fail(exc, status_code=404)
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.post("/publish/youtube/accounts/sync-metadata")
-def youtube_accounts_sync_metadata() -> dict[str, Any]:
-    try:
-        _init()
-        summary = {"ok": 0, "failed": 0, "skipped": 0}
-        items: list[dict[str, Any]] = []
-        for account in db.list_social_accounts(platform="youtube"):
-            account_id = int(account["id"])
-            if str(account["status"] or "") != "active":
-                summary["skipped"] += 1
-                items.append({
-                    "account_id": account_id,
-                    "status": "skipped",
-                    "reason": "Аккаунт не активен.",
-                })
-                continue
-            try:
-                updated = sync_youtube_account_metadata(account)
-                branding_profiles = _touch_linked_storage_profiles_youtube_branding(
-                    account_id,
-                    account=updated,
-                    error=None,
-                )
-                summary["ok"] += 1
-                items.append({
-                    "account_id": account_id,
-                    "status": "ok",
-                    "account": _social_account_dict(updated, include_profile_links=True),
-                    "branding_profiles": branding_profiles,
-                })
-            except Exception as sync_exc:
-                message = str(sync_exc) or sync_exc.__class__.__name__
-                db.set_social_account_metadata_sync_error(account_id, message)
-                branding_profiles = _touch_linked_storage_profiles_youtube_branding(
-                    account_id,
-                    account=account,
-                    error=message,
-                )
-                updated = db.get_social_account(account_id)
-                summary["failed"] += 1
-                items.append({
-                    "account_id": account_id,
-                    "status": "failed",
-                    "error": message,
-                    "branding_profiles": branding_profiles,
-                    "account": _social_account_dict(updated, include_profile_links=True) if updated else None,
-                })
-        return {"status": "ok", "summary": summary, "items": items}
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.post("/publish/youtube/accounts/{account_id}/sync-metadata")
-def youtube_account_sync_metadata(account_id: int) -> dict[str, Any]:
-    try:
-        _init()
-        account = db.get_social_account(account_id)
-        if account is None or str(account["platform"] or "") != "youtube":
-            raise FileNotFoundError("YouTube аккаунт не найден.")
-        try:
-            updated = sync_youtube_account_metadata(account)
-            branding_profiles = _touch_linked_storage_profiles_youtube_branding(
-                account_id,
-                account=updated,
-                error=None,
-            )
-            return {
-                "status": "ok",
-                "account": _social_account_dict(updated, include_profile_links=True),
-                "branding_profiles": branding_profiles,
-            }
-        except Exception as sync_exc:
-            message = str(sync_exc) or sync_exc.__class__.__name__
-            db.set_social_account_metadata_sync_error(account_id, message)
-            branding_profiles = _touch_linked_storage_profiles_youtube_branding(
-                account_id,
-                account=account,
-                error=message,
-            )
-            updated = db.get_social_account(account_id)
-            return {
-                "status": "failed",
-                "error": message,
-                "branding_profiles": branding_profiles,
-                "account": _social_account_dict(updated, include_profile_links=True) if updated else None,
-            }
-    except FileNotFoundError as exc:
-        raise _fail(exc, status_code=404)
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.post("/publish/youtube/connect/start")
-def youtube_connect_start(req: YouTubeConnectStartRequest | None = None) -> dict[str, Any]:
-    try:
-        _init()
-        profile = _select_youtube_oauth_profile(req.oauth_profile_id if req else None)
-        state = secrets.token_urlsafe(32)
-        db.create_oauth_state("youtube", state, oauth_profile_id=int(profile["id"]))
-        try:
-            from google_auth_oauthlib.flow import Flow
-        except ImportError as exc:
-            raise RuntimeError(
-                "Google OAuth зависимости не установлены. Выполните: pip install -e ."
-            ) from exc
-
-        flow = _youtube_flow_from_profile(Flow, profile)
-        auth_url, _ = flow.authorization_url(
-            access_type="offline",
-            include_granted_scopes="true",
-            prompt="consent select_account",
-            state=state,
-        )
-        return {
-            "auth_url": auth_url,
-            "oauth_profile_id": int(profile["id"]),
-            "profile_name": _row(profile, "name", "") or "",
-        }
-    except Exception as exc:
-        raise _fail(exc)
-
-
-@router.get("/publish/youtube/oauth/callback")
-def youtube_oauth_callback(
-    code: str | None = None,
-    state: str | None = None,
-    error: str | None = None,
-) -> HTMLResponse:
-    try:
-        _init()
-        if error:
-            if state:
-                try:
-                    db.consume_oauth_state("youtube", state)
-                except Exception:
-                    pass
-            return _oauth_page(
-                "Ошибка YouTube OAuth",
-                f"Google вернул ошибку: {error}. Можно закрыть эту вкладку и попробовать подключение ещё раз.",
-                ok=False,
-            )
-        if not code:
-            return _oauth_page("Ошибка YouTube OAuth", "Callback не содержит code.", ok=False)
-        if not state:
-            return _oauth_page("Ошибка YouTube OAuth", "Callback не содержит state.", ok=False)
-        state_row = db.consume_oauth_state("youtube", state)
-        if state_row is None:
-            return _oauth_page(
-                "Ошибка YouTube OAuth",
-                "OAuth state не найден или уже был использован. Запустите подключение заново.",
-                ok=False,
-            )
-
-        oauth_profile_id = _row(state_row, "oauth_profile_id")
-        profile = _select_youtube_oauth_profile(int(oauth_profile_id) if oauth_profile_id is not None else None)
-        try:
-            from google_auth_oauthlib.flow import Flow
-            from googleapiclient.discovery import build
-        except ImportError as exc:
-            raise RuntimeError(
-                "Google OAuth зависимости не установлены. Выполните: pip install -e ."
-            ) from exc
-
-        flow = _youtube_flow_from_profile(Flow, profile)
-        flow.fetch_token(code=code)
-        credentials = flow.credentials
-        account_email = _fetch_google_account_email(credentials)
-
-        youtube = build("youtube", "v3", credentials=credentials, cache_discovery=False)
-        items = fetch_youtube_channel_metadata_items(youtube, mine=True)
-        if not items:
-            message = "YouTube канал для этого аккаунта не найден."
-            return _oauth_page("Ошибка YouTube OAuth", message, ok=False)
-
-        expires_at = credentials.expiry.isoformat() if credentials.expiry else None
-        scopes = " ".join(credentials.scopes or YOUTUBE_SCOPES)
-        saved_ids: list[int] = []
-
-        for channel in items:
-            snippet = channel.get("snippet") or {}
-            channel_id = str(channel.get("id") or "").strip()
-            if not channel_id:
-                continue
-            channel_title = str(snippet.get("title") or "").strip() or "YouTube канал"
-            # TODO: encrypt tokens before production use.
-            account_id = db.save_social_account(
-                platform="youtube",
-                display_name=channel_title,
-                channel_id=channel_id,
-                channel_title=channel_title,
-                access_token=credentials.token,
-                refresh_token=credentials.refresh_token,
-                token_expires_at=expires_at,
-                scopes=scopes,
-                oauth_profile_id=int(profile["id"]),
-                account_email=account_email,
-                last_connected_at=db.now_utc(),
-                status="active",
-                error=None,
-                preserve_display_name=True,
-            )
-            try:
-                save_youtube_channel_metadata(account_id, channel)
-            except Exception as sync_exc:
-                db.set_social_account_metadata_sync_error(
-                    account_id,
-                    str(sync_exc) or sync_exc.__class__.__name__,
-                )
-            saved_ids.append(account_id)
-
-        if not saved_ids:
-            message = "YouTube канал для этого аккаунта не найден."
-            return _oauth_page("Ошибка YouTube OAuth", message, ok=False)
-        channel_word = "канал" if len(saved_ids) == 1 else "каналов"
-        return _oauth_page(
-            "YouTube аккаунт подключён",
-            f"Импортировано YouTube {channel_word}: {len(saved_ids)}. Можно закрыть эту вкладку и вернуться в ShortsFarm → Интеграции.",
-            ok=True,
-        )
-    except Exception as exc:
-        return _oauth_page("Ошибка YouTube OAuth", str(exc) or exc.__class__.__name__, ok=False)
-
-
-@router.post("/publish/youtube/accounts/{account_id}/disconnect")
-def youtube_disconnect(account_id: int) -> dict[str, Any]:
-    try:
-        _init()
-        ok = db.disconnect_social_account(account_id, platform="youtube")
-        if not ok:
-            raise FileNotFoundError("YouTube аккаунт не найден.")
-        return {"status": "ok"}
-    except FileNotFoundError as exc:
-        raise _fail(exc, status_code=404)
     except Exception as exc:
         raise _fail(exc)
 

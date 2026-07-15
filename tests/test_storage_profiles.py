@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from shortsfarm.web import storage_profiles_api, storage_profile_youtube_api
+from shortsfarm.web import integrations_api, storage_profiles_api, storage_profile_youtube_api
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -334,7 +334,7 @@ def test_youtube_account_sync_updates_linked_profile_branding(monkeypatch, tmp_p
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
 
-    result = api.youtube_account_sync_metadata(account_id)
+    result = integrations_api.youtube_account_sync_metadata(account_id)
     profile = storage_profiles_api.local_storage_profile_detail(profile_id)["profile"]
 
     assert result["status"] == "ok"
@@ -473,7 +473,7 @@ def test_youtube_account_sync_updates_multiple_linked_profiles(monkeypatch, tmp_
             LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
         )
 
-    result = api.youtube_account_sync_metadata(account_id)
+    result = integrations_api.youtube_account_sync_metadata(account_id)
 
     assert result["status"] == "ok"
     assert result["branding_profiles"] == 2
@@ -574,7 +574,7 @@ def test_youtube_accounts_include_oauth_and_linked_storage_profiles(tmp_path):
         LocalStorageProfileYouTubeLinkRequest(account_id=account_id),
     )
 
-    accounts = api.youtube_accounts()["accounts"]
+    accounts = integrations_api.youtube_accounts()["accounts"]
     account = next(item for item in accounts if item["id"] == account_id)
 
     assert account["oauth_profile"]["name"].startswith("OAuth")

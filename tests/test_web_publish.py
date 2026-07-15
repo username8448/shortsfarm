@@ -6,6 +6,8 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from fastapi import HTTPException
 
+from shortsfarm.web import integrations_api
+
 
 class _FakeFlow:
     last_client_config = None
@@ -177,7 +179,7 @@ def test_youtube_accounts_response_hides_tokens():
         status="active",
     )
 
-    data = api.youtube_accounts()
+    data = integrations_api.youtube_accounts()
 
     assert len(data["accounts"]) == 1
     account = data["accounts"][0]
@@ -193,7 +195,7 @@ def test_youtube_settings_save_and_get_hide_secret():
     from shortsfarm.web import api
     from shortsfarm.web.schemas import YouTubeSettingsRequest
 
-    data = api.youtube_settings_save(
+    data = integrations_api.youtube_settings_save(
         YouTubeSettingsRequest(
             client_id="ui-client-id",
             client_secret="ui-client-secret",
@@ -205,7 +207,7 @@ def test_youtube_settings_save_and_get_hide_secret():
     assert data["client_id"] == "ui-client-id"
     assert data["client_secret_set"] is True
 
-    fetched = api.youtube_settings()
+    fetched = integrations_api.youtube_settings()
     assert fetched["configured"] is True
     assert fetched["client_id"] == "ui-client-id"
     assert fetched["client_secret_set"] is True
@@ -216,7 +218,7 @@ def test_import_client_json_web_format_works():
     from shortsfarm.web import api
     from shortsfarm.web.schemas import YouTubeClientJsonImportRequest
 
-    data = api.youtube_settings_import_client_json(
+    data = integrations_api.youtube_settings_import_client_json(
         YouTubeClientJsonImportRequest(
             json_text='{"web":{"client_id":"web-client","client_secret":"web-secret","redirect_uris":["http://127.0.0.1:8000/api/publish/youtube/oauth/callback"]}}'
         )
@@ -232,7 +234,7 @@ def test_import_client_json_installed_format_works():
     from shortsfarm.web import api
     from shortsfarm.web.schemas import YouTubeClientJsonImportRequest
 
-    data = api.youtube_settings_import_client_json(
+    data = integrations_api.youtube_settings_import_client_json(
         YouTubeClientJsonImportRequest(
             json_text='{"installed":{"client_id":"installed-client","client_secret":"installed-secret","redirect_uris":["http://localhost/callback"]}}'
         )
@@ -252,7 +254,7 @@ def test_youtube_connect_start_without_settings_returns_russian_error(monkeypatc
     monkeypatch.delenv("YOUTUBE_REDIRECT_URI", raising=False)
 
     try:
-        api.youtube_connect_start()
+        integrations_api.youtube_connect_start()
     except HTTPException as exc:
         assert exc.status_code == 400
         assert exc.detail == {
@@ -267,7 +269,7 @@ def test_youtube_connect_start_works_with_settings_saved_via_ui(monkeypatch):
     from shortsfarm.web.schemas import YouTubeSettingsRequest
     from shortsfarm.youtube_oauth import YOUTUBE_SCOPES
 
-    api.youtube_settings_save(
+    integrations_api.youtube_settings_save(
         YouTubeSettingsRequest(
             client_id="ui-client-id",
             client_secret="ui-client-secret",
@@ -276,7 +278,7 @@ def test_youtube_connect_start_works_with_settings_saved_via_ui(monkeypatch):
     )
     _install_fake_google_modules(monkeypatch)
 
-    data = api.youtube_connect_start()
+    data = integrations_api.youtube_connect_start()
 
     assert data["auth_url"].startswith("https://accounts.google.com/")
     assert _FakeFlow.last_client_config["web"]["client_id"] == "ui-client-id"
@@ -310,7 +312,7 @@ def test_youtube_connect_start_web_oauth_does_not_enable_pkce(monkeypatch):
     )
     _install_fake_google_modules(monkeypatch)
 
-    data = api.youtube_connect_start()
+    data = integrations_api.youtube_connect_start()
 
     assert data["auth_url"].startswith("https://accounts.google.com/")
     assert _FakeFlow.last_from_client_config_kwargs == {"autogenerate_code_verifier": False}
@@ -333,7 +335,7 @@ def test_oauth_profiles_api_hides_client_secret():
         is_default=True,
     )
 
-    data = api.youtube_oauth_profiles()
+    data = integrations_api.youtube_oauth_profiles()
 
     assert len(data["profiles"]) == 1
     profile = data["profiles"][0]
@@ -346,7 +348,7 @@ def test_oauth_profiles_import_web_format_works():
     from shortsfarm.web import api
     from shortsfarm.web.schemas import YouTubeOAuthProfileImportRequest
 
-    data = api.youtube_oauth_profiles_import(
+    data = integrations_api.youtube_oauth_profiles_import(
         YouTubeOAuthProfileImportRequest(
             json_text='{"web":{"client_id":"web-client","client_secret":"web-secret","redirect_uris":["http://127.0.0.1:8000/api/publish/youtube/oauth/callback"]}}',
             name="Imported Web Profile",
@@ -365,7 +367,7 @@ def test_oauth_profiles_import_installed_format_works():
     from shortsfarm.web import api
     from shortsfarm.web.schemas import YouTubeOAuthProfileImportRequest
 
-    data = api.youtube_oauth_profiles_import(
+    data = integrations_api.youtube_oauth_profiles_import(
         YouTubeOAuthProfileImportRequest(
             json_text='{"installed":{"client_id":"installed-client","client_secret":"installed-secret","redirect_uris":["http://localhost/callback"]}}'
         )
@@ -399,7 +401,7 @@ def test_youtube_connect_start_uses_selected_profile(monkeypatch):
     )
     _install_fake_google_modules(monkeypatch)
 
-    data = api.youtube_connect_start(YouTubeConnectStartRequest(oauth_profile_id=second_id))
+    data = integrations_api.youtube_connect_start(YouTubeConnectStartRequest(oauth_profile_id=second_id))
 
     assert data["oauth_profile_id"] == second_id
     assert data["profile_name"] == "Profile Two"
@@ -421,7 +423,7 @@ def test_youtube_connect_start_uses_default_profile_if_missing_id(monkeypatch):
     )
     _install_fake_google_modules(monkeypatch)
 
-    data = api.youtube_connect_start()
+    data = integrations_api.youtube_connect_start()
 
     assert data["oauth_profile_id"] == profile_id
     assert _FakeFlow.last_client_config["web"]["client_id"] == "client-default"
@@ -443,11 +445,11 @@ def test_youtube_callback_saves_social_account_with_oauth_profile_id(monkeypatch
     )
     _install_fake_google_modules(monkeypatch, email="channel@example.com", channel_id="channel-42", channel_title="Channel 42")
 
-    start_data = api.youtube_connect_start(YouTubeConnectStartRequest(oauth_profile_id=profile_id))
+    start_data = integrations_api.youtube_connect_start(YouTubeConnectStartRequest(oauth_profile_id=profile_id))
     assert "code_challenge" not in start_data["auth_url"]
     assert "code_challenge_method" not in start_data["auth_url"]
     state = start_data["auth_url"].split("state=", 1)[1]
-    response = api.youtube_oauth_callback(code="oauth-code", state=state)
+    response = integrations_api.youtube_oauth_callback(code="oauth-code", state=state)
     body = response.body.decode("utf-8")
 
     assert response.status_code == 200
@@ -508,9 +510,9 @@ def test_youtube_callback_saves_channel_metadata_after_oauth(monkeypatch):
         ],
     )
 
-    start = api.youtube_connect_start()
+    start = integrations_api.youtube_connect_start()
     state = start["auth_url"].split("state=", 1)[1]
-    response = api.youtube_oauth_callback(code="oauth-code", state=state)
+    response = integrations_api.youtube_oauth_callback(code="oauth-code", state=state)
 
     assert response.status_code == 200
     account = db.list_social_accounts(platform="youtube")[0]
@@ -529,7 +531,7 @@ def test_youtube_callback_saves_channel_metadata_after_oauth(monkeypatch):
     assert account["metadata_synced_at"] is not None
     assert account["metadata_sync_error"] is None
 
-    data = api.youtube_accounts()["accounts"][0]
+    data = integrations_api.youtube_accounts()["accounts"][0]
     assert data["local_alias"] == "Official Meta Channel"
     assert data["official_channel_title"] == "Official Meta Channel"
     assert data["channel_avatar_url"] == "https://img.example/high.jpg"
@@ -559,8 +561,8 @@ def test_youtube_callback_imports_all_channels(monkeypatch):
         ],
     )
 
-    state = api.youtube_connect_start()["auth_url"].split("state=", 1)[1]
-    response = api.youtube_oauth_callback(code="oauth-code", state=state)
+    state = integrations_api.youtube_connect_start()["auth_url"].split("state=", 1)[1]
+    response = integrations_api.youtube_oauth_callback(code="oauth-code", state=state)
     body = response.body.decode("utf-8")
 
     assert response.status_code == 200
@@ -583,8 +585,8 @@ def test_youtube_callback_without_channels_does_not_create_account(monkeypatch):
     )
     _install_fake_google_modules(monkeypatch, channels=[])
 
-    state = api.youtube_connect_start()["auth_url"].split("state=", 1)[1]
-    response = api.youtube_oauth_callback(code="oauth-code", state=state)
+    state = integrations_api.youtube_connect_start()["auth_url"].split("state=", 1)[1]
+    response = integrations_api.youtube_oauth_callback(code="oauth-code", state=state)
     body = response.body.decode("utf-8")
 
     assert response.status_code == 400
@@ -620,8 +622,8 @@ def test_youtube_reconnect_preserves_local_alias(monkeypatch):
         channels=[{"id": "same-channel", "snippet": {"title": "New Official"}}],
     )
 
-    state = api.youtube_connect_start()["auth_url"].split("state=", 1)[1]
-    response = api.youtube_oauth_callback(code="oauth-code", state=state)
+    state = integrations_api.youtube_connect_start()["auth_url"].split("state=", 1)[1]
+    response = integrations_api.youtube_oauth_callback(code="oauth-code", state=state)
 
     assert response.status_code == 200
     account = db.list_social_accounts(platform="youtube")[0]
@@ -683,7 +685,7 @@ def test_youtube_account_manual_sync_updates_metadata(monkeypatch):
 
     monkeypatch.setattr(publish_youtube, "build_youtube_client", lambda account: YouTube())
 
-    result = api.youtube_account_sync_metadata(account_id)
+    result = integrations_api.youtube_account_sync_metadata(account_id)
 
     assert result["status"] == "ok"
     assert result["account"]["local_alias"] == "Manual Alias"
@@ -723,7 +725,7 @@ def test_youtube_account_manual_sync_error_preserves_tokens(monkeypatch):
 
     monkeypatch.setattr(publish_youtube, "build_youtube_client", fail_build)
 
-    result = api.youtube_account_sync_metadata(account_id)
+    result = integrations_api.youtube_account_sync_metadata(account_id)
     account = db.get_social_account(account_id)
 
     assert result["status"] == "failed"
@@ -736,7 +738,7 @@ def test_youtube_account_manual_sync_error_preserves_tokens(monkeypatch):
 def test_youtube_callback_without_state_returns_russian_html_error():
     from shortsfarm.web import api
 
-    response = api.youtube_oauth_callback(code="dummy", state=None)
+    response = integrations_api.youtube_oauth_callback(code="dummy", state=None)
     body = response.body.decode("utf-8")
 
     assert response.status_code == 400
@@ -747,7 +749,7 @@ def test_youtube_callback_without_state_returns_russian_html_error():
 def test_youtube_callback_invalid_state_returns_russian_html_error():
     from shortsfarm.web import api
 
-    response = api.youtube_oauth_callback(code="dummy", state="invalid")
+    response = integrations_api.youtube_oauth_callback(code="dummy", state="invalid")
     body = response.body.decode("utf-8")
 
     assert response.status_code == 400
@@ -769,18 +771,18 @@ def test_youtube_callback_error_allows_second_auth_attempt(monkeypatch):
     )
     _install_fake_google_modules(monkeypatch, email="retry@example.com", channel_id="retry-channel", channel_title="Retry Channel")
 
-    first_start = api.youtube_connect_start()
+    first_start = integrations_api.youtube_connect_start()
     first_state = first_start["auth_url"].split("state=", 1)[1]
-    first_response = api.youtube_oauth_callback(error="access_denied", state=first_state)
+    first_response = integrations_api.youtube_oauth_callback(error="access_denied", state=first_state)
     first_body = first_response.body.decode("utf-8")
 
     assert first_response.status_code == 400
     assert "попробовать подключение ещё раз" in first_body
     assert db.consume_oauth_state("youtube", first_state) is None
 
-    second_start = api.youtube_connect_start()
+    second_start = integrations_api.youtube_connect_start()
     second_state = second_start["auth_url"].split("state=", 1)[1]
-    second_response = api.youtube_oauth_callback(code="oauth-code", state=second_state)
+    second_response = integrations_api.youtube_oauth_callback(code="oauth-code", state=second_state)
 
     assert second_start["oauth_profile_id"] == profile_id
     assert second_state != first_state
