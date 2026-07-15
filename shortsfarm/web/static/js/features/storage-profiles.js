@@ -19,7 +19,6 @@
 
     publishJobs: [],
     youtubeVideos: [],
-    youtubeAccounts: [],
   };
 
   const bridge = {
@@ -50,12 +49,13 @@
     showPublishJobError: () => {},
     getEditingProfiles: () => [],
     getEditingAccounts: () => [],
+    ensureIntegrationData: async () => {},
+    getYoutubeAccounts: () => [],
     getEditingPools: () => [],
     getEditingTemplates: () => [],
     upsertEditingProfile: () => {},
     openRenderQueue: () => {},
     openStudioTemplate: () => {},
-    syncGlobalYoutubeAccounts: () => {},
     badge: value => `<span class="badge">${escapeHtml(value)}</span>`,
     ruStatus: value => String(value || ''),
     shortErrorText: value => String(value || ''),
@@ -157,14 +157,20 @@
     return `${account.channel_title || account.display_name || `Канал #${account.id}`}${email}`;
   }
 
+  function youtubeAccountsSnapshot() {
+    const accounts = bridge.getYoutubeAccounts();
+    return Array.isArray(accounts) ? accounts : [];
+  }
+
   function storageProfileServiceLinks(profile) {
     const youtube = storageProfileYoutubeLink(profile);
     const linkedAccount = youtube?.youtube_account || null;
-    const selectedId = linkedAccount?.id || youtube?.external_account_id || state.youtubeAccounts[0]?.id || '';
-    const accountOptions = state.youtubeAccounts.map(account => (
+    const accounts = youtubeAccountsSnapshot();
+    const selectedId = linkedAccount?.id || youtube?.external_account_id || accounts[0]?.id || '';
+    const accountOptions = accounts.map(account => (
       `<option value="${Number(account.id)}"${Number(account.id) === Number(selectedId) ? ' selected' : ''}>${escapeHtml(storageAccountTitle(account))}</option>`
     )).join('');
-    const accountControls = state.youtubeAccounts.length
+    const accountControls = accounts.length
       ? `<div class="storage-youtube-controls">
           <select id="storage-profile-youtube-account">${accountOptions}</select>
           <button class="btn-secondary" onclick="linkStorageProfileYoutube()">${youtube ? 'Сменить канал' : 'Привязать YouTube'}</button>
@@ -467,10 +473,11 @@
     const youtube = storageProfileYoutubeLink(profile);
     const linkedAccountId = Number(youtube?.external_account_id || youtube?.youtube_account?.id || 0);
     const editingAccounts = bridge.getEditingAccounts();
-    const selectedAccountId = Number(channelProfile?.youtube_account_id || linkedAccountId || state.youtubeAccounts[0]?.id || 0);
+    const accounts = youtubeAccountsSnapshot();
+    const selectedAccountId = Number(channelProfile?.youtube_account_id || linkedAccountId || accounts[0]?.id || 0);
     const selectedTemplateId = Number(channelProfile?.default_studio_template_id || 0);
     const selectedPoolId = Number(channelProfile?.reaction_pool_id || 0);
-    const accountRows = (state.youtubeAccounts.length ? state.youtubeAccounts : editingAccounts).filter(account => (account.status || 'active') === 'active');
+    const accountRows = (accounts.length ? accounts : editingAccounts).filter(account => (account.status || 'active') === 'active');
     const accountOptions = accountRows.map(account => `<option value="${Number(account.id)}"${Number(account.id) === selectedAccountId ? ' selected' : ''}>${escapeHtml(storageAccountTitle(account))}</option>`).join('');
     const templateOptions = bridge.getEditingTemplates().map(item => {
       const id = Number(item.studio_template_id || item.id);
@@ -840,13 +847,6 @@
     await loadStorageProfiles();
   }
 
-  async function loadStorageYoutubeAccounts() {
-    const data = await bridge.apiGet('/api/publish/youtube/accounts');
-    state.youtubeAccounts = (data.accounts || []).filter(account => (account.status || 'active') === 'active');
-    bridge.syncGlobalYoutubeAccounts(data.accounts || []);
-    return state.youtubeAccounts;
-  }
-
   async function loadStorageProfileDetail(profileId = state.currentProfileId) {
     if (!profileId) {
       renderStorageProfileDetail();
@@ -857,7 +857,7 @@
         bridge.apiGet(`/api/storage-profiles/${Number(profileId)}`),
         bridge.apiGet(`/api/storage-profiles/${Number(profileId)}/publish-jobs?limit=200`).catch(() => ({jobs: []})),
         bridge.apiGet(`/api/storage-profiles/${Number(profileId)}/youtube/videos?limit=200`).catch(() => ({videos: []})),
-        loadStorageYoutubeAccounts().catch(() => []),
+        bridge.ensureIntegrationData({render: false}).catch(() => null),
         bridge.loadCatalogTags().catch(() => null),
         bridge.loadEditingSupportData().catch(() => null),
       ]);
@@ -1577,10 +1577,6 @@
     }
   }
 
-  function getYoutubeAccounts() {
-    return state.youtubeAccounts.slice();
-  }
-
   function storageProfileWorkspaceButton(item) {
     if (!item || item.missing || !item.file_exists) {
       return `<button class="btn-mini" disabled title="${escapeHtml(item?.path_error || 'Файл отсутствует')}">В профиль</button>`;
@@ -1642,7 +1638,6 @@
     addWorkspaceItemToStorageProfile,
     workspaceButtonHtml,
     openLinkedProfile,
-    getYoutubeAccounts,
   };
 
   window.ShortsFarmStorageProfiles = publicApi;

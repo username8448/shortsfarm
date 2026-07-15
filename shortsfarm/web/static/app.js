@@ -4685,12 +4685,6 @@ async function loadEditingSupportData() {
   editingStudioTemplates = studioTemplateOptions(templatesData.items || []);
   editingProfiles = profilesData.items || [];
   editingAccounts = window.ShortsFarmIntegrations?.getAccounts?.() || [];
-  const profileYoutubeAccounts = window.ShortsFarmStorageProfiles?.getYoutubeAccounts?.() || [];
-  if (profileYoutubeAccounts.length) {
-    const known = new Map(editingAccounts.map(account => [Number(account.id), account]));
-    profileYoutubeAccounts.forEach(account => known.set(Number(account.id), account));
-    editingAccounts = Array.from(known.values());
-  }
 }
 
 function getVisibleEditingJobs() {
@@ -4988,14 +4982,13 @@ window.ShortsFarmStorageProfiles?.configure?.({
   renderPublishScheduleCell,
   getEditingProfiles: () => editingProfiles.slice(),
   getEditingAccounts: () => editingAccounts.slice(),
+  ensureIntegrationData: options => window.ShortsFarmIntegrations?.ensureData?.(options),
+  getYoutubeAccounts: () => window.ShortsFarmIntegrations?.getAccounts?.() || [],
   getEditingPools: () => editingPools.slice(),
   getEditingTemplates: () => activeStudioEditingTemplates().slice(),
   upsertEditingProfile,
   openRenderQueue: query => openRenderQueueForStorageProfile(query),
   openStudioTemplate,
-  syncGlobalYoutubeAccounts: accounts => {
-    window.ShortsFarmIntegrations?.syncAccountsSnapshot?.(accounts);
-  },
   badge,
   ruStatus,
   shortErrorText,

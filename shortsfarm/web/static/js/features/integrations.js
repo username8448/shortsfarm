@@ -318,13 +318,6 @@
     }
   }
 
-  function syncAccountsSnapshot(accounts) {
-    if (!Array.isArray(accounts)) return;
-    state.accounts = accounts.slice();
-    bridge.syncPublishSelections();
-    if (bridge.currentView() === 'integrations') renderIntegrationsAccountsPanel();
-  }
-
   function onIntegrationOAuthProfileChange(value) {
     state.selectedOAuthProfileId = value ? Number(value) : null;
     reconcileSelectedOAuthProfile();
@@ -708,9 +701,10 @@
     bridge.loadSettingsView({silent: true});
     refreshData({render: false})
       .then(() => {
-        if (bridge.currentView() === 'integrations') renderIntegrationsView();
-        else bridge.refreshPublishView({silent: true});
-        if (bridge.currentView() === 'storage-profile') bridge.reloadStorageProfile();
+        const view = bridge.currentView();
+        if (view === 'integrations') renderIntegrationsView();
+        else if (view === 'publish') bridge.refreshPublishView({silent: true});
+        else if (view === 'storage-profile') bridge.reloadStorageProfile();
       })
       .catch(err => {
         const errorMessage = err.message || 'Не удалось обновить данные YouTube';
@@ -738,7 +732,6 @@
     profileSourceLabel,
     refreshData,
     startYouTubeConnect,
-    syncAccountsSnapshot,
   };
 
   Object.assign(window, {

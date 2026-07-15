@@ -197,10 +197,12 @@ def test_storage_profiles_app_bridge_keeps_advanced_ownership() -> None:
     assert "openPublishSchedule: (jobIds, jobs) => openPublishScheduleForProfileJobs(jobIds, jobs)" in app_js
     assert "getEditingProfiles: () => editingProfiles.slice()" in app_js
     assert "getEditingAccounts: () => editingAccounts.slice()" in app_js
+    assert "ensureIntegrationData: options => window.ShortsFarmIntegrations?.ensureData?.(options)" in app_js
+    assert "getYoutubeAccounts: () => window.ShortsFarmIntegrations?.getAccounts?.() || []" in app_js
     assert "upsertEditingProfile," in app_js
     assert "openRenderQueue: query => openRenderQueueForStorageProfile(query)" in app_js
     assert "workspaceButtonHtml" in app_js
-    assert "syncGlobalYoutubeAccounts: accounts =>" in app_js
+    assert "syncGlobalYoutubeAccounts" not in app_js
 
     for declaration in CORE_STATE_DECLARATIONS + ADVANCED_STATE_DECLARATIONS:
         assert declaration not in app_js
@@ -218,7 +220,7 @@ def test_storage_profiles_public_namespace_is_narrow_after_advanced_cleanup() ->
     public_api = storage_js.split("const publicApi = {", 1)[1].split("};", 1)[0]
     assert "state" not in public_api
     assert "openLinkedProfile" in public_api
-    assert "getYoutubeAccounts" in public_api
+    assert "getYoutubeAccounts" not in public_api
     assert "workspaceButtonHtml" in public_api
     for removed in REMOVED_PUBLIC_API:
         assert removed not in public_api
@@ -274,5 +276,6 @@ def test_storage_profiles_editing_support_uses_readonly_profile_accounts() -> No
     app_js = APP_JS.read_text(encoding="utf-8")
 
     body = app_js.split("async function loadEditingSupportData()", 1)[1].split("function getVisibleEditingJobs", 1)[0]
-    assert "window.ShortsFarmStorageProfiles?.getYoutubeAccounts?.() || []" in body
+    assert "editingAccounts = window.ShortsFarmIntegrations?.getAccounts?.() || [];" in body
+    assert "window.ShortsFarmStorageProfiles?.getYoutubeAccounts" not in body
     assert "storageYoutubeAccounts" not in body

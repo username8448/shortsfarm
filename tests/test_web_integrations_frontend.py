@@ -176,13 +176,14 @@ def test_integrations_namespace_is_narrow_and_state_private() -> None:
         "isConnectBusy",
         "startYouTubeConnect",
         "handleOAuthEvent",
-        "syncAccountsSnapshot",
     ]:
         assert public_name in public_api
 
     assert "state" not in public_api
     assert "getState" not in public_api
     assert "setState" not in public_api
+    assert "syncAccountsSnapshot" not in public_api
+    assert "function syncAccountsSnapshot" not in integrations_js
     assert "return copyItems(state.oauthProfiles)" in integrations_js
     assert "return copyItems(state.accounts)" in integrations_js
 
@@ -197,7 +198,10 @@ def test_integrations_app_bridge_and_cross_domain_boundaries() -> None:
     assert "renderPublishConnectButton," in app_js
     assert "renderPublishError," in app_js
     assert "openTextActionModal," in app_js
-    assert "window.ShortsFarmIntegrations?.syncAccountsSnapshot?.(accounts)" in app_js
+    assert "ensureIntegrationData: options => window.ShortsFarmIntegrations?.ensureData?.(options)" in app_js
+    assert "getYoutubeAccounts: () => window.ShortsFarmIntegrations?.getAccounts?.() || []" in app_js
+    assert "syncGlobalYoutubeAccounts" not in app_js
+    assert "syncAccountsSnapshot" not in app_js
     assert "window.ShortsFarmIntegrations?.loadIntegrationsView?.({silent: true})" in app_js
     assert "window.ShortsFarmIntegrations?.isConnectBusy?.()" in app_js
     assert "ShortsFarmIntegrations.openStorageProfile" in integrations_js
@@ -211,3 +215,32 @@ def test_integrations_app_bridge_and_cross_domain_boundaries() -> None:
     assert "loadIntegrationsView" in integration_exports
     assert "createIntegrationOAuthProfile" in integration_exports
     assert "disconnectYouTubeAccount" in integration_exports
+
+
+def test_integrations_is_only_frontend_youtube_accounts_owner() -> None:
+    app_js = APP_JS.read_text(encoding="utf-8")
+    storage_js = (ROOT / "shortsfarm" / "web" / "static" / "js" / "features" / "storage-profiles.js").read_text(encoding="utf-8")
+    integrations_js = INTEGRATIONS_JS.read_text(encoding="utf-8")
+
+    assert "bridge.apiGet('/api/publish/youtube/accounts')" in integrations_js
+    assert "api.get('/api/publish/youtube/accounts')" not in app_js
+    assert "/api/publish/youtube/accounts" not in storage_js
+
+    for forbidden in [
+        "youtubeAccounts:",
+        "state.youtubeAccounts",
+        "loadStorageYoutubeAccounts",
+        "syncGlobalYoutubeAccounts",
+    ]:
+        assert forbidden not in storage_js
+
+    public_api = storage_js.split("const publicApi = {", 1)[1].split("};", 1)[0]
+    assert "getYoutubeAccounts" not in public_api
+
+    assert "ensureIntegrationData: async () => {}" in storage_js
+    assert "getYoutubeAccounts: () => []" in storage_js
+    assert "bridge.ensureIntegrationData({render: false})" in storage_js
+
+    editing_body = app_js.split("async function loadEditingSupportData()", 1)[1].split("function getVisibleEditingJobs", 1)[0]
+    assert "editingAccounts = window.ShortsFarmIntegrations?.getAccounts?.() || [];" in editing_body
+    assert "ShortsFarmStorageProfiles?.getYoutubeAccounts" not in editing_body
