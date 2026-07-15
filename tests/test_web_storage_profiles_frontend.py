@@ -90,6 +90,40 @@ ADVANCED_APP_FUNCTIONS = [
     "enqueueStorageProfileSelection",
 ]
 
+ADVANCED_STATE_DECLARATIONS = [
+    "let storageProfilePublishJobs",
+    "let storageProfileYoutubeVideos",
+    "let storageYoutubeAccounts",
+]
+
+REMOVED_PUBLIC_API = [
+    "ensureStorageProfilesLoaded",
+    "getCurrentProfile",
+    "getCurrentItems",
+    "getProfiles",
+    "getSelectedItems",
+    "isItemSelected",
+    "applyProfileUpdate",
+    "applyProfileDetail",
+    "setProfiles",
+    "renderCurrent",
+]
+
+REMOVED_BRIDGE_CALLBACKS = [
+    "loadAdvancedProfileData",
+    "renderProfilePublishControls",
+    "renderProfilePublishSettingsPanel",
+    "renderProfileChannelSettingsPanel",
+    "renderProfileServiceLinks",
+    "renderProfilePublishJobsPanel",
+    "renderProfileYoutubeVideosPanel",
+    "renderProfileErrorsPanel",
+    "renderBrandingFieldActions",
+    "publishBadge",
+    "publishStatus",
+    "storageAccountTitle",
+]
+
 
 def test_storage_profiles_views_are_jinja_partial() -> None:
     index_html = INDEX_HTML.read_text(encoding="utf-8")
@@ -131,7 +165,7 @@ def test_storage_profiles_feature_boundary_and_exports() -> None:
     assert storage_js.lstrip().startswith("(() => {")
     assert "window.ShortsFarmStorageProfiles" in storage_js
     assert "configure(callbacks = {})" in storage_js
-    assert "loadAdvancedProfileData: async () => ({})" in storage_js
+    assert "loadEditingSupportData: async () => ({})" in storage_js
     assert "fallbackCatalogTags" not in storage_js
     assert "cachedCatalogTags" not in storage_js
     assert "catalogTags" not in storage_js
@@ -152,23 +186,54 @@ def test_storage_profiles_feature_boundary_and_exports() -> None:
 
 def test_storage_profiles_app_bridge_keeps_advanced_ownership() -> None:
     app_js = APP_JS.read_text(encoding="utf-8")
+    storage_js = STORAGE_JS.read_text(encoding="utf-8")
     app_py = WEB_APP.read_text(encoding="utf-8")
 
     assert '"static" / "js" / "features" / "storage-profiles.js"' in app_py
     assert "window.ShortsFarmStorageProfiles?.configure?.({" in app_js
-    assert "loadAdvancedProfileData: async profileId =>" in app_js
-    assert "loadStorageYoutubeAccounts().catch" in app_js
-    assert "loadEditingSupportData().catch" in app_js
+    assert "loadEditingSupportData," in app_js
     assert "pickStorageProfile: profiles => openStorageProfilePickModal(profiles)" in app_js
-    assert "renderProfilePublishControls: () => storageProfilePublishControls()" in app_js
-    assert "renderProfileChannelSettingsPanel: profile => storageProfileChannelSettingsPanel(profile)" in app_js
+    assert "mergePublishJobs: jobs => mergePublishJobsIntoGlobal(jobs)" in app_js
+    assert "openPublishSchedule: (jobIds, jobs) => openPublishScheduleForProfileJobs(jobIds, jobs)" in app_js
+    assert "getEditingProfiles: () => editingProfiles.slice()" in app_js
+    assert "getEditingAccounts: () => editingAccounts.slice()" in app_js
+    assert "upsertEditingProfile," in app_js
+    assert "openRenderQueue: query => openRenderQueueForStorageProfile(query)" in app_js
     assert "workspaceButtonHtml" in app_js
+    assert "syncGlobalYoutubeAccounts: accounts =>" in app_js
 
-    for declaration in CORE_STATE_DECLARATIONS:
+    for declaration in CORE_STATE_DECLARATIONS + ADVANCED_STATE_DECLARATIONS:
         assert declaration not in app_js
 
     for function_name in ADVANCED_APP_FUNCTIONS:
-        assert f"function {function_name}" in app_js or f"async function {function_name}" in app_js
+        assert re.search(rf"\bfunction\s+{re.escape(function_name)}\s*\(", app_js) is None
+        assert re.search(rf"\basync\s+function\s+{re.escape(function_name)}\s*\(", app_js) is None
+        assert f"function {function_name}" in storage_js or f"async function {function_name}" in storage_js
+
+
+def test_storage_profiles_public_namespace_is_narrow_after_advanced_cleanup() -> None:
+    storage_js = STORAGE_JS.read_text(encoding="utf-8")
+    app_js = APP_JS.read_text(encoding="utf-8")
+
+    public_api = storage_js.split("const publicApi = {", 1)[1].split("};", 1)[0]
+    assert "state" not in public_api
+    assert "openLinkedProfile" in public_api
+    assert "getYoutubeAccounts" in public_api
+    assert "workspaceButtonHtml" in public_api
+    for removed in REMOVED_PUBLIC_API:
+        assert removed not in public_api
+
+    configure_body = app_js.split("window.ShortsFarmStorageProfiles?.configure?.({", 1)[1].split("});", 1)[0]
+    for callback in REMOVED_BRIDGE_CALLBACKS:
+        assert callback not in configure_body
+    assert "lastPublishScheduleGroups" in app_js
+    assert "selectedPublishJobIds" in app_js
+    assert "let lastPublishJobs" in app_js
+    assert "lastPublishScheduleGroups" not in storage_js
+    assert "selectedPublishJobIds" not in storage_js
+    assert "let lastPublishJobs" not in storage_js
+    assert "window.ShortsFarmStorageProfiles?.openLinkedProfile?.(youtubeAccountId, channelProfileName)" in app_js
+    assert "async function openLinkedProfile" in storage_js
 
 
 def test_storage_profiles_routing_candidate_sync_and_oauth_boundaries() -> None:
@@ -186,7 +251,7 @@ def test_storage_profiles_routing_candidate_sync_and_oauth_boundaries() -> None:
     assert "handleRouteFromLocation" in storage_js
     assert "searchParams.set('profile'" in storage_js
 
-    update_body = app_js.split("function updateWorkspaceItemCatalogTags", 1)[1].split("async function loadStorageYoutubeAccounts", 1)[0]
+    update_body = app_js.split("function updateWorkspaceItemCatalogTags", 1)[1].split("function mergePublishJobsIntoGlobal", 1)[0]
     assert "window.ShortsFarmStorageProfiles?.syncCatalogVideoTags?.(workspacePath, tags || [], updatedItem)" in update_body
     assert "storageProfileCandidates" not in update_body
 
@@ -194,7 +259,16 @@ def test_storage_profiles_routing_candidate_sync_and_oauth_boundaries() -> None:
     assert "state.candidates = state.candidates.map" in sync_body
     assert "bridge.api" not in sync_body
     assert "renderStorageProfileDetail" not in sync_body
+    assert "...(updatedItem || {})" not in sync_body
 
     oauth_body = app_js.split("function handleOAuthEvent", 1)[1].split("window.addEventListener('DOMContentLoaded'", 1)[0]
     assert "window.ShortsFarmStorageProfiles?.reloadCurrentProfile?.();" in oauth_body
     assert "currentStorageProfileId" not in oauth_body
+
+
+def test_storage_profiles_editing_support_uses_readonly_profile_accounts() -> None:
+    app_js = APP_JS.read_text(encoding="utf-8")
+
+    body = app_js.split("async function loadEditingSupportData()", 1)[1].split("function getVisibleEditingJobs", 1)[0]
+    assert "window.ShortsFarmStorageProfiles?.getYoutubeAccounts?.() || []" in body
+    assert "storageYoutubeAccounts" not in body

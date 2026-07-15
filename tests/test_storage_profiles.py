@@ -1326,28 +1326,28 @@ def test_storage_profiles_ui_is_registered():
     assert "/api/tags" in js
     assert "/tag-rules" in storage_js
     assert "/tag-sync/run" in storage_js
-    assert "/youtube/link" in js
-    assert "/youtube/enqueue" in js
-    assert "/youtube/sync" in js
-    assert "/youtube/sync-branding" in js
-    assert "/youtube/videos" in js
-    assert "/publish-jobs" in js
-    assert "/publish-settings" in js
-    assert "Привязать YouTube" in js
-    assert "Отвязать" in js
-    assert "Обновить оформление с YouTube" in js
-    assert "Автоматически брать оформление из YouTube" in js
+    assert "/youtube/link" in storage_js
+    assert "/youtube/enqueue" in storage_js
+    assert "/youtube/sync" in storage_js
+    assert "/youtube/sync-branding" in storage_js
+    assert "/youtube/videos" in storage_js
+    assert "/publish-jobs" in storage_js
+    assert "/publish-settings" in storage_js
+    assert "Привязать YouTube" in storage_js
+    assert "Отвязать" in storage_js
+    assert "Обновить оформление с YouTube" in storage_js
+    assert "Автоматически брать оформление из YouTube" in storage_js
     assert "Вернуть имя из YouTube" in storage_ui_js
     assert "Вернуть описание из YouTube" in storage_ui_js
     assert "Вернуть фото YouTube" in storage_ui_js
     assert "Вернуть шапку из YouTube" in storage_ui_js
-    assert "linked_with_sync_error" in js
+    assert "linked_with_sync_error" in storage_js
     assert "storage-avatar-fallback" in storage_js
     assert "onerror=\"this.style.display='none'\"" in storage_js
     assert "effective_banner_url" in storage_js
-    assert "setStorageProfileBrandingOverride" in js
-    assert "Публикация YouTube" in js
-    assert "Настройки публикации профиля" in js
+    assert "setStorageProfileBrandingOverride" in storage_js
+    assert "Публикация YouTube" in storage_js
+    assert "Настройки публикации профиля" in storage_js
     assert "Теги профиля" in storage_js
     assert "Случайные видео" in storage_js
     assert "Менеджер тегов" in tags_js
@@ -1368,10 +1368,10 @@ def test_storage_profiles_ui_is_registered():
     assert "createStorageCatalogTag" not in storage_ui_js
     assert "assignTagToSelectedVideos" in tags_js
     assert "Автоимпорт готовых видео" not in js
-    assert "Синхронизировать YouTube" in js
+    assert "Синхронизировать YouTube" in storage_js
     assert "Видео на YouTube" in storage_ui_js
-    assert "только на YouTube" in js
-    assert "enqueueStorageProfileSelection" in js
+    assert "только на YouTube" in storage_js
+    assert "enqueueStorageProfileSelection" in storage_js
     assert "loadIntegrationsView" in js
     assert "renderIntegrationsAccountsPanel" in js
     assert "prompt(" not in js

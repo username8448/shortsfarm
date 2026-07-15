@@ -1173,6 +1173,15 @@ def test_editing_does_not_embed_duplicate_templates_tab():
         / "static"
         / "app.js"
     ).read_text(encoding="utf-8")
+    storage_profiles_js = (
+        root
+        / "shortsfarm"
+        / "web"
+        / "static"
+        / "js"
+        / "features"
+        / "storage-profiles.js"
+    ).read_text(encoding="utf-8")
 
     assert 'data-editing-tab="templates"' not in template
     assert 'id="editing-templates"' not in template
@@ -1183,9 +1192,10 @@ def test_editing_does_not_embed_duplicate_templates_tab():
     assert "ensureEditingTemplates" not in legacy_js
     assert "/api/editing/templates" not in legacy_js
     assert "/api/studio/templates" in legacy_js
-    assert "storageProfileChannelSettingsPanel" in legacy_js
-    assert "storage-channel-profile-template" in legacy_js
-    assert "reaction_pool_id" in legacy_js
+    assert "storageProfileChannelSettingsPanel" not in legacy_js
+    assert "storageProfileChannelSettingsPanel" in storage_profiles_js
+    assert "storage-channel-profile-template" in storage_profiles_js
+    assert "reaction_pool_id" in storage_profiles_js
 
 
 def test_template_studio_templates_page_remains_available():
